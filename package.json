@@ -1,6 +1,6 @@
 {
   "name": "ai-assistant",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Personal Discord bot that supports GitHub Copilot, OpenAI Codex, and OpenCode from a single codebase",
   "type": "module",
   "repository": {
