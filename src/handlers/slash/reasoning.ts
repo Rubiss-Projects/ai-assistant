@@ -20,7 +20,8 @@ export async function handleReasoning(
     await interaction.deferReply({ ephemeral: true });
 
     if (sub === "list") {
-      const efforts = await sessions.listReasoningEfforts();
+      const scope = sessionScope(interaction);
+      const efforts = await sessions.listReasoningEfforts(scope.key);
       await interaction.editReply(
         `**Available reasoning efforts:**\n${efforts.map((effort) => `\`${effort}\``).join(" · ")}`
       );

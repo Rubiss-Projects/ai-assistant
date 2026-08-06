@@ -4,7 +4,10 @@ export async function handleModel(interaction, sessions) {
     try {
         if (sub === "list") {
             await interaction.deferReply({ ephemeral: true });
-            const models = await sessions.listModels();
+            const sessionKey = interaction.channel?.isThread()
+                ? interaction.channelId
+                : interaction.user.id;
+            const models = await sessions.listModels(sessionKey);
             if (models.length === 0) {
                 await interaction.editReply("No models available.");
                 return;
