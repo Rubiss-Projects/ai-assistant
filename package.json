@@ -1,0 +1,41 @@
+{
+  "name": "ai-assistant",
+  "version": "1.0.0",
+  "description": "Personal Discord bot that supports GitHub Copilot, OpenAI Codex, and OpenCode from a single codebase",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rubiss-Projects/ai-assistant.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "ai-assistant": "./dist/src/cli.js"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "register": "tsx scripts/register-commands.ts",
+    "prepare": "npm run build",
+    "postinstall": "node scripts/patch-deps.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.0",
+    "@openai/codex-sdk": "^0.144.0",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "undici": "^6.24.0"
+  }
+}
