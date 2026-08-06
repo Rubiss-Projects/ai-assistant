@@ -238,7 +238,7 @@ src/
   utils/                # Attachment download + Discord message-link resolution
 scripts/
   register-commands.ts  # One-time slash command registration
-  patch-deps.cjs        # Copilot SDK ESM patch (runs on install)
+patch-deps.cjs          # Copilot SDK ESM patch (runs on install)
 .github/workflows/      # CI, release, and dependabot automation
 ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched by install-service)
 .env.example            # Environment variable template
