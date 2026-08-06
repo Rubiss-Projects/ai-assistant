@@ -2,7 +2,7 @@
 
 A single personal Discord bot that runs on **GitHub Copilot**, **OpenAI Codex**, or **OpenCode** — pick your AI provider with one config value. Chat with your AI from Discord channels, DMs, and bot-owned threads, with full tool access, persistent per-conversation sessions, slash commands, and thread-based isolation.
 
-This repo replaces the two separate implementations (`ai-assistant-copilot-sdk` and `ai-assistant-codex-sdk`) with one codebase behind a provider abstraction.
+This repo replaces the two separate implementations, [ai-assistant-copilot-sdk](https://github.com/Rubiss-Projects/ai-assistant-copilot-sdk) and [ai-assistant-codex-sdk](https://github.com/Rubiss-Projects/ai-assistant-codex-sdk), with one codebase behind a provider abstraction.
 
 ## Quick Install
 
@@ -183,25 +183,50 @@ npm start
 
 ## Migrating from the Copilot/Codex versions
 
-The Discord configuration is identical across all versions — your existing
-`DISCORD_*` values carry over as-is. The AI configuration changes:
+If you currently run a bot from the separate, provider-specific repos — [ai-assistant-copilot-sdk](https://github.com/Rubiss-Projects/ai-assistant-copilot-sdk) or [ai-assistant-codex-sdk](https://github.com/Rubiss-Projects/ai-assistant-codex-sdk) — this repo is a drop-in replacement. Migrating lets you use **`/provider`** to switch between Copilot, Codex, and OpenCode at runtime instead of running a separate bot per provider.
+
+Both older packages install the same `ai-assistant` CLI, so uninstall whichever you have before installing this one:
+
+```bash
+npm uninstall -g ai-assistant
+```
+
+Then install this package (your config in `~/.ai-assistant/.env` is preserved):
+
+```bash
+npm install -g --install-links github:Rubiss-Projects/ai-assistant
+```
+
+### What carries over
+
+The Discord configuration is identical across all versions, so your existing
+settings transfer as-is:
+
+- `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`
+- `DISCORD_FREE_CHANNELS`, `DISCORD_ALLOWED_USERS`
+- `MCP_CONFIG_PATH`, `MCP_INPUT_*`
+
+The AI configuration changes as follows:
 
 | Copilot version | Codex version | Unified version |
 | --- | --- | --- |
-| `COPILOT_TIMEOUT_MS` | `CODEX_TIMEOUT_MS` | `PROVIDER` selects backend; per-provider `*_TIMEOUT_MS` still respected |
-| Copilot model IDs | Codex/OpenAI model IDs | `COPILOT_MODEL` / `CODEX_MODEL` / `OPENCODE_MODEL` |
-| — | — | `OPENAI_API_KEY` only used when `PROVIDER=codex` |
+| Copilot authentication via `gh` CLI | `OPENAI_API_KEY` or Codex CLI login | Unchanged — each provider keeps its own auth |
+| `COPILOT_TIMEOUT_MS` | `CODEX_TIMEOUT_MS` | Still respected per provider; plus `OPENCODE_TIMEOUT_MS` for OpenCode |
+| Copilot model IDs (`COPILOT_MODEL`) | Codex/OpenAI model IDs (`CODEX_MODEL`) | `COPILOT_MODEL` / `CODEX_MODEL` / `OPENCODE_MODEL` |
+| — | — | New `PROVIDER=copilot\|codex\|opencode` sets the default backend |
 
-Replacement flow for a global install:
+### Replacement flow (global install)
 
 ```bash
-# If running as a service
+# If running as a service, stop it first
 sudo systemctl stop ai-assistant
 
-# Replace the globally installed package
+# Uninstall whatever version you have, then install the unified one
+npm uninstall -g ai-assistant
 npm install -g --install-links github:Rubiss-Projects/ai-assistant
 
-# Update ~/.ai-assistant/.env interactively (Discord values are preserved)
+# Update ~/.ai-assistant/.env interactively (Discord values are preserved,
+# and you'll be prompted for PROVIDER + your provider's credentials)
 ai-assistant setup
 
 # Replace guild slash commands with the unified command set
@@ -211,6 +236,11 @@ ai-assistant register
 ai-assistant install-service
 sudo systemctl start ai-assistant
 ```
+
+If you run the bot manually (no service), just `ai-assistant start` after
+`ai-assistant register`. Everything else — thread-based `/chat` sessions, skills,
+`/ask`, permission allowlists — works the same as before.
+
 
 ## Project Structure
 
