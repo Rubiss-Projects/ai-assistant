@@ -18,7 +18,6 @@
     "build": "tsc",
     "test": "node --import tsx --test tests/*.test.ts",
     "register": "tsx scripts/register-commands.ts",
-    "prepare": "npm run build",
     "postinstall": "node scripts/patch-deps.cjs"
   },
   "keywords": [],
