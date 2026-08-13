@@ -25,7 +25,7 @@
   "license": "ISC",
   "dependencies": {
     "@github/copilot-sdk": "^1.0.0",
-    "@openai/codex-sdk": "^0.146.0",
+    "@openai/codex-sdk": "^0.147.0",
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2"
   },
