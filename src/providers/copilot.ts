@@ -30,6 +30,25 @@ function isSessionNotFoundError(err: unknown): boolean {
   return /Session not found:/i.test(message);
 }
 
+function toHistoryEvent(event: SessionEvent): HistoryEvent | null {
+  switch (event.type) {
+    case "user.message":
+      return { type: event.type, data: { content: event.data.content } };
+    case "assistant.message":
+      return {
+        type: event.type,
+        data: {
+          content: event.data.content,
+          ...(event.data.parentToolCallId
+            ? { parentToolCallId: event.data.parentToolCallId }
+            : {}),
+        },
+      };
+    default:
+      return null;
+  }
+}
+
 /**
  * Session manager backed by the GitHub Copilot SDK. Each Provider method maps
  * to a Copilot session RPC; features Copilot does not expose throw
@@ -211,7 +230,7 @@ export class CopilotProvider implements Provider {
 
   async getHistory(userId: string): Promise<HistoryEvent[] | null> {
     const events = await this.withExistingLiveSession(userId, (session) => session.getEvents());
-    return (events as SessionEvent[] | null) ?? null;
+    return events?.map(toHistoryEvent).filter((event) => event !== null) ?? null;
   }
 
   async listModels(): Promise<ModelInfo[]> {
