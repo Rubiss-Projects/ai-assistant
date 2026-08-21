@@ -24,7 +24,7 @@ export async function handleHistory(
     const exchanges = events.filter(
       (e) =>
         (e.type === "user.message" || e.type === "assistant.message") &&
-        !(e.type === "assistant.message" && (e.data as { parentToolCallId?: string }).parentToolCallId)
+        !(e.type === "assistant.message" && e.data.parentToolCallId)
     );
 
     const recent = exchanges.slice(-(count * 2)); // 2 events per exchange
@@ -39,8 +39,7 @@ export async function handleHistory(
         return `**You:** ${e.data.content}`;
       } else {
         // assistant.message
-        const content = (e.data as { content: string }).content;
-        return `**${sessions.activeProviderDisplayName(sessionKey)}:** ${content}`;
+        return `**${sessions.activeProviderDisplayName(sessionKey)}:** ${e.data.content}`;
       }
     });
 

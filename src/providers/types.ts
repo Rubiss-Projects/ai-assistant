@@ -36,10 +36,15 @@ export interface StatusInfo {
   authStatus: AuthStatus;
 }
 
-export interface HistoryEvent {
-  type: "user.message" | "assistant.message";
-  data: { content: string };
-}
+export type HistoryEvent =
+  | {
+      type: "user.message";
+      data: { content: string };
+    }
+  | {
+      type: "assistant.message";
+      data: { content: string; parentToolCallId?: string };
+    };
 
 export interface CompactResult {
   success: boolean;

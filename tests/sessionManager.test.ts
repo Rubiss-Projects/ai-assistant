@@ -173,6 +173,49 @@ test("getHistory returns null without resuming a stored session", async () => {
   assert.equal(storedSessions["user-1"], "stored-session");
 });
 
+test("getHistory maps message events and excludes non-history events", async () => {
+  const manager = createTestManager();
+  const session: SessionLike = {
+    sessionId: "active-session",
+    getEvents: async () => [
+      {
+        type: "user.message",
+        data: { content: "hello", transformedContent: "<prompt>hello</prompt>" },
+      },
+      { type: "assistant.turn_start", data: { turnId: "turn-1" } },
+      { type: "assistant.message_delta", data: { deltaContent: "hi" } },
+      {
+        type: "assistant.message",
+        data: { content: "hi there", messageId: "message-1", turnId: "turn-1" },
+      },
+      { type: "abort", data: { reason: "user" } },
+      { type: "tool.execution_start", data: { toolCallId: "tool-1", toolName: "read" } },
+      {
+        type: "assistant.message",
+        data: {
+          content: "nested result",
+          messageId: "message-2",
+          turnId: "turn-1",
+          parentToolCallId: "tool-1",
+        },
+      },
+    ],
+    disconnect: async () => {},
+  };
+  manager.sessions.set("user-1", session);
+
+  const history = await manager.getHistory("user-1");
+
+  assert.deepEqual(history, [
+    { type: "user.message", data: { content: "hello" } },
+    { type: "assistant.message", data: { content: "hi there" } },
+    {
+      type: "assistant.message",
+      data: { content: "nested result", parentToolCallId: "tool-1" },
+    },
+  ]);
+});
+
 test("getCurrentModel retries once when cached session is missing from Copilot", async () => {
   const storedSessions: Record<string, string> = { "user-1": "stale-session" };
   const manager = createTestManager(storedSessions);

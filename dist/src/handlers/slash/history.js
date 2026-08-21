@@ -26,8 +26,7 @@ export async function handleHistory(interaction, sessions) {
             }
             else {
                 // assistant.message
-                const content = e.data.content;
-                return `**${sessions.activeProviderDisplayName(sessionKey)}:** ${content}`;
+                return `**${sessions.activeProviderDisplayName(sessionKey)}:** ${e.data.content}`;
             }
         });
         const chunks = chunkForDiscord(lines.join("\n\n"));

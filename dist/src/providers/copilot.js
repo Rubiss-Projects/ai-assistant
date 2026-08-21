@@ -10,6 +10,24 @@ function isSessionNotFoundError(err) {
     const message = err instanceof Error ? err.message : String(err);
     return /Session not found:/i.test(message);
 }
+function toHistoryEvent(event) {
+    switch (event.type) {
+        case "user.message":
+            return { type: event.type, data: { content: event.data.content } };
+        case "assistant.message":
+            return {
+                type: event.type,
+                data: {
+                    content: event.data.content,
+                    ...(event.data.parentToolCallId
+                        ? { parentToolCallId: event.data.parentToolCallId }
+                        : {}),
+                },
+            };
+        default:
+            return null;
+    }
+}
 /**
  * Session manager backed by the GitHub Copilot SDK. Each Provider method maps
  * to a Copilot session RPC; features Copilot does not expose throw
@@ -152,7 +170,7 @@ export class CopilotProvider {
     }
     async getHistory(userId) {
         const events = await this.withExistingLiveSession(userId, (session) => session.getEvents());
-        return events ?? null;
+        return events?.map(toHistoryEvent).filter((event) => event !== null) ?? null;
     }
     async listModels() {
         await this.client.start();
