@@ -19,11 +19,11 @@ function terms(value) {
         .filter((term) => !STOP_WORDS.has(term));
 }
 function score(content, queryTerms) {
-    const lower = content.toLowerCase();
-    return queryTerms.reduce((total, term) => total + (lower.includes(term) ? 1 : 0), 0);
+    const contentTerms = new Set(content.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+    return queryTerms.reduce((total, term) => total + (contentTerms.has(term) ? 1 : 0), 0);
 }
 export function classifyMemoryIntent(prompt) {
-    if (/\bdon['’]?t forget\b/i.test(prompt))
+    if (/^\s*(?:(?:hey|okay|ok)\s+)?(?:please\s+)?don['’]?t forget\b/i.test(prompt))
         return "save";
     if (/\bremember\s+(?:anything|something|what|where|when|who|why|how|whether|if)\b/i.test(prompt))
         return null;
@@ -166,9 +166,10 @@ export async function enrichWithDiscordKnowledge(invocation, prompt, client, can
             .filter((entry) => queryTerms.length > 0 && entry.score === queryTerms.length)
             .sort((a, b) => b.score - a.score);
         const visible = [];
-        for (const { memory } of candidates)
-            if (await memoryIsVisible(memory, client, requester))
+        for (const { memory } of candidates) {
+            if (canIncludeAuthor(memory.authorId) && await memoryIsVisible(memory, client, requester))
                 visible.push(memory);
+        }
         if (visible.length === 1) {
             store.delete(new Set([visible[0].id]));
             blocks.push(`[Long-term memory action: removed this record: ${visible[0].content}. Briefly confirm the removal.]`);

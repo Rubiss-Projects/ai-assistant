@@ -5,6 +5,7 @@ import { classifyMemoryIntent } from "../src/utils/discordKnowledge.js";
 test("classifies explicit conversational memory writes", () => {
   assert.equal(classifyMemoryIntent("Remember that Dave owes Sam cheese"), "save");
   assert.equal(classifyMemoryIntent("don't forget that Dave owes Sam cheese"), "save");
+  assert.equal(classifyMemoryIntent("I don't forget that the meeting is Tuesday"), null);
   assert.equal(classifyMemoryIntent("Could you remember that the trip is in June?"), "save");
   assert.equal(classifyMemoryIntent("keep this for later"), "save");
 });
