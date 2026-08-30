@@ -6,6 +6,7 @@ import { Codex } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, } from "./types.js";
+import { readFile } from "node:fs/promises";
 const require = createRequire(import.meta.url);
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 function configuredCodexModel() {
@@ -134,12 +135,19 @@ export class CodexProvider {
     async sendMessage(userId, prompt, imagePaths) {
         const tail = this.messageQueues.get(userId) ?? Promise.resolve();
         const next = tail.then(async () => {
-            const input = imagePaths && imagePaths.length > 0
+            const images = imagePaths?.filter((attachment) => attachment.kind !== "file") ?? [];
+            const files = imagePaths?.filter((attachment) => attachment.kind === "file") ?? [];
+            const fileContext = await Promise.all(files.map(async (attachment) => {
+                const text = await readFile(attachment.path, "utf8");
+                return `[Discord attachment: ${attachment.displayName ?? "file"}]\n${text}\n[/Discord attachment]`;
+            }));
+            const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
+            const input = images.length > 0
                 ? [
-                    { type: "text", text: prompt },
-                    ...imagePaths.map((a) => ({ type: "local_image", path: a.path })),
+                    { type: "text", text: resolvedPrompt },
+                    ...images.map((a) => ({ type: "local_image", path: a.path })),
                 ]
-                : prompt;
+                : resolvedPrompt;
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
             const timeoutMs = parseInt(process.env.CODEX_TIMEOUT_MS ?? "", 10) || 10 * 60 * 1000;
             const controller = new AbortController();

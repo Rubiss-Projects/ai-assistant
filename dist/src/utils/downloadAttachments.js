@@ -81,9 +81,6 @@ export async function downloadFileAttachments(attachments) {
             console.warn(`[downloadAttachments] Skipping oversized file "${attachment.name}" (${attachment.size} bytes)`);
             continue;
         }
-        const ext = attachment.name.match(/\.[^.]+$/)?.[0]
-            ?? (attachment.contentType?.startsWith("image/") ? ".png" : ".txt");
-        const tempPath = join(tmpdir(), `discord-file-${randomUUID()}${ext}`);
         try {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -109,8 +106,17 @@ export async function downloadFileAttachments(attachments) {
                 console.warn(`[downloadAttachments] Skipping oversized file "${attachment.name}" (actual: ${buffer.byteLength} bytes)`);
                 continue;
             }
+            const imageExt = detectedImageExtension(buffer);
+            const isImage = imageExt !== undefined;
+            const originalExt = attachment.name.match(/\.[^.]+$/)?.[0] ?? ".txt";
+            const tempPath = join(tmpdir(), `discord-file-${randomUUID()}${imageExt ?? originalExt}`);
             await writeFile(tempPath, buffer);
-            downloaded.push({ filePath: tempPath, displayName: attachment.name, contentType: attachment.contentType });
+            downloaded.push({
+                filePath: tempPath,
+                displayName: attachment.name,
+                contentType: attachment.contentType,
+                isImage,
+            });
             count++;
         }
         catch (err) {
@@ -144,7 +150,7 @@ export async function prepareDownloadedAttachments(attachments, mode = process.e
     const fileAttachments = [];
     const textBlocks = [];
     for (const attachment of attachments) {
-        if (normalizedMode === "text" && !attachment.contentType?.startsWith("image/")) {
+        if (normalizedMode === "text" && !attachment.isImage) {
             const value = await readFile(attachment.filePath, "utf8");
             const truncated = value.length > MAX_INLINE_TEXT_CHARS
                 ? `${value.slice(0, MAX_INLINE_TEXT_CHARS)}\n[truncated]`
@@ -162,8 +168,25 @@ export async function prepareDownloadedAttachments(attachments, mode = process.e
             }
         }
         else {
-            fileAttachments.push({ path: attachment.filePath, displayName: attachment.displayName });
+            fileAttachments.push({
+                path: attachment.filePath,
+                displayName: attachment.displayName,
+                kind: attachment.isImage ? "image" : "file",
+            });
         }
     }
     return { textContext: textBlocks.join("\n\n"), fileAttachments };
+}
+function detectedImageExtension(buffer) {
+    if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
+        return ".png";
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff)
+        return ".jpg";
+    const header = buffer.subarray(0, 6).toString("ascii");
+    if (header === "GIF87a" || header === "GIF89a")
+        return ".gif";
+    if (buffer.subarray(0, 4).toString("ascii") === "RIFF"
+        && buffer.subarray(8, 12).toString("ascii") === "WEBP")
+        return ".webp";
+    return undefined;
 }

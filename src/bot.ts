@@ -66,7 +66,7 @@ const PUBLIC_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
 export function slashCommandRequiresAdmin(request: SlashCommandRequest): boolean {
   const { commandName, subcommand, hasWorkspace = false } = request;
   if (ADMIN_COMMANDS.has(commandName)) return true;
-  if (PUBLIC_COMMANDS.has(commandName)) return false;
+  if (PUBLIC_COMMANDS.has(commandName)) return Boolean(subcommand);
   if (commandName === "ask" || commandName === "chat") return hasWorkspace;
   return !subcommand || !PUBLIC_SUBCOMMANDS[commandName]?.has(subcommand);
 }
@@ -107,9 +107,7 @@ export function createBot(sessions: SessionManager): Client {
     if (!interaction.isChatInputCommand()) return;
 
     const cmd = interaction as ChatInputCommandInteraction;
-    const subcommand = cmd.commandName in PUBLIC_SUBCOMMANDS
-      ? cmd.options.getSubcommand(false)
-      : null;
+    const subcommand = cmd.options.getSubcommand(false);
     const hasWorkspace = (cmd.commandName === "ask" || cmd.commandName === "chat")
       && Boolean(cmd.options.getString("workspace", false));
     const request = { commandName: cmd.commandName, subcommand, hasWorkspace };

@@ -70,6 +70,7 @@ export interface McpServerStatus {
 export interface SendAttachment {
   path: string;
   displayName?: string;
+  kind?: "image" | "file";
 }
 
 /**
