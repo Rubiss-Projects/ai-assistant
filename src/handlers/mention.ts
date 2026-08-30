@@ -1,6 +1,7 @@
 import { Message, Client } from "discord.js";
 import { SessionManager, chunkForDiscord } from "../sessionManager.js";
 import { resolveMessageLinks } from "../utils/resolveMessageLinks.js";
+import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
 import { downloadFileAttachments } from "../utils/downloadAttachments.js";
 
 export async function handleMention(
@@ -17,7 +18,7 @@ export async function handleMention(
   let typingInterval: ReturnType<typeof setInterval> | undefined;
 
   try {
-    if (!prompt && downloadedAttachments.length === 0) {
+    if (!prompt && downloadedAttachments.length === 0 && !message.reference?.messageId) {
       await message.reply(
         "👋 Hi! Mention me with a question or command. Use `/ask` for one-shot queries, `/chat` for persistent conversation, or `/reset` to clear your history."
       );
@@ -25,7 +26,15 @@ export async function handleMention(
     }
 
     const key = sessionKey ?? message.author.id;
-    const enrichedPrompt = await resolveMessageLinks(prompt || "See the attached file(s).", client, message.author.id);
+    const basePrompt = prompt || (message.reference?.messageId
+      ? "Respond using the replied-to conversation context."
+      : "See the attached file(s).");
+    const linkedPrompt = await resolveMessageLinks(basePrompt, client, message.author.id);
+    const enrichedPrompt = await resolveDiscordContext(
+      message,
+      linkedPrompt,
+      message.mentions.has(client.user!.id)
+    );
     const attachmentPaths = downloadedAttachments.map((a) => ({ path: a.filePath, displayName: a.displayName }));
 
     // Keep typing indicator alive every 8s (Discord clears it after ~10s)
