@@ -158,22 +158,21 @@ jobs:
       - name: Determine latest release tag
         id: promotion
         env:
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --force --tags origin
-          LATEST_TAG=$(node -e 'const { execFileSync } = require("node:child_process"); const semver = require("semver"); const dockerTag = /^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$/; const tags = execFileSync("git", ["tag", "--list", "v*"], { encoding: "utf8" }).trim().split(/\r?\n/).filter((tag) => dockerTag.test(tag) && semver.valid(tag)); process.stdout.write(tags.sort(semver.rcompare)[0] ?? "")')
-          if [ "$RELEASE_TAG" = "$LATEST_TAG" ]; then
-            echo "promote=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "promote=false" >> "$GITHUB_OUTPUT"
+          RELEASE_TAGS=$(gh release list --limit 100 --json tagName,isDraft,isPrerelease)
+          LATEST_TAG=$(RELEASE_TAGS="$RELEASE_TAGS" node -e 'const semver = require("semver"); const dockerTag = /^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$/; const releases = JSON.parse(process.env.RELEASE_TAGS); const tags = releases.filter((release) => !release.isDraft && !release.isPrerelease).map((release) => release.tagName).filter((tag) => dockerTag.test(tag) && semver.valid(tag)); process.stdout.write(tags.sort(semver.rcompare)[0] ?? "")')
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No completed release is eligible for latest promotion." >&2
+            exit 1
           fi
+          echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        if: steps.promotion.outputs.promote == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        if: steps.promotion.outputs.promote == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -181,15 +180,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote image to latest
-        if: steps.promotion.outputs.promote == 'true'
         env:
           IMAGE_NAME: ${{ needs.release.outputs.image }}
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_TAG: ${{ steps.promotion.outputs.tag }}
         run: docker buildx imagetools create --tag "$IMAGE_NAME:latest" "$IMAGE_NAME:$RELEASE_TAG"
 
       - name: Mark GitHub Release as latest
-        if: steps.promotion.outputs.promote == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_TAG: ${{ steps.promotion.outputs.tag }}
         run: gh release edit "$RELEASE_TAG" --latest
