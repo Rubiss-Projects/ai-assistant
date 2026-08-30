@@ -1,3 +1,4 @@
+import { PermissionFlagsBits } from "discord.js";
 const REPLY_CONTEXT_LIMIT = 7;
 const RECENT_CONTEXT_LIMIT = 6;
 function quoteLines(value) {
@@ -38,6 +39,12 @@ export async function resolveDiscordContext(message, content, includeRecentConte
     const referencedMessageId = message.reference?.messageId;
     if ((!referencedMessageId && !includeRecentContext) || !("messages" in message.channel)) {
         return content;
+    }
+    if ("permissionsFor" in message.channel) {
+        const permissions = message.channel.permissionsFor(message.author.id);
+        if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
+            return content;
+        }
     }
     try {
         const fetched = referencedMessageId
