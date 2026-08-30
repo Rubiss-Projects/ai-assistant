@@ -34,12 +34,19 @@ function score(content: string, queryTerms: readonly string[]): number {
   return queryTerms.reduce((total, term) => total + (lower.includes(term) ? 1 : 0), 0);
 }
 
-function isRememberIntent(prompt: string): boolean {
-  return /\b(remember|save|store|keep (?:this|that)|don['’]?t forget)\b/i.test(prompt);
-}
+export type MemoryIntent = "save" | "forget" | null;
 
-function isForgetIntent(prompt: string): boolean {
-  return /\b(forget|delete|remove)\b.*\b(memory|remember|agreement|contract|fact|that)\b/i.test(prompt);
+export function classifyMemoryIntent(prompt: string): MemoryIntent {
+  if (/\bdon['’]?t forget\b/i.test(prompt)) return "save";
+  if (
+    /^\s*(?:(?:hey|okay|ok)\s+)?(?:please\s+)?(?:remember|save|store)\b/i.test(prompt)
+    || /\b(?:can|could|would|will) you (?:please\s+)?(?:remember|save|store)\b/i.test(prompt)
+    || /\bkeep (?:this|that)\b/i.test(prompt)
+  ) return "save";
+  if (/\b(forget|delete|remove)\b.*\b(memory|remember|agreement|contract|fact|that)\b/i.test(prompt)) {
+    return "forget";
+  }
+  return null;
 }
 
 function isHistoryIntent(prompt: string): boolean {
@@ -145,7 +152,8 @@ export async function enrichWithDiscordKnowledge(invocation: Invocation, prompt:
   const requester = userId(invocation);
   const blocks: string[] = [];
 
-  if (isForgetIntent(prompt)) {
+  const memoryIntent = classifyMemoryIntent(prompt);
+  if (memoryIntent === "forget") {
     const queryTerms = terms(prompt);
     const candidates = store.all(guildId)
       .map((memory) => ({ memory, score: score(memory.content, queryTerms) }))
@@ -160,7 +168,7 @@ export async function enrichWithDiscordKnowledge(invocation: Invocation, prompt:
       const choices = visible.slice(0, 5).map((memory) => `- ${memory.content}`).join("\n") || "(none)";
       blocks.push(`[Long-term memory action: no record was removed because the request matched ${visible.length} records. Ask the user to identify one more specifically. Candidates:\n${choices}]`);
     }
-  } else if (isRememberIntent(prompt)) {
+  } else if (memoryIntent === "save") {
     const source = await sourceText(invocation, prompt, client, requester);
     const channelId = source.channelId ?? invocation.channelId;
     const sourceUrl = source.sourceUrl ?? ("url" in invocation ? invocation.url : `https://discord.com/channels/${guildId}/${channelId}`);
