@@ -130,8 +130,12 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; skipping."
           else
-            gh release create "$TAG" --generate-notes --title "Release $TAG" --latest=false \
-              --notes "Container image: \`${IMAGE_NAME}:${TAG}\` (linux/amd64 and linux/arm64)"
+            RELEASE_ARGS=(--generate-notes --title "Release $TAG" --latest=false \
+              --notes "Container image: \`${IMAGE_NAME}:${TAG}\` (linux/amd64 and linux/arm64)")
+            if node -e 'process.exit(require("semver").prerelease(process.argv[1]) ? 0 : 1)' "$TAG"; then
+              RELEASE_ARGS+=(--prerelease)
+            fi
+            gh release create "$TAG" "${RELEASE_ARGS[@]}"
           fi
 
   promote-latest:
@@ -162,7 +166,7 @@ jobs:
         run: |
           git fetch --force --tags origin
           RELEASE_TAGS=$(gh release list --limit 100 --json tagName,isDraft,isPrerelease)
-          LATEST_TAG=$(RELEASE_TAGS="$RELEASE_TAGS" node -e 'const semver = require("semver"); const dockerTag = /^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$/; const releases = JSON.parse(process.env.RELEASE_TAGS); const tags = releases.filter((release) => !release.isDraft && !release.isPrerelease).map((release) => release.tagName).filter((tag) => dockerTag.test(tag) && semver.valid(tag)); process.stdout.write(tags.sort(semver.rcompare)[0] ?? "")')
+          LATEST_TAG=$(RELEASE_TAGS="$RELEASE_TAGS" node -e 'const semver = require("semver"); const dockerTag = /^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$/; const releases = JSON.parse(process.env.RELEASE_TAGS); const tags = releases.filter((release) => !release.isDraft && !release.isPrerelease).map((release) => release.tagName).filter((tag) => dockerTag.test(tag) && semver.valid(tag) && semver.prerelease(tag) === null); process.stdout.write(tags.sort(semver.rcompare)[0] ?? "")')
           if [ -z "$LATEST_TAG" ]; then
             echo "No completed release is eligible for latest promotion." >&2
             exit 1
