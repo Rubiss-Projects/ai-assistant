@@ -12,6 +12,8 @@ test("classifies explicit conversational memory writes", () => {
 test("does not turn recall questions into memory writes", () => {
   assert.equal(classifyMemoryIntent("What do you remember about the beach plans?"), null);
   assert.equal(classifyMemoryIntent("Do you remember the cheese contract?"), null);
+  assert.equal(classifyMemoryIntent("Can you remember what we decided?"), null);
+  assert.equal(classifyMemoryIntent("Could you remember where the meeting is?"), null);
 });
 
 test("classifies explicit deletion separately from negated forget", () => {

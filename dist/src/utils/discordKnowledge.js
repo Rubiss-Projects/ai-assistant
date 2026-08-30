@@ -7,8 +7,12 @@ function positiveInteger(value, fallback, minimum) {
     const parsed = Number(value);
     return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback;
 }
-const HISTORY_LIMIT = positiveInteger(process.env.DISCORD_HISTORY_SEARCH_LIMIT, 500, 25);
-const MEMORY_LIMIT = positiveInteger(process.env.DISCORD_MEMORY_RECALL_LIMIT, 5, 1);
+function historyLimit() {
+    return positiveInteger(process.env.DISCORD_HISTORY_SEARCH_LIMIT, 500, 25);
+}
+function memoryLimit() {
+    return positiveInteger(process.env.DISCORD_MEMORY_RECALL_LIMIT, 5, 1);
+}
 const MESSAGE_URL_RE = /https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+)/i;
 function terms(value) {
     return [...new Set(value.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])]
@@ -21,8 +25,10 @@ function score(content, queryTerms) {
 export function classifyMemoryIntent(prompt) {
     if (/\bdon['’]?t forget\b/i.test(prompt))
         return "save";
+    if (/\bremember\s+(?:what|where|when|who|why|how|whether|if)\b/i.test(prompt))
+        return null;
     if (/^\s*(?:(?:hey|okay|ok)\s+)?(?:please\s+)?(?:remember|save|store)\b/i.test(prompt)
-        || /\b(?:can|could|would|will) you (?:please\s+)?(?:remember|save|store)\b/i.test(prompt)
+        || /\b(?:can|could|would|will) you (?:please\s+)?(?:remember|save|store)\b(?!\s+(?:what|where|when|who|why|how|whether|if)\b)/i.test(prompt)
         || /\bkeep (?:this|that)\b/i.test(prompt))
         return "save";
     if (/\b(forget|delete|remove)\b.*\b(memory|remember|agreement|contract|fact|that)\b/i.test(prompt)) {
@@ -59,17 +65,22 @@ async function recalledMemories(guildId, prompt, client, userId) {
     for (const { memory } of ranked) {
         if (await memoryIsVisible(memory, client, userId))
             visible.push(memory);
-        if (visible.length >= MEMORY_LIMIT)
+        if (visible.length >= memoryLimit())
             break;
     }
     return visible;
 }
 function memoryText(prompt) {
     return prompt
-        .replace(/^.*?\b(?:remember|save|store|don['’]?t forget)\b\s*(?:that|this|the following|:)?\s*/i, "")
-        .trim() || prompt.trim();
+        .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep)\b\s*(?:that|this|the following|:)?\s*/i, "")
+        .trim();
 }
 async function sourceText(invocation, prompt, client, requesterId) {
+    const explicit = memoryText(prompt);
+    const linked = prompt.match(MESSAGE_URL_RE);
+    const isDeictic = !explicit || /^(?:this|that|it)?\s*(?:https?:\/\/\S+)?[.!?]*$/i.test(explicit);
+    if (!isDeictic)
+        return { content: explicit };
     if ("reference" in invocation && invocation.reference?.messageId) {
         try {
             const referenced = await invocation.fetchReference();
@@ -78,7 +89,6 @@ async function sourceText(invocation, prompt, client, requesterId) {
         }
         catch { /* retain the user's text */ }
     }
-    const linked = prompt.match(MESSAGE_URL_RE);
     if (linked && linked[1] === invocation.guildId) {
         try {
             const channel = await client.channels.fetch(linked[2]);
@@ -90,7 +100,7 @@ async function sourceText(invocation, prompt, client, requesterId) {
         }
         catch { /* retain the user's text */ }
     }
-    return { content: memoryText(prompt) };
+    return { content: explicit || prompt.trim() };
 }
 async function searchableChannels(invocation, prompt, requesterId) {
     const current = invocation.channel;
@@ -108,7 +118,7 @@ async function searchableChannels(invocation, prompt, requesterId) {
 async function searchChannel(channel, queryTerms) {
     const matches = [];
     let before;
-    let remaining = HISTORY_LIMIT;
+    let remaining = historyLimit();
     while (remaining > 0) {
         const batch = await channel.messages.fetch({ before, limit: Math.min(100, remaining) });
         if (batch.size === 0)
