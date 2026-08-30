@@ -4,7 +4,8 @@ import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js"
 
 export async function handleChat(
   interaction: ChatInputCommandInteraction,
-  sessions: SessionManager
+  sessions: SessionManager,
+  canIncludeContextAuthor: (authorId: string) => boolean = () => true,
 ): Promise<void> {
   const message = interaction.options.getString("message", true);
   const workspace = interaction.options.getString("workspace", false);
@@ -21,6 +22,7 @@ export async function handleChat(
         interaction.user.id,
         imageAttachment,
         interaction,
+        canIncludeContextAuthor,
       );
 
       let response: string;
@@ -66,6 +68,7 @@ export async function handleChat(
       interaction.user.id,
       imageAttachment,
       interaction,
+      canIncludeContextAuthor,
     );
 
     try {

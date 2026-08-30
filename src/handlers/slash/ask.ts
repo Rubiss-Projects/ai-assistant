@@ -4,7 +4,8 @@ import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js"
 
 export async function handleAsk(
   interaction: ChatInputCommandInteraction,
-  sessions: SessionManager
+  sessions: SessionManager,
+  canIncludeContextAuthor: (authorId: string) => boolean = () => true,
 ): Promise<void> {
   const prompt = interaction.options.getString("prompt", true);
   const workspace = interaction.options.getString("workspace", false);
@@ -23,6 +24,7 @@ export async function handleAsk(
         interaction.user.id,
         imageAttachment,
         interaction,
+        canIncludeContextAuthor,
       );
 
       try {

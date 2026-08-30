@@ -1,7 +1,7 @@
 import { ThreadAutoArchiveDuration } from "discord.js";
 import { chunkForDiscord } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
-export async function handleChat(interaction, sessions) {
+export async function handleChat(interaction, sessions, canIncludeContextAuthor = () => true) {
     const message = interaction.options.getString("message", true);
     const workspace = interaction.options.getString("workspace", false);
     const imageAttachment = interaction.options.getAttachment("image", false);
@@ -10,7 +10,7 @@ export async function handleChat(interaction, sessions) {
         try {
             await interaction.deferReply();
             // Resolve after defer to avoid hitting Discord's 3s interaction window
-            const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction);
+            const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor);
             let response;
             try {
                 if (workspace)
@@ -46,7 +46,7 @@ export async function handleChat(interaction, sessions) {
     try {
         await interaction.deferReply();
         // Resolve after defer to avoid hitting Discord's 3s interaction window
-        const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction);
+        const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor);
         try {
             if (interaction.channel?.isThread()) {
                 // Can't create a thread inside a thread — use the current thread as the session

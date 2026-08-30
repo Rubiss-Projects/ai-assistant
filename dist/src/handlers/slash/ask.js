@@ -1,6 +1,6 @@
 import { chunkForDiscord } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
-export async function handleAsk(interaction, sessions) {
+export async function handleAsk(interaction, sessions, canIncludeContextAuthor = () => true) {
     const prompt = interaction.options.getString("prompt", true);
     const workspace = interaction.options.getString("workspace", false);
     const imageAttachment = interaction.options.getAttachment("image", false);
@@ -11,7 +11,7 @@ export async function handleAsk(interaction, sessions) {
         try {
             if (workspace)
                 sessions.setSessionWorkingDir(tempKey, workspace);
-            const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction);
+            const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor);
             try {
                 response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined);
             }
