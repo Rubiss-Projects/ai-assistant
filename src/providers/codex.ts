@@ -22,6 +22,7 @@ import {
   type SessionMode,
   type StatusInfo,
 } from "./types.js";
+import { readFile } from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
@@ -187,13 +188,20 @@ export class CodexProvider implements Provider {
   ): Promise<string> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
+      const images = imagePaths?.filter((attachment) => attachment.kind !== "file") ?? [];
+      const files = imagePaths?.filter((attachment) => attachment.kind === "file") ?? [];
+      const fileContext = await Promise.all(files.map(async (attachment) => {
+        const text = await readFile(attachment.path, "utf8");
+        return `[Discord attachment: ${attachment.displayName ?? "file"}]\n${text}\n[/Discord attachment]`;
+      }));
+      const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
       const input: string | UserInput[] =
-        imagePaths && imagePaths.length > 0
+        images.length > 0
           ? [
-              { type: "text", text: prompt },
-              ...imagePaths.map((a) => ({ type: "local_image" as const, path: a.path })),
+              { type: "text", text: resolvedPrompt },
+              ...images.map((a) => ({ type: "local_image" as const, path: a.path })),
             ]
-          : prompt;
+          : resolvedPrompt;
 
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
       const timeoutMs = parseInt(process.env.CODEX_TIMEOUT_MS ?? "", 10) || 10 * 60 * 1000;

@@ -83,6 +83,7 @@ test("configuration, infrastructure, and explicit workspace actions require admi
     { commandName: "chat", hasWorkspace: true },
     { commandName: "future-command" },
     { commandName: "plan", subcommand: "future-action" },
+    { commandName: "reset", subcommand: "future-action" },
   ]) {
     assert.equal(slashCommandRequiresAdmin(request), true, JSON.stringify(request));
   }

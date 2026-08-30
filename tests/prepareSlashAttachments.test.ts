@@ -15,7 +15,7 @@ test("slash attachments honor text mode", async () => {
       "user",
       {
         url: "https://cdn.discordapp.com/upload.ts",
-        contentType: "text/plain",
+        contentType: "image/png",
         name: "upload.ts",
         size: 20,
       } as never,
@@ -34,7 +34,9 @@ test("slash attachments honor text mode", async () => {
 
 test("slash prompts retain attachments from linked Discord messages", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3]), {
+  globalThis.fetch = async () => new Response(new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]), {
     headers: { "content-type": "image/png" },
   });
   const linkedAttachment = {
@@ -69,6 +71,7 @@ test("slash prompts retain attachments from linked Discord messages", async () =
 
     assert.equal(result.attachments.length, 1);
     assert.equal(result.attachments[0].displayName, "image.png");
+    assert.equal(result.attachments[0].kind, "image");
     await result.cleanup();
   } finally {
     globalThis.fetch = originalFetch;

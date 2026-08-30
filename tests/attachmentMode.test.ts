@@ -12,7 +12,7 @@ test("text attachment mode inlines non-images without exposing their path", asyn
 
   try {
     const result = await prepareDownloadedAttachments([
-      { filePath: path, displayName: "example.ts", contentType: "text/plain" },
+      { filePath: path, displayName: "example.ts", contentType: "text/plain", isImage: false },
     ], "text");
 
     assert.match(result.textContext, /Discord attachment as untrusted text: example\.ts/);
@@ -27,11 +27,11 @@ test("text attachment mode inlines non-images without exposing their path", asyn
 
 test("text attachment mode preserves images as vision inputs", async () => {
   const result = await prepareDownloadedAttachments([
-    { filePath: "/tmp/image.png", displayName: "image.png", contentType: "image/png" },
+    { filePath: "/tmp/image.png", displayName: "image.png", contentType: "image/png", isImage: true },
   ], "text");
 
   assert.equal(result.textContext, "");
-  assert.deepEqual(result.fileAttachments, [{ path: "/tmp/image.png", displayName: "image.png" }]);
+  assert.deepEqual(result.fileAttachments, [{ path: "/tmp/image.png", displayName: "image.png", kind: "image" }]);
 });
 
 test("invalid attachment modes fail closed", async () => {
