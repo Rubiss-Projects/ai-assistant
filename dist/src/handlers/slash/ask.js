@@ -1,6 +1,5 @@
 import { chunkForDiscord } from "../../sessionManager.js";
-import { resolveMessageLinks } from "../../utils/resolveMessageLinks.js";
-import { downloadFileAttachments } from "../../utils/downloadAttachments.js";
+import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 export async function handleAsk(interaction, sessions) {
     const prompt = interaction.options.getString("prompt", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -12,20 +11,13 @@ export async function handleAsk(interaction, sessions) {
         try {
             if (workspace)
                 sessions.setSessionWorkingDir(tempKey, workspace);
-            const enrichedPrompt = await resolveMessageLinks(prompt, interaction.client, interaction.user.id);
-            let imagePaths;
-            let cleanup;
-            if (imageAttachment) {
-                const result = await downloadFileAttachments([imageAttachment]);
-                cleanup = result.cleanup;
-                imagePaths = result.attachments.map((a) => ({ path: a.filePath, displayName: a.displayName }));
-            }
+            const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment);
             try {
-                response = await sessions.sendMessage(tempKey, enrichedPrompt, imagePaths);
+                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined);
             }
             finally {
                 // Temp file cleanup is independent of session reset — always run both
-                await cleanup?.();
+                await prepared.cleanup();
             }
         }
         finally {

@@ -1,7 +1,6 @@
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager, chunkForDiscord } from "../../sessionManager.js";
-import { resolveMessageLinks } from "../../utils/resolveMessageLinks.js";
-import { downloadFileAttachments } from "../../utils/downloadAttachments.js";
+import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 
 export async function handleAsk(
   interaction: ChatInputCommandInteraction,
@@ -18,21 +17,22 @@ export async function handleAsk(
     let response: string;
     try {
       if (workspace) sessions.setSessionWorkingDir(tempKey, workspace);
-      const enrichedPrompt = await resolveMessageLinks(prompt, interaction.client, interaction.user.id);
-
-      let imagePaths: Array<{ path: string; displayName?: string }> | undefined;
-      let cleanup: (() => Promise<void>) | undefined;
-      if (imageAttachment) {
-        const result = await downloadFileAttachments([imageAttachment]);
-        cleanup = result.cleanup;
-        imagePaths = result.attachments.map((a) => ({ path: a.filePath, displayName: a.displayName }));
-      }
+      const prepared = await prepareSlashAttachments(
+        prompt,
+        interaction.client,
+        interaction.user.id,
+        imageAttachment,
+      );
 
       try {
-        response = await sessions.sendMessage(tempKey, enrichedPrompt, imagePaths);
+        response = await sessions.sendMessage(
+          tempKey,
+          prepared.prompt,
+          prepared.attachments.length ? prepared.attachments : undefined,
+        );
       } finally {
         // Temp file cleanup is independent of session reset — always run both
-        await cleanup?.();
+        await prepared.cleanup();
       }
     } finally {
       // Always clean up the temp session, even on error
