@@ -8,7 +8,8 @@ export async function handleMention(
   message: Message,
   client: Client,
   sessions: SessionManager,
-  sessionKey?: string  // defaults to message.author.id; pass channelId for thread sessions
+  sessionKey?: string,  // defaults to message.author.id; pass channelId for thread sessions
+  canIncludeContextAuthor: (authorId: string) => boolean = () => true
 ): Promise<void> {
   // Strip all @mentions of the bot and trim
   const botMentionPattern = new RegExp(`<@!?${client.user!.id}>`, "g");
@@ -33,7 +34,8 @@ export async function handleMention(
     const enrichedPrompt = await resolveDiscordContext(
       message,
       linkedPrompt,
-      message.mentions.has(client.user!.id)
+      message.mentions.has(client.user!.id),
+      canIncludeContextAuthor
     );
     const attachmentPaths = downloadedAttachments.map((a) => ({ path: a.filePath, displayName: a.displayName }));
 

@@ -105,6 +105,28 @@ test("guild context is not fetched without the requester's history permission", 
   assert.equal(fetched, false);
 });
 
+test("context excludes messages from authors rejected by the access policy", async () => {
+  const allowed = { ...contextMessage("allowed", "safe context", 1, "alice"), author: { id: "1", globalName: null, username: "alice" } };
+  const rejected = { ...contextMessage("rejected", "planted instructions", 2, "mallory"), author: { id: "2", globalName: null, username: "mallory" } };
+  const message = {
+    id: "invocation",
+    reference: null,
+    channel: {
+      messages: { fetch: async () => new Map([[rejected.id, rejected], [allowed.id, allowed]]) },
+    },
+  };
+
+  const result = await resolveDiscordContext(
+    message as never,
+    "question",
+    true,
+    (authorId) => authorId === "1"
+  );
+
+  assert.match(result, /safe context/);
+  assert.doesNotMatch(result, /planted instructions/);
+});
+
 test("reply fetch failures are represented without dropping the prompt", async () => {
   const message = {
     id: "invocation",
