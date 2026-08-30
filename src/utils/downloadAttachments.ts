@@ -187,7 +187,12 @@ export async function prepareDownloadedAttachments(
       );
       // Remove the backing file before the provider gets control. This ensures
       // an agent with filesystem tools cannot discover or execute the upload.
-      await unlink(attachment.filePath).catch(() => {});
+      try {
+        await unlink(attachment.filePath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw error;
+      }
     } else {
       fileAttachments.push({ path: attachment.filePath, displayName: attachment.displayName });
     }

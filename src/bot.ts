@@ -52,11 +52,12 @@ export interface SlashCommandRequest {
 }
 
 const ADMIN_COMMANDS = new Set(["fleet", "leave", "mcp", "servers", "status", "workspace"]);
-const PUBLIC_COMMANDS = new Set(["compact", "history", "plan", "reset"]);
+const PUBLIC_COMMANDS = new Set(["compact", "history", "reset"]);
 const PUBLIC_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
   agent: new Set(["current", "list"]),
   mode: new Set(["get"]),
   model: new Set(["current", "list"]),
+  plan: new Set(["delete", "read", "update"]),
   provider: new Set(["current", "list"]),
   reasoning: new Set(["current", "list"]),
 };
