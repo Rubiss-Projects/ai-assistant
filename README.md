@@ -143,6 +143,8 @@ no restart required:
 - **Free-form chat** in a designated channel — no `@mention` required
 - **Conversation-aware mentions** — mentions include recent channel conversation; replies center context around the referenced message
 - **Persistent session** per user/thread — history maintained across messages and bot restarts
+- **Conversational long-term memory** — say “remember this” and recall relevant server memories later without a command
+- **Discord history search** — ask naturally to search the current channel or accessible server channels, with source links
 - **Full tool access** — the AI can read files, run shell commands, search the web, etc.
 - **User-scope skills** — Copilot automatically loads skills from `~/.agents/skills` at session start
 - **Model switching** — change the model per-user at runtime (`/model set`)
@@ -250,6 +252,15 @@ lists empty, everybody in a server containing the bot can interact with it.
   replied-to, nearby, or Discord-linked messages are included too. Sessions
   remain isolated by channel/thread and persist across container restarts in
   the `assistant-data` volume.
+- Natural requests such as “remember that Dave owes Sam a wheel of cheese” are
+  stored durably for the server. Relevant records are recalled automatically in
+  later conversations. “Forget the cheese agreement” removes matching records.
+  Each memory retains its source channel, and is returned only while the
+  requester can still read that channel.
+- Requests such as “search this channel for the beach plans” scan recent
+  history; “search across the server” scans readable text channels. Results
+  include message permalinks. The per-channel scan defaults to 500 messages and
+  can be changed with `DISCORD_HISTORY_SEARCH_LIMIT`.
 - `DISCORD_ATTACHMENT_MODE=native` passes accepted attachments to the provider
   as temporary files. Set `DISCORD_ATTACHMENT_MODE=text` for a shared bot: all
   non-image attachments are delimited as untrusted text in the prompt and no

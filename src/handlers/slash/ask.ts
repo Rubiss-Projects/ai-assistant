@@ -22,6 +22,7 @@ export async function handleAsk(
         interaction.client,
         interaction.user.id,
         imageAttachment,
+        interaction,
       );
 
       try {

@@ -20,6 +20,7 @@ export async function handleChat(
         interaction.client,
         interaction.user.id,
         imageAttachment,
+        interaction,
       );
 
       let response: string;
@@ -64,6 +65,7 @@ export async function handleChat(
       interaction.client,
       interaction.user.id,
       imageAttachment,
+      interaction,
     );
 
     try {
