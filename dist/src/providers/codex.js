@@ -12,6 +12,15 @@ const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 function configuredCodexModel() {
     return process.env.CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
 }
+function configuredCodexReasoningEffort() {
+    const configured = process.env.CODEX_REASONING_EFFORT?.trim().toLowerCase();
+    if (!configured)
+        return DEFAULT_REASONING_EFFORT;
+    if (!REASONING_EFFORTS.includes(configured)) {
+        throw new Error(`Invalid CODEX_REASONING_EFFORT: ${configured} (expected ${REASONING_EFFORTS.join(", ")})`);
+    }
+    return configured;
+}
 function isThreadNotFoundError(err) {
     const message = err instanceof Error ? err.message : String(err);
     return /(thread|session).*(not found|missing|unknown)/i.test(message);
@@ -46,7 +55,7 @@ export class CodexProvider {
         const workingDirectory = this.workingDirOverrides.get(key) ?? process.cwd();
         return {
             model: this.modelOverrides.get(key) ?? configuredCodexModel(),
-            modelReasoningEffort: this.reasoningEffortOverrides.get(key) ?? DEFAULT_REASONING_EFFORT,
+            modelReasoningEffort: this.reasoningEffortOverrides.get(key) ?? configuredCodexReasoningEffort(),
             workingDirectory,
             skipGitRepoCheck: true,
             approvalPolicy: "never",
@@ -261,7 +270,7 @@ export class CodexProvider {
         this.sessions.delete(key);
     }
     async getCurrentReasoningEffort(key) {
-        return this.reasoningEffortOverrides.get(key) ?? DEFAULT_REASONING_EFFORT;
+        return this.reasoningEffortOverrides.get(key) ?? configuredCodexReasoningEffort();
     }
     async listAgents() {
         throw new UnsupportedError(this.displayName, "custom agent listing");

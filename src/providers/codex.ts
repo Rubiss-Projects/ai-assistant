@@ -31,6 +31,17 @@ function configuredCodexModel(): string {
   return process.env.CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
 }
 
+function configuredCodexReasoningEffort(): ReasoningEffort {
+  const configured = process.env.CODEX_REASONING_EFFORT?.trim().toLowerCase();
+  if (!configured) return DEFAULT_REASONING_EFFORT;
+  if (!REASONING_EFFORTS.includes(configured as ReasoningEffort)) {
+    throw new Error(
+      `Invalid CODEX_REASONING_EFFORT: ${configured} (expected ${REASONING_EFFORTS.join(", ")})`,
+    );
+  }
+  return configured as ReasoningEffort;
+}
+
 type McpServerRecord = Record<string, unknown> & { tools?: string[] };
 type CachedCodexModel = {
   slug?: unknown;
@@ -79,7 +90,7 @@ export class CodexProvider implements Provider {
     return {
       model: this.modelOverrides.get(key) ?? configuredCodexModel(),
       modelReasoningEffort:
-        this.reasoningEffortOverrides.get(key) ?? DEFAULT_REASONING_EFFORT,
+        this.reasoningEffortOverrides.get(key) ?? configuredCodexReasoningEffort(),
       workingDirectory,
       skipGitRepoCheck: true,
       approvalPolicy: "never",
@@ -341,7 +352,7 @@ export class CodexProvider implements Provider {
   }
 
   async getCurrentReasoningEffort(key: string): Promise<string> {
-    return this.reasoningEffortOverrides.get(key) ?? DEFAULT_REASONING_EFFORT;
+    return this.reasoningEffortOverrides.get(key) ?? configuredCodexReasoningEffort();
   }
 
   async listAgents(): Promise<AgentInfo[]> {
