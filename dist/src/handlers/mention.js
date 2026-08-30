@@ -2,6 +2,7 @@ import { chunkForDiscord } from "../sessionManager.js";
 import { resolveMessageLinks } from "../utils/resolveMessageLinks.js";
 import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/downloadAttachments.js";
+import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 export async function handleMention(message, client, sessions, sessionKey, // defaults to message.author.id; pass channelId for thread sessions
 canIncludeContextAuthor = () => true) {
     // Strip all @mentions of the bot and trim
@@ -19,7 +20,8 @@ canIncludeContextAuthor = () => true) {
         const basePrompt = prompt || (message.reference?.messageId
             ? "Respond using the replied-to conversation context."
             : "See the attached file(s).");
-        const linkedPrompt = await resolveMessageLinks(basePrompt, client, message.author.id, contextAttachments);
+        const knowledgePrompt = await enrichWithDiscordKnowledge(message, basePrompt, client);
+        const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments);
         let enrichedPrompt = await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor, contextAttachments);
         const result = await downloadFileAttachments([
             ...message.attachments.values(),

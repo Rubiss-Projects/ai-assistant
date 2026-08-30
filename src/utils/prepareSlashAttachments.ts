@@ -1,12 +1,15 @@
 import type { Attachment, Client } from "discord.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "./downloadAttachments.js";
 import { resolveMessageLinks } from "./resolveMessageLinks.js";
+import { enrichWithDiscordKnowledge } from "./discordKnowledge.js";
+import type { ChatInputCommandInteraction } from "discord.js";
 
 export async function prepareSlashAttachments(
   prompt: string,
   client: Client,
   requestingUserId: string,
   directAttachment?: Attachment | null,
+  interaction?: ChatInputCommandInteraction,
 ): Promise<{
   prompt: string;
   attachments: Array<{ path: string; displayName?: string }>;
@@ -18,8 +21,11 @@ export async function prepareSlashAttachments(
     name: string;
     size?: number;
   }> = [];
+  const knowledgePrompt = interaction
+    ? await enrichWithDiscordKnowledge(interaction, prompt, client)
+    : prompt;
   const enrichedPrompt = await resolveMessageLinks(
-    prompt,
+    knowledgePrompt,
     client,
     requestingUserId,
     linkedAttachments,
