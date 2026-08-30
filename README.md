@@ -140,6 +140,7 @@ no restart required:
 
 - **Thread-based chat** — `/chat` spawns a dedicated Discord thread per conversation, each with its own isolated session context
 - **Free-form chat** in a designated channel — no `@mention` required
+- **Conversation-aware mentions** — mentions include recent channel conversation; replies center context around the referenced message
 - **Persistent session** per user/thread — history maintained across messages and bot restarts
 - **Full tool access** — the AI can read files, run shell commands, search the web, etc.
 - **User-scope skills** — Copilot automatically loads skills from `~/.agents/skills` at session start
