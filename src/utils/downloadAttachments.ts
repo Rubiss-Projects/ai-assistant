@@ -63,7 +63,8 @@ function isAcceptedFile(contentType: string | null, name: string): boolean {
 }
 
 export interface DownloadedAttachment {
-  filePath: string;
+  filePath?: string;
+  data?: Buffer;
   displayName: string;
   contentType: string | null;
   isImage: boolean;
@@ -75,19 +76,23 @@ export interface DownloadResult {
 }
 
 /**
- * Downloads file attachments from Discord CDN to temporary local files.
+ * Downloads file attachments from Discord CDN. Text-mode non-images stay in
+ * memory; images and native-mode files use temporary local files.
  * Accepts images (image/*), plain text (text/*), and common code/config file
  * extensions that Discord may classify as application/octet-stream.
  * Enforces per-file size and count limits, and a per-fetch timeout.
- * Returns the temp file paths and a cleanup function to delete them.
+ * Returns the prepared downloads and a cleanup function for any temp files.
  */
 export async function downloadFileAttachments(
   attachments: Iterable<{ url: string; contentType: string | null; name: string; size?: number }>
 ): Promise<DownloadResult> {
   const downloaded: DownloadedAttachment[] = [];
+  const seenUrls = new Set<string>();
   let count = 0;
 
   for (const attachment of attachments) {
+    if (seenUrls.has(attachment.url)) continue;
+    seenUrls.add(attachment.url);
     if (!isAcceptedFile(attachment.contentType, attachment.name)) continue;
     if (count >= MAX_FILE_COUNT) {
       console.warn(`[downloadAttachments] Skipping excess file (limit: ${MAX_FILE_COUNT})`);
@@ -130,15 +135,20 @@ export async function downloadFileAttachments(
 
       const imageExt = detectedImageExtension(buffer);
       const isImage = imageExt !== undefined;
-      const originalExt = attachment.name.match(/\.[^.]+$/)?.[0] ?? ".txt";
-      const tempPath = join(tmpdir(), `discord-file-${randomUUID()}${imageExt ?? originalExt}`);
-      await writeFile(tempPath, buffer);
-      downloaded.push({
-        filePath: tempPath,
-        displayName: attachment.name,
-        contentType: attachment.contentType,
-        isImage,
-      });
+      const textMode = (process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() === "text";
+      if (textMode && !isImage) {
+        downloaded.push({ data: buffer, displayName: attachment.name, contentType: attachment.contentType, isImage });
+      } else {
+        const originalExt = attachment.name.match(/\.[^.]+$/)?.[0] ?? ".txt";
+        const tempPath = join(tmpdir(), `discord-file-${randomUUID()}${imageExt ?? originalExt}`);
+        await writeFile(tempPath, buffer);
+        downloaded.push({
+          filePath: tempPath,
+          displayName: attachment.name,
+          contentType: attachment.contentType,
+          isImage,
+        });
+      }
       count++;
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -152,7 +162,7 @@ export async function downloadFileAttachments(
   return {
     attachments: downloaded,
     cleanup: async () => {
-      await Promise.all(downloaded.map((d) => unlink(d.filePath).catch(() => {})));
+      await Promise.all(downloaded.flatMap((d) => d.filePath ? [unlink(d.filePath).catch(() => {})] : []));
     },
   };
 }
@@ -184,7 +194,8 @@ export async function prepareDownloadedAttachments(
   const textBlocks: string[] = [];
   for (const attachment of attachments) {
     if (normalizedMode === "text" && !attachment.isImage) {
-      const value = await readFile(attachment.filePath, "utf8");
+      const value = attachment.data?.toString("utf8")
+        ?? await readFile(attachment.filePath!, "utf8");
       const truncated = value.length > MAX_INLINE_TEXT_CHARS
         ? `${value.slice(0, MAX_INLINE_TEXT_CHARS)}\n[truncated]`
         : value;
@@ -193,15 +204,17 @@ export async function prepareDownloadedAttachments(
       );
       // Remove the backing file before the provider gets control. This ensures
       // an agent with filesystem tools cannot discover or execute the upload.
-      try {
-        await unlink(attachment.filePath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT") throw error;
+      if (attachment.filePath) {
+        try {
+          await unlink(attachment.filePath);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT") throw error;
+        }
       }
     } else {
       fileAttachments.push({
-        path: attachment.filePath,
+        path: attachment.filePath!,
         displayName: attachment.displayName,
         kind: attachment.isImage ? "image" : "file",
       });
