@@ -107,8 +107,7 @@ export function createBot(sessions: SessionManager): Client {
     if (!interaction.isChatInputCommand()) return;
 
     const cmd = interaction as ChatInputCommandInteraction;
-    const subcommandCommands = new Set(["agent", "mode", "model", "provider", "reasoning"]);
-    const subcommand = subcommandCommands.has(cmd.commandName)
+    const subcommand = cmd.commandName in PUBLIC_SUBCOMMANDS
       ? cmd.options.getSubcommand(false)
       : null;
     const hasWorkspace = (cmd.commandName === "ask" || cmd.commandName === "chat")
