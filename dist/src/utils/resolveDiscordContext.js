@@ -35,7 +35,7 @@ function formatContextMessage(message, referencedMessageId) {
  * the referenced message; ordinary mention-triggered messages use the most
  * recent messages preceding the invocation.
  */
-export async function resolveDiscordContext(message, content, includeRecentContext = false, canIncludeAuthor = () => true) {
+export async function resolveDiscordContext(message, content, includeRecentContext = false, canIncludeAuthor = () => true, contextAttachments = []) {
     const referencedMessageId = message.reference?.messageId;
     if ((!referencedMessageId && !includeRecentContext) || !("messages" in message.channel)) {
         return content;
@@ -63,6 +63,9 @@ export async function resolveDiscordContext(message, content, includeRecentConte
         const allowedMessages = messages.filter((candidate) => canIncludeAuthor(candidate.author.id));
         if (allowedMessages.length === 0)
             return content;
+        for (const candidate of allowedMessages) {
+            contextAttachments.push(...candidate.attachments.values());
+        }
         const context = allowedMessages
             .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
             .map((candidate) => formatContextMessage(candidate, referencedMessageId ?? ""));

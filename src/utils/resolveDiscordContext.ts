@@ -41,7 +41,8 @@ export async function resolveDiscordContext(
   message: Message,
   content: string,
   includeRecentContext = false,
-  canIncludeAuthor: (authorId: string) => boolean = () => true
+  canIncludeAuthor: (authorId: string) => boolean = () => true,
+  contextAttachments: Array<{ url: string; contentType: string | null; name: string; size?: number }> = [],
 ): Promise<string> {
   const referencedMessageId = message.reference?.messageId;
   if ((!referencedMessageId && !includeRecentContext) || !("messages" in message.channel)) {
@@ -74,6 +75,10 @@ export async function resolveDiscordContext(
 
     const allowedMessages = messages.filter((candidate) => canIncludeAuthor(candidate.author.id));
     if (allowedMessages.length === 0) return content;
+
+    for (const candidate of allowedMessages) {
+      contextAttachments.push(...candidate.attachments.values());
+    }
 
     const context = allowedMessages
       .sort((a, b) => a.createdTimestamp - b.createdTimestamp)

@@ -37,7 +37,7 @@ function formatEmbeds(embeds) {
  *   When provided, guild channels are permission-checked against this user so
  *   a requester cannot exfiltrate content from channels they cannot see.
  */
-export async function resolveMessageLinks(content, client, requestingUserId) {
+export async function resolveMessageLinks(content, client, requestingUserId, contextAttachments = []) {
     const matches = [...content.matchAll(MESSAGE_URL_RE)];
     if (matches.length === 0)
         return content;
@@ -62,6 +62,7 @@ export async function resolveMessageLinks(content, client, requestingUserId) {
                 }
             }
             const msg = await channel.messages.fetch(messageId);
+            contextAttachments.push(...msg.attachments.values());
             const date = msg.createdAt.toISOString().split("T")[0];
             const author = msg.author.username;
             const channelName = "name" in channel ? channel.name : channelId;

@@ -81,6 +81,30 @@ test("mention context includes the messages immediately preceding the invocation
   assert.match(result, /\[\/Recent Discord conversation\]\n\nwhat do you think\?$/);
 });
 
+test("reply context collects attachments from surrounding messages", async () => {
+  const attachment = {
+    url: "https://cdn.discordapp.com/example.png",
+    contentType: "image/png",
+    name: "example.png",
+    size: 123,
+  };
+  const target = {
+    ...contextMessage("target", "see image", 1, "alice"),
+    attachments: new Map([["attachment", attachment]]),
+  };
+  const collected: typeof attachment[] = [];
+  const message = {
+    id: "invocation",
+    reference: { messageId: "target" },
+    channel: { messages: { fetch: async () => new Map([[target.id, target]]) } },
+    fetchReference: async () => target,
+  };
+
+  await resolveDiscordContext(message as never, "describe it", false, () => true, collected);
+
+  assert.deepEqual(collected, [attachment]);
+});
+
 test("guild context is not fetched without the requester's history permission", async () => {
   let fetched = false;
   const message = {

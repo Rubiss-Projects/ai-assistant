@@ -1,16 +1,17 @@
 import { chunkForDiscord } from "../sessionManager.js";
 import { resolveMessageLinks } from "../utils/resolveMessageLinks.js";
 import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
-import { downloadFileAttachments } from "../utils/downloadAttachments.js";
+import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/downloadAttachments.js";
 export async function handleMention(message, client, sessions, sessionKey, // defaults to message.author.id; pass channelId for thread sessions
 canIncludeContextAuthor = () => true) {
     // Strip all @mentions of the bot and trim
     const botMentionPattern = new RegExp(`<@!?${client.user.id}>`, "g");
     const prompt = message.content.replace(botMentionPattern, "").trim();
-    const { attachments: downloadedAttachments, cleanup } = await downloadFileAttachments(message.attachments.values());
+    const contextAttachments = [];
+    let cleanup = async () => { };
     let typingInterval;
     try {
-        if (!prompt && downloadedAttachments.length === 0 && !message.reference?.messageId) {
+        if (!prompt && message.attachments.size === 0 && !message.reference?.messageId) {
             await message.reply("👋 Hi! Mention me with a question or command. Use `/ask` for one-shot queries, `/chat` for persistent conversation, or `/reset` to clear your history.");
             return;
         }
@@ -18,9 +19,16 @@ canIncludeContextAuthor = () => true) {
         const basePrompt = prompt || (message.reference?.messageId
             ? "Respond using the replied-to conversation context."
             : "See the attached file(s).");
-        const linkedPrompt = await resolveMessageLinks(basePrompt, client, message.author.id);
-        const enrichedPrompt = await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor);
-        const attachmentPaths = downloadedAttachments.map((a) => ({ path: a.filePath, displayName: a.displayName }));
+        const linkedPrompt = await resolveMessageLinks(basePrompt, client, message.author.id, contextAttachments);
+        let enrichedPrompt = await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor, contextAttachments);
+        const result = await downloadFileAttachments([
+            ...message.attachments.values(),
+            ...contextAttachments,
+        ]);
+        cleanup = result.cleanup;
+        const prepared = await prepareDownloadedAttachments(result.attachments);
+        if (prepared.textContext)
+            enrichedPrompt = `${enrichedPrompt}\n\n${prepared.textContext}`;
         // Keep typing indicator alive every 8s (Discord clears it after ~10s)
         if ("sendTyping" in message.channel) {
             await message.channel.sendTyping();
@@ -30,7 +38,7 @@ canIncludeContextAuthor = () => true) {
                 }
             }, 8000);
         }
-        const response = await sessions.sendMessage(key, enrichedPrompt, attachmentPaths.length ? attachmentPaths : undefined);
+        const response = await sessions.sendMessage(key, enrichedPrompt, prepared.fileAttachments.length ? prepared.fileAttachments : undefined);
         const chunks = chunkForDiscord(response);
         await message.reply(chunks[0]);
         for (const chunk of chunks.slice(1)) {

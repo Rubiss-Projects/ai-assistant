@@ -31,7 +31,7 @@ function userIdSet(value: string | undefined): Set<string> {
 
 export function createAccessPolicy(env: NodeJS.ProcessEnv = process.env): {
   canMessage: (userId: string) => boolean;
-  canUseSlashCommands: (userId: string) => boolean;
+  canUseAdminCommands: (userId: string) => boolean;
 } {
   const allowedUsers = userIdSet(env.DISCORD_ALLOWED_USERS);
   const adminUsers = userIdSet(env.DISCORD_ADMIN_USERS);
@@ -40,9 +40,43 @@ export function createAccessPolicy(env: NodeJS.ProcessEnv = process.env): {
 
   return {
     canMessage,
-    canUseSlashCommands: (userId: string): boolean =>
+    canUseAdminCommands: (userId: string): boolean =>
       adminUsers.size > 0 ? adminUsers.has(userId) : canMessage(userId),
   };
+}
+
+export interface SlashCommandRequest {
+  commandName: string;
+  subcommand?: string | null;
+  hasWorkspace?: boolean;
+}
+
+const ADMIN_COMMANDS = new Set(["fleet", "leave", "mcp", "servers", "status", "workspace"]);
+const PUBLIC_COMMANDS = new Set(["compact", "history", "plan", "reset"]);
+const PUBLIC_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  agent: new Set(["current", "list"]),
+  mode: new Set(["get"]),
+  model: new Set(["current", "list"]),
+  provider: new Set(["current", "list"]),
+  reasoning: new Set(["current", "list"]),
+};
+
+/** Unknown commands and subcommands are administrative by default. */
+export function slashCommandRequiresAdmin(request: SlashCommandRequest): boolean {
+  const { commandName, subcommand, hasWorkspace = false } = request;
+  if (ADMIN_COMMANDS.has(commandName)) return true;
+  if (PUBLIC_COMMANDS.has(commandName)) return false;
+  if (commandName === "ask" || commandName === "chat") return hasWorkspace;
+  return !subcommand || !PUBLIC_SUBCOMMANDS[commandName]?.has(subcommand);
+}
+
+export function canInvokeSlashCommand(
+  access: ReturnType<typeof createAccessPolicy>,
+  userId: string,
+  request: SlashCommandRequest,
+): boolean {
+  if (access.canUseAdminCommands(userId)) return true;
+  return !slashCommandRequiresAdmin(request) && access.canMessage(userId);
 }
 
 export function createBot(sessions: SessionManager): Client {
@@ -71,12 +105,23 @@ export function createBot(sessions: SessionManager): Client {
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    if (!access.canUseSlashCommands(interaction.user.id)) {
-      await interaction.reply({ content: "⛔ You are not authorized to use slash commands.", ephemeral: true });
+    const cmd = interaction as ChatInputCommandInteraction;
+    const subcommandCommands = new Set(["agent", "mode", "model", "provider", "reasoning"]);
+    const subcommand = subcommandCommands.has(cmd.commandName)
+      ? cmd.options.getSubcommand(false)
+      : null;
+    const hasWorkspace = (cmd.commandName === "ask" || cmd.commandName === "chat")
+      && Boolean(cmd.options.getString("workspace", false));
+    const request = { commandName: cmd.commandName, subcommand, hasWorkspace };
+
+    if (!canInvokeSlashCommand(access, interaction.user.id, request)) {
+      const content = slashCommandRequiresAdmin(request)
+        ? "⛔ This action is restricted to bot administrators."
+        : "⛔ You are not authorized to use this bot.";
+      await interaction.reply({ content, ephemeral: true });
       return;
     }
 
-    const cmd = interaction as ChatInputCommandInteraction;
     switch (cmd.commandName) {
       case "ask":
         await handleAsk(cmd, sessions);

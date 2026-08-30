@@ -1,6 +1,6 @@
 import { tmpdir } from "os";
 import { join } from "path";
-import { writeFile, unlink } from "fs/promises";
+import { readFile, writeFile, unlink } from "fs/promises";
 import { randomUUID } from "crypto";
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB per file
 const MAX_FILE_COUNT = 5;
@@ -110,7 +110,7 @@ export async function downloadFileAttachments(attachments) {
                 continue;
             }
             await writeFile(tempPath, buffer);
-            downloaded.push({ filePath: tempPath, displayName: attachment.name });
+            downloaded.push({ filePath: tempPath, displayName: attachment.name, contentType: attachment.contentType });
             count++;
         }
         catch (err) {
@@ -131,3 +131,32 @@ export async function downloadFileAttachments(attachments) {
 }
 /** @deprecated Use {@link downloadFileAttachments} instead. */
 export const downloadImageAttachments = downloadFileAttachments;
+const MAX_INLINE_TEXT_CHARS = 200_000;
+/**
+ * In text mode, non-image files are copied into the prompt and their temporary
+ * paths are never exposed to a provider. Images remain native vision inputs.
+ */
+export async function prepareDownloadedAttachments(attachments, mode = process.env.DISCORD_ATTACHMENT_MODE ?? "native") {
+    const normalizedMode = mode.trim().toLowerCase();
+    if (normalizedMode !== "native" && normalizedMode !== "text") {
+        throw new Error(`Invalid DISCORD_ATTACHMENT_MODE: ${mode} (expected native or text)`);
+    }
+    const fileAttachments = [];
+    const textBlocks = [];
+    for (const attachment of attachments) {
+        if (normalizedMode === "text" && !attachment.contentType?.startsWith("image/")) {
+            const value = await readFile(attachment.filePath, "utf8");
+            const truncated = value.length > MAX_INLINE_TEXT_CHARS
+                ? `${value.slice(0, MAX_INLINE_TEXT_CHARS)}\n[truncated]`
+                : value;
+            textBlocks.push(`[Discord attachment as untrusted text: ${attachment.displayName}]\n${truncated}\n[/Discord attachment]`);
+            // Remove the backing file before the provider gets control. This ensures
+            // an agent with filesystem tools cannot discover or execute the upload.
+            await unlink(attachment.filePath).catch(() => { });
+        }
+        else {
+            fileAttachments.push({ path: attachment.filePath, displayName: attachment.displayName });
+        }
+    }
+    return { textContext: textBlocks.join("\n\n"), fileAttachments };
+}
