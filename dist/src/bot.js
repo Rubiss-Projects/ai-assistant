@@ -89,10 +89,10 @@ export function createBot(sessions) {
         }
         switch (cmd.commandName) {
             case "ask":
-                await handleAsk(cmd, sessions);
+                await handleAsk(cmd, sessions, access.canMessage);
                 break;
             case "chat":
-                await handleChat(cmd, sessions);
+                await handleChat(cmd, sessions, access.canMessage);
                 break;
             case "reset":
                 await handleReset(cmd, sessions);

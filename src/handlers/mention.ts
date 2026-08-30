@@ -32,7 +32,7 @@ export async function handleMention(
     const basePrompt = prompt || (message.reference?.messageId
       ? "Respond using the replied-to conversation context."
       : "See the attached file(s).");
-    const knowledgePrompt = await enrichWithDiscordKnowledge(message, basePrompt, client);
+    const knowledgePrompt = await enrichWithDiscordKnowledge(message, basePrompt, client, canIncludeContextAuthor);
     const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments);
     let enrichedPrompt = await resolveDiscordContext(
       message,
