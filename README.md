@@ -217,7 +217,8 @@ DISCORD_APP_ID=             # Application ID from Discord Developer Portal → G
 DISCORD_GUILD_ID=           # Your Discord server ID (for slash command registration)
 DISCORD_FREE_CHANNELS=      # Optional: comma-separated channel IDs where bot replies without @mention
 DISCORD_ALLOWED_USERS=      # Optional: comma-separated user IDs allowed to use the bot
-DISCORD_ADMIN_USERS=        # Optional: user IDs allowed to use slash commands
+DISCORD_ADMIN_USERS=        # Optional: user IDs allowed to use administrative actions
+DISCORD_ATTACHMENT_MODE=native # native | text (recommended for shared bots)
 
 # Provider-specific (see .env.example for the full list)
 # OPENAI_API_KEY=sk-...                  # for codex
@@ -227,6 +228,44 @@ DISCORD_ADMIN_USERS=        # Optional: user IDs allowed to use slash commands
 ```
 
 **Getting IDs**: Enable Developer Mode in Discord (Settings → Advanced → Developer Mode), then right-click any server/channel/user to copy its ID.
+
+### Discord access and permissions
+
+These settings work identically in Docker and native installs. With both user
+lists empty, everybody in a server containing the bot can interact with it.
+
+- `DISCORD_ALLOWED_USERS` controls normal messages, mentions, and public slash
+  actions. Set it to comma-separated Discord user IDs to make the bot private.
+- `DISCORD_ADMIN_USERS` controls administrative slash actions. Admins can also
+  use every public action. When this setting is empty, admin access falls back
+  to `DISCORD_ALLOWED_USERS`; when both are empty, everybody has admin access.
+- `DISCORD_FREE_CHANNELS` lists channels where an allowed user can talk to the
+  bot without mentioning it. In every other visible channel, the bot listens
+  but responds only when its account is explicitly `@mentioned`. Bot-owned chat
+  threads respond without a mention.
+- Mentions and free-channel responses include nearby channel conversation for
+  context. A reply that mentions the bot also includes the replied-to message
+  and nearby messages. Images and supported text/code attachments on the direct,
+  replied-to, nearby, or Discord-linked messages are included too. Sessions
+  remain isolated by channel/thread and persist across container restarts in
+  the `assistant-data` volume.
+- `DISCORD_ATTACHMENT_MODE=native` passes accepted attachments to the provider
+  as temporary files. Set `DISCORD_ATTACHMENT_MODE=text` for a shared bot: all
+  non-image attachments are delimited as untrusted text in the prompt and no
+  path to an attached code/config file is exposed to the agent. The temporary
+  upload is deleted before the provider runs, preventing the agent from finding
+  or executing that file. Images remain native vision inputs in both modes.
+
+Public slash actions are `/ask`, `/chat`, `/reset`, `/history`, `/compact`, all
+`/plan` actions, and the read-only `list`/`current`/`get` actions under `/model`,
+`/reasoning`, `/provider`, `/agent`, and `/mode`. Supplying the optional
+`workspace` argument to `/ask` or `/chat` makes that invocation administrative.
+
+Administrative actions are `/model set`, `/reasoning set`, `/provider set`,
+`/agent select`, `/agent deselect`, `/mode set`, and every action under
+`/workspace` and `/mcp`, plus `/servers`, `/leave`, `/status`, and `/fleet`.
+Unknown commands and subcommands default to admin-only so newly added operations
+are not accidentally exposed.
 
 #### 4. Invite the bot to your server
 
@@ -356,7 +395,7 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 
 - The bot token and all credentials live only in `.env`, which is git-ignored and never committed.
 - Use `DISCORD_ALLOWED_USERS` to restrict the bot to your own Discord user ID — especially important since the bot has full tool access to your machine.
-- Use `DISCORD_ADMIN_USERS` to reserve slash commands for specific user IDs while allowing everyone selected by `DISCORD_ALLOWED_USERS` to chat normally. If unset, slash commands use the normal allowlist.
+- Use `DISCORD_ADMIN_USERS` to reserve configuration, workspace, MCP, and server-management actions for trusted users while allowing everyone selected by `DISCORD_ALLOWED_USERS` to chat and use public slash actions. See **Discord access and permissions** above for the complete command split and fallback rules.
 - Copilot uses `approveAll` permissions — it will execute any tool Copilot requests without prompting. Only expose it to users you trust completely.
 - For a shared Discord bot, prefer the Docker deployment and set `DISCORD_ALLOWED_USERS` unless intentionally allowing the whole server. The container protects host files, but users can still consume credentials, model quota, network access, and the container's persistent data.
 - Thread sessions are isolated by thread ID, so different `/chat` conversations don't share context.

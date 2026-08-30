@@ -47,7 +47,8 @@ function formatEmbeds(embeds: Embed[]): string {
 export async function resolveMessageLinks(
   content: string,
   client: Client,
-  requestingUserId?: string
+  requestingUserId?: string,
+  contextAttachments: Array<{ url: string; contentType: string | null; name: string; size?: number }> = [],
 ): Promise<string> {
   const matches = [...content.matchAll(MESSAGE_URL_RE)];
   if (matches.length === 0) return content;
@@ -78,6 +79,7 @@ export async function resolveMessageLinks(
       }
 
       const msg = await (channel as ReadableChannel).messages.fetch(messageId);
+      contextAttachments.push(...msg.attachments.values());
 
       const date = msg.createdAt.toISOString().split("T")[0];
       const author = msg.author.username;

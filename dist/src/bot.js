@@ -26,8 +26,33 @@ export function createAccessPolicy(env = process.env) {
     const canMessage = (userId) => allowedUsers.size === 0 || allowedUsers.has(userId);
     return {
         canMessage,
-        canUseSlashCommands: (userId) => adminUsers.size > 0 ? adminUsers.has(userId) : canMessage(userId),
+        canUseAdminCommands: (userId) => adminUsers.size > 0 ? adminUsers.has(userId) : canMessage(userId),
     };
+}
+const ADMIN_COMMANDS = new Set(["fleet", "leave", "mcp", "servers", "status", "workspace"]);
+const PUBLIC_COMMANDS = new Set(["compact", "history", "plan", "reset"]);
+const PUBLIC_SUBCOMMANDS = {
+    agent: new Set(["current", "list"]),
+    mode: new Set(["get"]),
+    model: new Set(["current", "list"]),
+    provider: new Set(["current", "list"]),
+    reasoning: new Set(["current", "list"]),
+};
+/** Unknown commands and subcommands are administrative by default. */
+export function slashCommandRequiresAdmin(request) {
+    const { commandName, subcommand, hasWorkspace = false } = request;
+    if (ADMIN_COMMANDS.has(commandName))
+        return true;
+    if (PUBLIC_COMMANDS.has(commandName))
+        return false;
+    if (commandName === "ask" || commandName === "chat")
+        return hasWorkspace;
+    return !subcommand || !PUBLIC_SUBCOMMANDS[commandName]?.has(subcommand);
+}
+export function canInvokeSlashCommand(access, userId, request) {
+    if (access.canUseAdminCommands(userId))
+        return true;
+    return !slashCommandRequiresAdmin(request) && access.canMessage(userId);
 }
 export function createBot(sessions) {
     // Computed here so dotenv.config() has already run in index.ts.
@@ -49,11 +74,21 @@ export function createBot(sessions) {
     client.on(Events.InteractionCreate, async (interaction) => {
         if (!interaction.isChatInputCommand())
             return;
-        if (!access.canUseSlashCommands(interaction.user.id)) {
-            await interaction.reply({ content: "⛔ You are not authorized to use slash commands.", ephemeral: true });
+        const cmd = interaction;
+        const subcommandCommands = new Set(["agent", "mode", "model", "provider", "reasoning"]);
+        const subcommand = subcommandCommands.has(cmd.commandName)
+            ? cmd.options.getSubcommand(false)
+            : null;
+        const hasWorkspace = (cmd.commandName === "ask" || cmd.commandName === "chat")
+            && Boolean(cmd.options.getString("workspace", false));
+        const request = { commandName: cmd.commandName, subcommand, hasWorkspace };
+        if (!canInvokeSlashCommand(access, interaction.user.id, request)) {
+            const content = slashCommandRequiresAdmin(request)
+                ? "⛔ This action is restricted to bot administrators."
+                : "⛔ You are not authorized to use this bot.";
+            await interaction.reply({ content, ephemeral: true });
             return;
         }
-        const cmd = interaction;
         switch (cmd.commandName) {
             case "ask":
                 await handleAsk(cmd, sessions);
