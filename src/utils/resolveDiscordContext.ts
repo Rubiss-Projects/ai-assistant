@@ -1,4 +1,4 @@
-import type { APIEmbed, Message } from "discord.js";
+import { PermissionFlagsBits, type APIEmbed, type GuildChannel, type Message } from "discord.js";
 
 const REPLY_CONTEXT_LIMIT = 7;
 const RECENT_CONTEXT_LIMIT = 6;
@@ -45,6 +45,13 @@ export async function resolveDiscordContext(
   const referencedMessageId = message.reference?.messageId;
   if ((!referencedMessageId && !includeRecentContext) || !("messages" in message.channel)) {
     return content;
+  }
+
+  if ("permissionsFor" in message.channel) {
+    const permissions = (message.channel as GuildChannel).permissionsFor(message.author.id);
+    if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
+      return content;
+    }
   }
 
   try {

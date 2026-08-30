@@ -81,6 +81,30 @@ test("mention context includes the messages immediately preceding the invocation
   assert.match(result, /\[\/Recent Discord conversation\]\n\nwhat do you think\?$/);
 });
 
+test("guild context is not fetched without the requester's history permission", async () => {
+  let fetched = false;
+  const message = {
+    id: "invocation",
+    author: { id: "requester" },
+    reference: null,
+    channel: {
+      permissionsFor: (userId: string) => {
+        assert.equal(userId, "requester");
+        return { has: () => false };
+      },
+      messages: {
+        fetch: async () => {
+          fetched = true;
+          return new Map();
+        },
+      },
+    },
+  };
+
+  assert.equal(await resolveDiscordContext(message as never, "question", true), "question");
+  assert.equal(fetched, false);
+});
+
 test("reply fetch failures are represented without dropping the prompt", async () => {
   const message = {
     id: "invocation",
