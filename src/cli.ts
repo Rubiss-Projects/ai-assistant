@@ -103,6 +103,13 @@ async function setup(): Promise<void> {
     existing,
     false
   );
+  const adminUsers = await promptVar(
+    rl,
+    "Admin user IDs (comma-separated, leave empty to use allowed users)",
+    "DISCORD_ADMIN_USERS",
+    existing,
+    false
+  );
 
   if (!token || !appId || !guildId) {
     console.error("\n❌ DISCORD_TOKEN, DISCORD_APP_ID, and DISCORD_GUILD_ID are required.");
@@ -117,6 +124,7 @@ async function setup(): Promise<void> {
     `PROVIDER=${provider}`,
     freeChannels ? `DISCORD_FREE_CHANNELS=${freeChannels}` : "# DISCORD_FREE_CHANNELS=",
     allowedUsers ? `DISCORD_ALLOWED_USERS=${allowedUsers}` : "# DISCORD_ALLOWED_USERS=",
+    adminUsers ? `DISCORD_ADMIN_USERS=${adminUsers}` : "# DISCORD_ADMIN_USERS=",
   ];
 
   if (provider === "codex") {

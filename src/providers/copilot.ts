@@ -77,7 +77,9 @@ export class CopilotProvider implements Provider {
   private reasoningEffortOverrides: Map<string, ReasoningEffort> = new Map();
 
   constructor() {
-    this.client = new CopilotClient();
+    const gitHubToken =
+      process.env.COPILOT_GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
+    this.client = new CopilotClient(gitHubToken ? { gitHubToken } : undefined);
   }
 
   private async getOrCreateSession(key: string): Promise<CopilotSession> {

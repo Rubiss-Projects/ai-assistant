@@ -20,6 +20,75 @@ ai-assistant start
 ai-assistant install-service
 ```
 
+### Sandboxed Docker deployment
+
+Each release also publishes `ghcr.io/rubiss-projects/ai-assistant:<version>` for
+running the bot without giving it access to the host filesystem. Copy
+`.env.example` to `.env`, configure Discord and a provider, then run:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose logs -f assistant
+```
+
+On each `compose up`, the container idempotently registers the current slash
+command set before starting the bot. Set `REGISTER_COMMANDS_ON_START=false` in
+`.env` to disable that behavior.
+
+Compose passes every entry in `.env` into the bot, so no corresponding edit to
+`compose.yaml` is needed. Provider and model defaults can be selected directly:
+
+```env
+PROVIDER=codex             # copilot | codex | opencode
+COPILOT_MODEL=claude-haiku-4.5
+CODEX_MODEL=gpt-5.6-sol
+OPENCODE_MODEL=openrouter/anthropic/claude-sonnet-4.5
+```
+
+The full configuration template is `.env.example`; copy it to `.env` and
+uncomment or fill only the settings you need. Provider API keys, timeout
+settings, Discord access lists, MCP inputs, custom endpoints, and container
+startup behavior all use the same file.
+
+The included Compose configuration runs as an unprivileged user, drops all
+Linux capabilities, prevents privilege escalation, makes the image filesystem
+read-only, and mounts only a Docker-managed volume at `/data`. Agent-created
+files, session state, provider credentials, and downloaded attachments remain
+inside that volume. Outbound networking stays enabled so Discord, model APIs,
+web search, package registries, and network-based tools continue to work.
+
+Do not add host bind mounts, the Docker socket, `--privileged`, or host network
+mode when the bot is exposed to other people. Any of those can weaken or defeat
+the filesystem boundary. The Docker daemon and kernel are still part of the
+trusted computing base; keep Docker and the host patched.
+
+The image includes all three backends and their CLIs. API-key/token auth is the
+best fit for an unattended container:
+
+```env
+# Copilot (account must have Copilot access)
+COPILOT_GITHUB_TOKEN=github_pat_...
+
+# Codex
+OPENAI_API_KEY=sk-...
+
+# OpenCode (use the environment variable expected by the selected provider)
+ANTHROPIC_API_KEY=...
+```
+
+CLI logins are also available and persist in the `assistant-data` volume:
+
+```bash
+docker compose run --rm assistant copilot login
+docker compose run --rm assistant codex login
+docker compose run --rm assistant opencode auth login
+```
+
+The bundled executables and writable CLI configuration live inside the
+container boundary; no host CLI login is inherited unless you deliberately
+mount host credential files.
+
 Update to latest:
 ```bash
 npm install -g --install-links github:Rubiss-Projects/ai-assistant
@@ -147,6 +216,7 @@ DISCORD_APP_ID=             # Application ID from Discord Developer Portal → G
 DISCORD_GUILD_ID=           # Your Discord server ID (for slash command registration)
 DISCORD_FREE_CHANNELS=      # Optional: comma-separated channel IDs where bot replies without @mention
 DISCORD_ALLOWED_USERS=      # Optional: comma-separated user IDs allowed to use the bot
+DISCORD_ADMIN_USERS=        # Optional: user IDs allowed to use slash commands
 
 # Provider-specific (see .env.example for the full list)
 # OPENAI_API_KEY=sk-...                  # for codex
@@ -203,7 +273,7 @@ The Discord configuration is identical across all versions, so your existing
 settings transfer as-is:
 
 - `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`
-- `DISCORD_FREE_CHANNELS`, `DISCORD_ALLOWED_USERS`
+- `DISCORD_FREE_CHANNELS`, `DISCORD_ALLOWED_USERS`, `DISCORD_ADMIN_USERS`
 - `MCP_CONFIG_PATH`, `MCP_INPUT_*`
 
 The AI configuration changes as follows:
@@ -285,7 +355,9 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 
 - The bot token and all credentials live only in `.env`, which is git-ignored and never committed.
 - Use `DISCORD_ALLOWED_USERS` to restrict the bot to your own Discord user ID — especially important since the bot has full tool access to your machine.
+- Use `DISCORD_ADMIN_USERS` to reserve slash commands for specific user IDs while allowing everyone selected by `DISCORD_ALLOWED_USERS` to chat normally. If unset, slash commands use the normal allowlist.
 - Copilot uses `approveAll` permissions — it will execute any tool Copilot requests without prompting. Only expose it to users you trust completely.
+- For a shared Discord bot, prefer the Docker deployment and set `DISCORD_ALLOWED_USERS` unless intentionally allowing the whole server. The container protects host files, but users can still consume credentials, model quota, network access, and the container's persistent data.
 - Thread sessions are isolated by thread ID, so different `/chat` conversations don't share context.
 
 ## Uninstall

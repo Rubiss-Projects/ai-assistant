@@ -17,11 +17,21 @@ import { handlePlan } from "./handlers/slash/plan.js";
 import { handleWorkspace } from "./handlers/slash/workspace.js";
 import { handleMcp } from "./handlers/slash/mcp.js";
 import { handleMention } from "./handlers/mention.js";
-// If DISCORD_ALLOWED_USERS is set, only these Discord user IDs can use the bot.
-// NOTE: computed inside createBot() so dotenv.config() has already run in index.ts.
+function userIdSet(value) {
+    return new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean));
+}
+export function createAccessPolicy(env = process.env) {
+    const allowedUsers = userIdSet(env.DISCORD_ALLOWED_USERS);
+    const adminUsers = userIdSet(env.DISCORD_ADMIN_USERS);
+    const canMessage = (userId) => allowedUsers.size === 0 || allowedUsers.has(userId);
+    return {
+        canMessage,
+        canUseSlashCommands: (userId) => adminUsers.size > 0 ? adminUsers.has(userId) : canMessage(userId),
+    };
+}
 export function createBot(sessions) {
-    const allowedUsers = new Set((process.env.DISCORD_ALLOWED_USERS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
-    const isAllowed = (userId) => allowedUsers.size === 0 || allowedUsers.has(userId);
+    // Computed here so dotenv.config() has already run in index.ts.
+    const access = createAccessPolicy();
     // Channel ID(s) where the bot responds to every message without needing a mention
     const freeChannels = new Set((process.env.DISCORD_FREE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
     const client = new Client({
@@ -39,8 +49,8 @@ export function createBot(sessions) {
     client.on(Events.InteractionCreate, async (interaction) => {
         if (!interaction.isChatInputCommand())
             return;
-        if (!isAllowed(interaction.user.id)) {
-            await interaction.reply({ content: "⛔ You are not authorized to use this bot.", ephemeral: true });
+        if (!access.canUseSlashCommands(interaction.user.id)) {
+            await interaction.reply({ content: "⛔ You are not authorized to use slash commands.", ephemeral: true });
             return;
         }
         const cmd = interaction;
@@ -105,7 +115,7 @@ export function createBot(sessions) {
             return;
         if (!client.user)
             return;
-        if (!isAllowed(message.author.id))
+        if (!access.canMessage(message.author.id))
             return;
         // Bot-owned threads: respond to every message, session keyed by thread ID
         if (message.channel.isThread() && message.channel.ownerId === client.user.id) {
