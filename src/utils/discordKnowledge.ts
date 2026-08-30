@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import {
   ChannelType,
   PermissionFlagsBits,
+  ThreadChannel,
   type ChatInputCommandInteraction,
   type Client,
   type Guild,
@@ -46,7 +47,7 @@ export function classifyMemoryIntent(prompt: string): MemoryIntent {
   if (/\bremember\s+(?:what|where|when|who|why|how|whether|if)\b/i.test(prompt)) return null;
   if (
     /^\s*(?:(?:hey|okay|ok)\s+)?(?:please\s+)?(?:remember|save|store)\b/i.test(prompt)
-    || /\b(?:can|could|would|will) you (?:please\s+)?(?:remember|save|store)\b(?!\s+(?:what|where|when|who|why|how|whether|if)\b)/i.test(prompt)
+    || /\b(?:can|could|would|will) you (?:please\s+)?(?:remember|save|store)\s+(?:that|this)\b/i.test(prompt)
     || /\bkeep (?:this|that)\b/i.test(prompt)
   ) return "save";
   if (/\b(forget|delete|remove)\b.*\b(memory|remember|agreement|contract|fact|that)\b/i.test(prompt)) {
@@ -68,7 +69,13 @@ function canRead(channel: GuildBasedChannel, userId: string): boolean {
 async function memoryIsVisible(memory: DiscordMemory, client: Client, userId: string): Promise<boolean> {
   try {
     const channel = await client.channels.fetch(memory.channelId);
-    return Boolean(channel && !channel.isDMBased() && "permissionsFor" in channel && canRead(channel, userId));
+    if (!channel || channel.isDMBased() || !("permissionsFor" in channel) || !canRead(channel, userId)) return false;
+    if (channel.isThread() && channel.type === ChannelType.PrivateThread) {
+      const permissions = channel.permissionsFor(userId);
+      if (permissions?.has(PermissionFlagsBits.ManageThreads)) return true;
+      return Boolean(await (channel as ThreadChannel).members.fetch(userId).catch(() => null));
+    }
+    return true;
   } catch {
     return false;
   }
@@ -98,7 +105,9 @@ function memoryText(prompt: string): string {
 async function sourceText(invocation: Invocation, prompt: string, client: Client, requesterId: string): Promise<{ content: string; sourceUrl?: string; channelId?: string }> {
   const explicit = memoryText(prompt);
   const linked = prompt.match(MESSAGE_URL_RE);
-  const isDeictic = !explicit || /^(?:this|that|it)?\s*(?:https?:\/\/\S+)?[.!?]*$/i.test(explicit);
+  const isDeictic = !explicit
+    || /\b(?:remember|save|store|keep|don['’]?t forget)\s+(?:this|that|it)(?:\s+(?:for later|in memory|please))*[.!?]*$/i.test(prompt)
+    || /^(?:this|that|it)?\s*(?:https?:\/\/\S+)?[.!?]*$/i.test(explicit);
   if (!isDeictic) return { content: explicit };
 
   if ("reference" in invocation && invocation.reference?.messageId) {
@@ -122,7 +131,9 @@ async function sourceText(invocation: Invocation, prompt: string, client: Client
 async function searchableChannels(invocation: Invocation, prompt: string, requesterId: string): Promise<TextBasedChannel[]> {
   const current = invocation.channel;
   const guild = invocation.guild;
-  if (!current || !guild || !/\b(server|all channels|every channel|across)\b/i.test(prompt)) {
+  const explicitlyCurrent = /\b(?:this|current) channel\b/i.test(prompt);
+  const serverWide = /\b(?:(?:across|throughout) (?:the )?server|(?:all|every) channels?|whole server|server-wide)\b/i.test(prompt);
+  if (!current || !guild || explicitlyCurrent || !serverWide) {
     return current && "messages" in current ? [current] : [];
   }
   await guild.channels.fetch();
@@ -135,7 +146,7 @@ async function searchableChannels(invocation: Invocation, prompt: string, reques
     ));
 }
 
-async function searchChannel(channel: TextBasedChannel, queryTerms: readonly string[]): Promise<Message[]> {
+async function searchChannel(channel: TextBasedChannel, queryTerms: readonly string[], excludeMessageId?: string): Promise<Message[]> {
   const matches: Message[] = [];
   let before: string | undefined;
   let remaining = historyLimit();
@@ -143,7 +154,7 @@ async function searchChannel(channel: TextBasedChannel, queryTerms: readonly str
     const batch = await channel.messages.fetch({ before, limit: Math.min(100, remaining) });
     if (batch.size === 0) break;
     for (const message of batch.values()) {
-      if (!message.author.bot && score(message.content, queryTerms) > 0) matches.push(message);
+      if (message.id !== excludeMessageId && !message.author.bot && score(message.content, queryTerms) > 0) matches.push(message);
     }
     before = batch.last()?.id;
     remaining -= batch.size;
@@ -189,10 +200,11 @@ export async function enrichWithDiscordKnowledge(invocation: Invocation, prompt:
   if (isHistoryIntent(prompt)) {
     const queryTerms = terms(prompt);
     const channels = await searchableChannels(invocation, prompt, requester);
+    const invokingMessageId = "author" in invocation ? invocation.id : undefined;
     const channelMatches: Message[] = [];
     for (const channel of channels) {
       try {
-        channelMatches.push(...await searchChannel(channel, queryTerms));
+        channelMatches.push(...await searchChannel(channel, queryTerms, invokingMessageId));
       } catch (error) {
         console.warn(`[discordKnowledge] Could not search channel ${channel.id}:`, error);
       }

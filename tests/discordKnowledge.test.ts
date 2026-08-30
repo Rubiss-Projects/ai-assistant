@@ -14,6 +14,8 @@ test("does not turn recall questions into memory writes", () => {
   assert.equal(classifyMemoryIntent("Do you remember the cheese contract?"), null);
   assert.equal(classifyMemoryIntent("Can you remember what we decided?"), null);
   assert.equal(classifyMemoryIntent("Could you remember where the meeting is?"), null);
+  assert.equal(classifyMemoryIntent("Can you remember anything about the beach plans?"), null);
+  assert.equal(classifyMemoryIntent("Can you remember the beach plans?"), null);
 });
 
 test("classifies explicit deletion separately from negated forget", () => {
