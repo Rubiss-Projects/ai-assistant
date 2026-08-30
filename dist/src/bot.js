@@ -119,14 +119,14 @@ export function createBot(sessions) {
             return;
         // Bot-owned threads: respond to every message, session keyed by thread ID
         if (message.channel.isThread() && message.channel.ownerId === client.user.id) {
-            await handleMention(message, client, sessions, message.channelId);
+            await handleMention(message, client, sessions, message.channelId, access.canMessage);
             return;
         }
         const isMentioned = message.mentions.has(client.user.id);
         const isFreeChannel = freeChannels.has(message.channelId);
         if (!isMentioned && !isFreeChannel)
             return;
-        await handleMention(message, client, sessions);
+        await handleMention(message, client, sessions, undefined, access.canMessage);
     });
     return client;
 }

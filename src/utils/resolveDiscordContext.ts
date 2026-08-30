@@ -40,7 +40,8 @@ function formatContextMessage(message: Message, referencedMessageId: string): st
 export async function resolveDiscordContext(
   message: Message,
   content: string,
-  includeRecentContext = false
+  includeRecentContext = false,
+  canIncludeAuthor: (authorId: string) => boolean = () => true
 ): Promise<string> {
   const referencedMessageId = message.reference?.messageId;
   if ((!referencedMessageId && !includeRecentContext) || !("messages" in message.channel)) {
@@ -71,9 +72,10 @@ export async function resolveDiscordContext(
       messages.push(await message.fetchReference());
     }
 
-    if (messages.length === 0) return content;
+    const allowedMessages = messages.filter((candidate) => canIncludeAuthor(candidate.author.id));
+    if (allowedMessages.length === 0) return content;
 
-    const context = messages
+    const context = allowedMessages
       .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
       .map((candidate) => formatContextMessage(candidate, referencedMessageId ?? ""));
 

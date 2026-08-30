@@ -141,7 +141,7 @@ export function createBot(sessions: SessionManager): Client {
 
     // Bot-owned threads: respond to every message, session keyed by thread ID
     if (message.channel.isThread() && message.channel.ownerId === client.user.id) {
-      await handleMention(message, client, sessions, message.channelId);
+      await handleMention(message, client, sessions, message.channelId, access.canMessage);
       return;
     }
 
@@ -150,7 +150,7 @@ export function createBot(sessions: SessionManager): Client {
 
     if (!isMentioned && !isFreeChannel) return;
 
-    await handleMention(message, client, sessions);
+    await handleMention(message, client, sessions, undefined, access.canMessage);
   });
 
   return client;
