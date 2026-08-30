@@ -117,7 +117,9 @@ export const commands = [
               { name: "Low", value: "low" },
               { name: "Medium", value: "medium" },
               { name: "High", value: "high" },
-              { name: "X-High", value: "xhigh" }
+              { name: "X-High", value: "xhigh" },
+              { name: "Max", value: "max" },
+              { name: "Ultra", value: "ultra" }
             )
         )
     )

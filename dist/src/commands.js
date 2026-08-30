@@ -77,7 +77,7 @@ export const commands = [
         .setName("effort")
         .setDescription("Reasoning effort level")
         .setRequired(true)
-        .addChoices({ name: "Minimal", value: "minimal" }, { name: "Low", value: "low" }, { name: "Medium", value: "medium" }, { name: "High", value: "high" }, { name: "X-High", value: "xhigh" })))
+        .addChoices({ name: "Minimal", value: "minimal" }, { name: "Low", value: "low" }, { name: "Medium", value: "medium" }, { name: "High", value: "high" }, { name: "X-High", value: "xhigh" }, { name: "Max", value: "max" }, { name: "Ultra", value: "ultra" })))
         .addSubcommand((sub) => sub.setName("current").setDescription("Show the current reasoning effort")),
     new SlashCommandBuilder()
         .setName("provider")
