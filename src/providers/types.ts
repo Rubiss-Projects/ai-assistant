@@ -125,6 +125,6 @@ export interface Provider {
 }
 
 /** Canonical list of reasoning-effort levels shared across providers that support it. */
-export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "low";

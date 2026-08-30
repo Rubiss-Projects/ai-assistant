@@ -43,6 +43,7 @@ Compose passes every entry in `.env` into the bot, so no corresponding edit to
 PROVIDER=codex             # copilot | codex | opencode
 COPILOT_MODEL=claude-haiku-4.5
 CODEX_MODEL=gpt-5.6-sol
+CODEX_REASONING_EFFORT=low # minimal | low | medium | high | xhigh | max | ultra
 OPENCODE_MODEL=openrouter/anthropic/claude-sonnet-4.5
 ```
 

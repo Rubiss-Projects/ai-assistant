@@ -9,5 +9,5 @@ export function isUnsupported(err) {
     return err instanceof UnsupportedError;
 }
 /** Canonical list of reasoning-effort levels shared across providers that support it. */
-export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 export const DEFAULT_REASONING_EFFORT = "low";

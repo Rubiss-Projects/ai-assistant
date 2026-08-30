@@ -44,6 +44,18 @@ test("Codex provider reports unsupported features via UnsupportedError", async (
   assert.match((err as Error).message, /does not support/i);
 });
 
+test("Codex provider reads the default reasoning effort from the environment", async () => {
+  const previous = process.env.CODEX_REASONING_EFFORT;
+  process.env.CODEX_REASONING_EFFORT = "max";
+  try {
+    const codex = new CodexProvider();
+    assert.equal(await codex.getCurrentReasoningEffort("user-1"), "max");
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_REASONING_EFFORT;
+    else process.env.CODEX_REASONING_EFFORT = previous;
+  }
+});
+
 test("OpenCode provider reports unsupported features via UnsupportedError", async () => {
   const opencode = new OpenCodeProvider();
   const err = await opencode.compact().catch((e: unknown) => e);
