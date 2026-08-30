@@ -26,6 +26,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
       # Only runs for manual dispatch. Create+push the tag only when it doesn't
       # already exist, so re-running on an existing tag is a no-op instead of a failure.
       - name: Create tag if missing (manual dispatch)
@@ -37,7 +44,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           TAG="$RELEASE_TAG"
-          if [[ ! "$TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$ ]]; then
+          if ! npx --no-install semver "$TAG" >/dev/null 2>&1 || \
+             [[ ! "$TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$ ]]; then
             echo "Invalid release tag: $TAG" >&2
             exit 1
           fi
@@ -61,8 +69,9 @@ jobs:
           else
             TAG="$PUSH_TAG"
           fi
-          if [[ ! "$TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$ ]]; then
-            echo "Release tag is not Docker-compatible: $TAG" >&2
+          if ! npx --no-install semver "$TAG" >/dev/null 2>&1 || \
+             [[ ! "$TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$ ]]; then
+            echo "Release tag must be valid SemVer and Docker-compatible: $TAG" >&2
             exit 1
           fi
           echo "name=$TAG" >> "$GITHUB_OUTPUT"
@@ -75,11 +84,8 @@ jobs:
           git checkout --detach "refs/tags/$RELEASE_TAG"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "20"
-          cache: "npm"
-      - run: npm ci
+      - name: Install resolved release dependencies
+        run: npm ci
       - run: npm test
       - run: npm run build
 
@@ -155,7 +161,7 @@ jobs:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
           git fetch --force --tags origin
-          LATEST_TAG=$(node -e 'const { execFileSync } = require("node:child_process"); const semver = require("semver"); const tags = execFileSync("git", ["tag", "--list", "v*"], { encoding: "utf8" }).trim().split(/\r?\n/).filter((tag) => semver.valid(tag)); process.stdout.write(tags.sort(semver.rcompare)[0] ?? "")')
+          LATEST_TAG=$(node -e 'const { execFileSync } = require("node:child_process"); const semver = require("semver"); const dockerTag = /^v[0-9A-Za-z][0-9A-Za-z._-]{0,126}$/; const tags = execFileSync("git", ["tag", "--list", "v*"], { encoding: "utf8" }).trim().split(/\r?\n/).filter((tag) => dockerTag.test(tag) && semver.valid(tag)); process.stdout.write(tags.sort(semver.rcompare)[0] ?? "")')
           if [ "$RELEASE_TAG" = "$LATEST_TAG" ]; then
             echo "promote=true" >> "$GITHUB_OUTPUT"
           else
