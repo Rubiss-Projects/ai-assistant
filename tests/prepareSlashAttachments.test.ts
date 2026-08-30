@@ -67,8 +67,10 @@ test("slash prompts retain attachments from linked Discord messages", async () =
       "https://discord.com/channels/1/2/3",
       client as never,
       "user",
+      linkedAttachment as never,
     );
 
+    // The same upload was direct and linked, but should only be downloaded once.
     assert.equal(result.attachments.length, 1);
     assert.equal(result.attachments[0].displayName, "image.png");
     assert.equal(result.attachments[0].kind, "image");
