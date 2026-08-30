@@ -1,7 +1,6 @@
 import { ThreadAutoArchiveDuration } from "discord.js";
 import { chunkForDiscord } from "../../sessionManager.js";
-import { resolveMessageLinks } from "../../utils/resolveMessageLinks.js";
-import { downloadFileAttachments } from "../../utils/downloadAttachments.js";
+import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 export async function handleChat(interaction, sessions) {
     const message = interaction.options.getString("message", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -11,22 +10,15 @@ export async function handleChat(interaction, sessions) {
         try {
             await interaction.deferReply();
             // Resolve after defer to avoid hitting Discord's 3s interaction window
-            const enrichedMessage = await resolveMessageLinks(message, interaction.client, interaction.user.id);
-            if (workspace)
-                sessions.setSessionWorkingDir(interaction.user.id, workspace);
-            let imagePaths;
-            let cleanup;
-            if (imageAttachment) {
-                const result = await downloadFileAttachments([imageAttachment]);
-                cleanup = result.cleanup;
-                imagePaths = result.attachments.map((a) => ({ path: a.filePath, displayName: a.displayName }));
-            }
+            const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment);
             let response;
             try {
-                response = await sessions.sendMessage(interaction.user.id, enrichedMessage, imagePaths);
+                if (workspace)
+                    sessions.setSessionWorkingDir(interaction.user.id, workspace);
+                response = await sessions.sendMessage(interaction.user.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined);
             }
             finally {
-                await cleanup?.();
+                await prepared.cleanup();
             }
             const chunks = chunkForDiscord(response);
             await interaction.editReply(chunks[0]);
@@ -54,20 +46,13 @@ export async function handleChat(interaction, sessions) {
     try {
         await interaction.deferReply();
         // Resolve after defer to avoid hitting Discord's 3s interaction window
-        const enrichedMessage = await resolveMessageLinks(message, interaction.client, interaction.user.id);
-        let imagePaths;
-        let cleanup;
-        if (imageAttachment) {
-            const result = await downloadFileAttachments([imageAttachment]);
-            cleanup = result.cleanup;
-            imagePaths = result.attachments.map((a) => ({ path: a.filePath, displayName: a.displayName }));
-        }
+        const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment);
         try {
             if (interaction.channel?.isThread()) {
                 // Can't create a thread inside a thread — use the current thread as the session
                 if (workspace)
                     sessions.setSessionWorkingDir(interaction.channelId, workspace);
-                const response = await sessions.sendMessage(interaction.channelId, enrichedMessage, imagePaths);
+                const response = await sessions.sendMessage(interaction.channelId, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined);
                 const chunks = chunkForDiscord(response);
                 await interaction.editReply(chunks[0]);
                 for (const chunk of chunks.slice(1)) {
@@ -85,14 +70,14 @@ export async function handleChat(interaction, sessions) {
             // Session keyed by thread ID — fully isolated per conversation
             if (workspace)
                 sessions.setSessionWorkingDir(thread.id, workspace);
-            const response = await sessions.sendMessage(thread.id, enrichedMessage, imagePaths);
+            const response = await sessions.sendMessage(thread.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined);
             for (const chunk of chunkForDiscord(response)) {
                 await thread.send(chunk);
             }
             await interaction.editReply(`💬 ${thread.toString()}`);
         }
         finally {
-            await cleanup?.();
+            await prepared.cleanup();
         }
     }
     catch (err) {
