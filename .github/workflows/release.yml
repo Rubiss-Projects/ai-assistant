@@ -58,6 +58,14 @@ jobs:
             echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check out resolved tag
+        id: release_commit
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          git checkout --detach "refs/tags/$RELEASE_TAG"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v7
         with:
           node-version: "20"
@@ -90,7 +98,7 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
           build-args: |
             VERSION=${{ steps.tag.outputs.name }}
-            REVISION=${{ github.sha }}
+            REVISION=${{ steps.release_commit.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
