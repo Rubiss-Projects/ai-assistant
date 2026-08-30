@@ -54,7 +54,8 @@ export class CopilotProvider {
     // Per-session reasoning-effort override (host tracks the effective value)
     reasoningEffortOverrides = new Map();
     constructor() {
-        this.client = new CopilotClient();
+        const gitHubToken = process.env.COPILOT_GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
+        this.client = new CopilotClient(gitHubToken ? { gitHubToken } : undefined);
     }
     async getOrCreateSession(key) {
         const existing = this.sessions.get(key);

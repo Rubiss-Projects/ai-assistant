@@ -1,0 +1,27 @@
+services:
+  assistant:
+    image: ghcr.io/rubiss-projects/ai-assistant:latest
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      HOME: /data
+      AI_ASSISTANT_CONFIG_DIR: /data
+      REGISTER_COMMANDS_ON_START: ${REGISTER_COMMANDS_ON_START:-true}
+    volumes:
+      # Named volume only: no part of the host filesystem is exposed to the agent.
+      - assistant-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+
+volumes:
+  assistant-data:
