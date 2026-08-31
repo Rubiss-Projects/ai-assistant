@@ -3,6 +3,7 @@ config();
 
 import { SessionManager } from "./sessionManager.js";
 import { createBot } from "./bot.js";
+import { createHourlyReplyScheduler } from "./hourlyReplyScheduler.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -12,10 +13,13 @@ if (!token) {
 
 const sessions = new SessionManager();
 const client = createBot(sessions);
+const hourlyReplyScheduler = createHourlyReplyScheduler(client);
+hourlyReplyScheduler?.start();
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`\n${signal} received — shutting down...`);
   try {
+    hourlyReplyScheduler?.stop();
     client.destroy();
     await sessions.shutdown();
     console.log("✅ Shutdown complete.");
