@@ -81,7 +81,7 @@ async function setup() {
     if (provider === "codex") {
         const openaiKey = await promptVar(rl, "OpenAI API Key (optional if Codex CLI is logged in)", "OPENAI_API_KEY", existing, false);
         const codexModel = await promptVar(rl, "Default Codex model (e.g. gpt-5.6-sol)", "CODEX_MODEL", existing, false);
-        const codexTimeout = await promptVar(rl, "Codex timeout in ms (default 600000)", "CODEX_TIMEOUT_MS", existing, false);
+        const codexTimeout = await promptVar(rl, "Codex hard timeout in ms (default 3600000)", "CODEX_TIMEOUT_MS", existing, false);
         lines.push(openaiKey ? `OPENAI_API_KEY=${openaiKey}` : "# OPENAI_API_KEY=");
         if (codexModel)
             lines.push(`CODEX_MODEL=${codexModel}`);
@@ -90,7 +90,7 @@ async function setup() {
     }
     else if (provider === "opencode") {
         const opencodeModel = await promptVar(rl, "Default OpenCode model (provider/model, e.g. openrouter/...)", "OPENCODE_MODEL", existing, false);
-        const opencodeTimeout = await promptVar(rl, "OpenCode timeout in ms (default 600000)", "OPENCODE_TIMEOUT_MS", existing, false);
+        const opencodeTimeout = await promptVar(rl, "OpenCode hard timeout in ms (default 3600000)", "OPENCODE_TIMEOUT_MS", existing, false);
         if (opencodeModel)
             lines.push(`OPENCODE_MODEL=${opencodeModel}`);
         if (opencodeTimeout)
@@ -101,6 +101,9 @@ async function setup() {
         if (copilotTimeout)
             lines.push(`COPILOT_TIMEOUT_MS=${copilotTimeout}`);
     }
+    const progressInterval = await promptVar(rl, "Long-run progress update interval in ms (default 60000)", "AI_PROGRESS_INTERVAL_MS", existing, false);
+    if (progressInterval)
+        lines.push(`AI_PROGRESS_INTERVAL_MS=${progressInterval}`);
     writeFileSync(ENV_FILE, lines.join("\n") + "\n");
     console.log(`\n✅ Config saved to ${ENV_FILE}`);
     console.log(`✅ Provider set to: ${provider}`);

@@ -161,9 +161,9 @@ test("sendMessage does not evict or retry non-stale-session errors", async () =>
 });
 
 test("long Copilot work reports progress and is explicitly aborted at the hard timeout", async () => {
-  const previousProgress = process.env.COPILOT_PROGRESS_INTERVAL_MS;
+  const previousProgress = process.env.AI_PROGRESS_INTERVAL_MS;
   const previousTimeout = process.env.COPILOT_TIMEOUT_MS;
-  process.env.COPILOT_PROGRESS_INTERVAL_MS = "20";
+  process.env.AI_PROGRESS_INTERVAL_MS = "20";
   process.env.COPILOT_TIMEOUT_MS = "70";
   try {
     const manager = createTestManager();
@@ -187,8 +187,8 @@ test("long Copilot work reports progress and is explicitly aborted at the hard t
     assert.ok(progressCalls >= 1);
     assert.equal(abortCalls, 1);
   } finally {
-    if (previousProgress === undefined) delete process.env.COPILOT_PROGRESS_INTERVAL_MS;
-    else process.env.COPILOT_PROGRESS_INTERVAL_MS = previousProgress;
+    if (previousProgress === undefined) delete process.env.AI_PROGRESS_INTERVAL_MS;
+    else process.env.AI_PROGRESS_INTERVAL_MS = previousProgress;
     if (previousTimeout === undefined) delete process.env.COPILOT_TIMEOUT_MS;
     else process.env.COPILOT_TIMEOUT_MS = previousTimeout;
   }

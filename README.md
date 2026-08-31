@@ -54,11 +54,11 @@ uncomment or fill only the settings you need. Provider API keys, timeout
 settings, Discord access lists, MCP inputs, custom endpoints, and container
 startup behavior all use the same file.
 
-Long Copilot tasks remain attached until the session reports that it is idle.
+Long tasks remain attached until the selected provider reports completion.
 Discord receives periodic “still working” updates (configured with
-`COPILOT_PROGRESS_INTERVAL_MS`, default one minute). `COPILOT_TIMEOUT_MS` is a
-one-hour hard limit by default; reaching it explicitly aborts the active run so
-work cannot silently continue after an error response.
+`AI_PROGRESS_INTERVAL_MS`, default one minute). Each provider timeout is a
+one-hour hard limit by default; reaching it explicitly cancels or terminates the
+active run so work cannot silently continue after an error response.
 
 The included Compose configuration runs as an unprivileged user, drops all
 Linux capabilities, prevents privilege escalation, makes the image filesystem
@@ -370,8 +370,8 @@ The AI configuration changes as follows:
 | Copilot version | Codex version | Unified version |
 | --- | --- | --- |
 | Copilot authentication via `gh` CLI | `OPENAI_API_KEY` or Codex CLI login | Unchanged — each provider keeps its own auth |
-| `COPILOT_TIMEOUT_MS` | `CODEX_TIMEOUT_MS` | Copilot hard timeout (default 1 hour; timed-out work is explicitly cancelled); plus `OPENCODE_TIMEOUT_MS` for OpenCode |
-| `COPILOT_PROGRESS_INTERVAL_MS` | — | Interval for Copilot “still working” updates (default 1 minute) |
+| `COPILOT_TIMEOUT_MS` | `CODEX_TIMEOUT_MS` | Provider hard timeout (default 1 hour; timed-out work is explicitly cancelled); plus `OPENCODE_TIMEOUT_MS` for OpenCode |
+| `AI_PROGRESS_INTERVAL_MS` | `AI_PROGRESS_INTERVAL_MS` | Provider-agnostic “still working” interval (default 1 minute) |
 | Copilot model IDs (`COPILOT_MODEL`) | Codex/OpenAI model IDs (`CODEX_MODEL`) | `COPILOT_MODEL` / `CODEX_MODEL` / `OPENCODE_MODEL` |
 | — | — | New `PROVIDER=copilot\|codex\|opencode` sets the default backend |
 

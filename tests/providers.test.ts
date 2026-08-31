@@ -8,7 +8,7 @@ import { createProvider } from "../src/providers/index.js";
 import { CopilotProvider } from "../src/providers/copilot.js";
 import { CodexProvider } from "../src/providers/codex.js";
 import { OpenCodeProvider } from "../src/providers/opencode.js";
-import { UnsupportedError } from "../src/providers/types.js";
+import { RunTimeoutError, UnsupportedError } from "../src/providers/types.js";
 import { ProviderStore } from "../src/common/providerStore.js";
 
 function makeStore(): ProviderStore {
@@ -53,6 +53,43 @@ test("Codex provider reads the default reasoning effort from the environment", a
   } finally {
     if (previous === undefined) delete process.env.CODEX_REASONING_EFFORT;
     else process.env.CODEX_REASONING_EFFORT = previous;
+  }
+});
+
+test("Codex long runs report progress and abort at the hard timeout", async () => {
+  const previousProgress = process.env.AI_PROGRESS_INTERVAL_MS;
+  const previousTimeout = process.env.CODEX_TIMEOUT_MS;
+  process.env.AI_PROGRESS_INTERVAL_MS = "10";
+  process.env.CODEX_TIMEOUT_MS = "40";
+  try {
+    const codex = new CodexProvider();
+    const internal = codex as unknown as {
+      sessions: Map<string, { id: string; run: (_input: unknown, options: { signal: AbortSignal }) => Promise<never> }>;
+    };
+    let abortObserved = false;
+    let progressCalls = 0;
+    internal.sessions.set("long-codex-run", {
+      id: "test-thread",
+      run: (_input, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          abortObserved = true;
+          reject(new Error("aborted"));
+        }, { once: true });
+      }),
+    });
+
+    const error = await codex.sendMessage("long-codex-run", "work", undefined, {
+      onProgress: () => { progressCalls += 1; },
+    }).catch((caught: unknown) => caught);
+    assert.ok(error instanceof RunTimeoutError);
+    assert.equal(error.cancellationConfirmed, true);
+    assert.equal(abortObserved, true);
+    assert.ok(progressCalls >= 1);
+  } finally {
+    if (previousProgress === undefined) delete process.env.AI_PROGRESS_INTERVAL_MS;
+    else process.env.AI_PROGRESS_INTERVAL_MS = previousProgress;
+    if (previousTimeout === undefined) delete process.env.CODEX_TIMEOUT_MS;
+    else process.env.CODEX_TIMEOUT_MS = previousTimeout;
   }
 });
 
