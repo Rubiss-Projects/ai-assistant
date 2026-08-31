@@ -163,7 +163,7 @@ no restart required:
 
 - The choice is scoped: set it inside a thread and it applies to that thread;
   set it in a channel/DM and it applies to that user's session.
-- Choices are persisted (per thread/user in `~/.config/ai-assistant/providers.json`),
+- Choices are persisted (per thread or per-user/channel session in `~/.config/ai-assistant/providers.json`),
   so they survive a bot restart.
 - Each provider keeps its **own** session history per Discord key (namespaced
   on disk). Switching to another provider starts that provider's thread fresh;
@@ -175,8 +175,8 @@ no restart required:
 - **Thread-based chat** — `/chat` spawns a dedicated Discord thread per conversation, each with its own isolated session context
 - **Free-form chat** in a designated channel — no `@mention` required
 - **Conversation-aware mentions** — mentions include recent channel conversation; replies center context around the referenced message
-- **Persistent session** per user/thread — history maintained across messages and bot restarts
-- **Conversational long-term memory** — say “remember this” and recall relevant server memories later without a command
+- **Persistent isolated sessions** — ordinary mentions are isolated per user and channel; bot-owned threads share their own session
+- **Conversational long-term memory** — say “remember this,” “put this in memory,” or “commit these contracts to memory” and recall relevant server memories later without a command. Replied-to contract summaries are resolved back to the original Discord messages so their complete text and source links are preserved.
 - **Discord history search** — ask naturally to search the current channel or accessible server channels, with source links
 - **Full tool access** — the AI can read files, run shell commands, search the web, etc.
 - **User-scope skills** — Copilot automatically loads skills from `~/.agents/skills` at session start

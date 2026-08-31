@@ -6,11 +6,15 @@ import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/
 import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
 
+export function mentionSessionKey(message: Pick<Message, "guildId" | "channelId" | "author">): string {
+  return message.guildId ? `${message.author.id}:${message.channelId}` : message.author.id;
+}
+
 export async function handleMention(
   message: Message,
   client: Client,
   sessions: SessionManager,
-  sessionKey?: string,  // defaults to message.author.id; pass channelId for thread sessions
+  sessionKey?: string,  // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
   canIncludeContextAuthor: (authorId: string) => boolean = () => true
 ): Promise<void> {
   // Strip all @mentions of the bot and trim
@@ -31,7 +35,7 @@ export async function handleMention(
       return;
     }
 
-    const key = sessionKey ?? message.author.id;
+    const key = sessionKey ?? mentionSessionKey(message);
     const basePrompt = prompt || (message.reference?.messageId
       ? "Respond using the replied-to conversation context."
       : "See the attached file(s).");
