@@ -9,6 +9,7 @@ import {
   pathIsWithin,
   providerChildEnvironment,
   resolveConfiguredWorkspace,
+  SENSITIVE_DIRECTORY_DENY_GLOBS,
   SENSITIVE_PATH_DENY_GLOBS,
   secureSystemPrompt,
   setupSecurityMode,
@@ -208,6 +209,10 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   for (const glob of SENSITIVE_PATH_DENY_GLOBS) {
     assert.match(filesystemOverride, new RegExp(`${glob.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^,}]*deny`));
   }
+  assert.ok(
+    filesystemOverride.indexOf('"**/.env.example"="write"')
+      < filesystemOverride.indexOf('"**/.ssh/**"="deny"'),
+  );
 });
 
 test("Codex can explicitly enable Sites without enabling other connected apps", () => {
@@ -272,6 +277,12 @@ test("OpenCode shared mode is deny-by-default with no shell, plugins, external p
   assert.equal(permission.edit["**/.pypirc"], "deny");
   assert.equal(permission.edit["**/.env.example"], "allow");
   assert.deepEqual(permission.edit, permission.read);
+  const openCodeRuleOrder = Object.keys(permission.edit);
+  for (const directoryGlob of SENSITIVE_DIRECTORY_DENY_GLOBS) {
+    assert.ok(
+      openCodeRuleOrder.indexOf("**/.env.example") < openCodeRuleOrder.indexOf(directoryGlob),
+    );
+  }
   assert.deepEqual(config.plugin, []);
 
   const env = openCodeChildEnvironment({

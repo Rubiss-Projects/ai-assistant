@@ -197,18 +197,24 @@ const SENSITIVE_FILE_NAMES = new Set<string>(SENSITIVE_FILE_NAME_LIST);
 const SENSITIVE_DIRECTORY_NAMES = new Set<string>(SENSITIVE_DIRECTORY_NAME_LIST);
 
 /** Provider-native glob policies are derived from the same names as isSensitivePath(). */
-export const SENSITIVE_PATH_DENY_GLOBS = [
+export const SENSITIVE_FILE_DENY_GLOBS = [
   ".env",
   ".env.*",
   "**/.env",
   "**/.env.*",
   ...SENSITIVE_FILE_NAME_LIST.flatMap((name) => [name, `**/${name}`]),
-  ...SENSITIVE_DIRECTORY_NAME_LIST.flatMap((name) => [
+] as const;
+
+export const SENSITIVE_DIRECTORY_DENY_GLOBS: readonly string[] = SENSITIVE_DIRECTORY_NAME_LIST.flatMap((name) => [
     name,
     `${name}/**`,
     `**/${name}`,
     `**/${name}/**`,
-  ]),
+]);
+
+export const SENSITIVE_PATH_DENY_GLOBS = [
+  ...SENSITIVE_FILE_DENY_GLOBS,
+  ...SENSITIVE_DIRECTORY_DENY_GLOBS,
 ] as const;
 
 export const SENSITIVE_PATH_ALLOW_GLOBS = [

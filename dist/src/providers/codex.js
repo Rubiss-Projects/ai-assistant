@@ -7,7 +7,7 @@ import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
-import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_PATH_ALLOW_GLOBS, SENSITIVE_PATH_DENY_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
+import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, RunTimeoutError, } from "./types.js";
 import { readFile } from "node:fs/promises";
 const require = createRequire(import.meta.url);
@@ -21,8 +21,10 @@ export const CODEX_GITHUB_READ_ONLY_TOOLS = [
 const CODEX_PERMISSION_PROFILE = "discord-bot";
 export function codexFilesystemPermissionOverride() {
     const sensitiveRules = [
-        ...SENSITIVE_PATH_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
+        ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
         ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => `${JSON.stringify(glob)}="write"`),
+        // Directory denials come last so no nested filename exception can override them.
+        ...SENSITIVE_DIRECTORY_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
     ].join(",");
     return `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",":slash_tmp"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write",${sensitiveRules}}}`;
 }

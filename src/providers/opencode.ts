@@ -9,8 +9,9 @@ import {
   ensureProviderWorkingDirectory,
   providerChildEnvironment,
   resolveConfiguredWorkspace,
+  SENSITIVE_DIRECTORY_DENY_GLOBS,
+  SENSITIVE_FILE_DENY_GLOBS,
   SENSITIVE_PATH_ALLOW_GLOBS,
-  SENSITIVE_PATH_DENY_GLOBS,
   secureSystemPrompt,
 } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError, type AgentInfo, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SendMessageOptions, type SessionMode, type StatusInfo } from "./types.js";
@@ -64,8 +65,10 @@ function openCodeBin(): string {
 export function openCodeSecurityConfig(): Record<string, unknown> {
   const sensitivePathPolicy = Object.fromEntries([
     ["*", "allow"],
-    ...SENSITIVE_PATH_DENY_GLOBS.map((glob) => [glob, "deny"]),
+    ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => [glob, "deny"]),
     ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => [glob, "allow"]),
+    // OpenCode uses the last matching rule, so credential-directory denials must win.
+    ...SENSITIVE_DIRECTORY_DENY_GLOBS.map((glob) => [glob, "deny"]),
   ]);
   return {
     autoupdate: false,
