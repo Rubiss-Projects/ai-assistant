@@ -252,6 +252,10 @@ DISCORD_TOKEN=              # Bot token from Discord Developer Portal → Bot
 DISCORD_APP_ID=             # Application ID from Discord Developer Portal → General Information
 DISCORD_GUILD_ID=           # Your Discord server ID (for slash command registration)
 DISCORD_FREE_CHANNELS=      # Optional: comma-separated channel IDs where bot replies without @mention
+# DISCORD_HOURLY_REPLY_CHANNEL_ID=  # Optional: channel scanned on an hourly schedule
+# DISCORD_HOURLY_REPLY_AUTHOR_ID=   # Optional: only this author's messages are targeted
+# DISCORD_HOURLY_REPLY_TEXT=Proto on my team
+# DISCORD_HOURLY_REPLY_INTERVAL_MS=3600000
 DISCORD_ALLOWED_USERS=      # Optional: comma-separated user IDs allowed to use the bot
 DISCORD_ADMIN_USERS=        # Optional: user IDs allowed to use administrative actions
 DISCORD_ATTACHMENT_MODE=native # native | text (recommended for shared bots)
@@ -279,6 +283,13 @@ lists empty, everybody in a server containing the bot can interact with it.
   bot without mentioning it. In every other visible channel, the bot listens
   but responds only when its account is explicitly `@mentioned`. Bot-owned chat
   threads respond without a mention.
+- `DISCORD_HOURLY_REPLY_CHANNEL_ID` and `DISCORD_HOURLY_REPLY_AUTHOR_ID` enable
+  an optional fixed-text job. It scans only the preceding interval after
+  startup and on each interval, then replies once to each matching message
+  with `DISCORD_HOURLY_REPLY_TEXT` (default: `Proto on my team`). Replied
+  message IDs persist in `~/.config/ai-assistant/hourly-replies.json` so a
+  restart does not repeat them. The bot needs **Read Message History** and
+  **Send Messages** in the target channel.
 - Mentions and free-channel responses include nearby channel conversation for
   context. A reply that mentions the bot also includes the replied-to message
   and nearby messages. Images and supported text/code attachments on the direct,
