@@ -1,11 +1,9 @@
 import { chunkForDiscord } from "../../sessionManager.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export async function handleHistory(interaction, sessions) {
     try {
         await interaction.deferReply({ ephemeral: true });
-        // Use thread ID as session key when inside a thread (matches /chat thread sessions)
-        const sessionKey = interaction.channel?.isThread()
-            ? interaction.channelId
-            : interaction.user.id;
+        const sessionKey = interactionSessionKey(interaction);
         const events = await sessions.getHistory(sessionKey);
         if (!events) {
             await interaction.editReply("No active session. Start chatting first with `/chat`.");

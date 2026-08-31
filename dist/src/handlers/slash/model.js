@@ -1,12 +1,11 @@
 import { chunkForDiscord } from "../../sessionManager.js";
+import { interactionSessionKey, interactionSessionLabel } from "../../common/discordSessionKey.js";
 export async function handleModel(interaction, sessions) {
     const sub = interaction.options.getSubcommand(true);
     try {
         if (sub === "list") {
             await interaction.deferReply({ ephemeral: true });
-            const sessionKey = interaction.channel?.isThread()
-                ? interaction.channelId
-                : interaction.user.id;
+            const sessionKey = interactionSessionKey(interaction);
             const models = await sessions.listModels(sessionKey);
             if (models.length === 0) {
                 await interaction.editReply("No models available.");
@@ -21,20 +20,16 @@ export async function handleModel(interaction, sessions) {
         }
         else if (sub === "set") {
             const modelId = interaction.options.getString("model_id", true);
-            // Use thread ID as session key when inside a thread (matches /chat thread sessions)
-            const sessionKey = interaction.channel?.isThread()
-                ? interaction.channelId
-                : interaction.user.id;
+            const sessionKey = interactionSessionKey(interaction);
             await interaction.deferReply({ ephemeral: true });
             await sessions.setModel(sessionKey, modelId);
-            const scope = interaction.channel?.isThread() ? "for this thread" : "for your session";
-            await interaction.editReply(`✅ Model switched to \`${modelId}\` ${scope}. Takes effect on the next message.`);
+            await interaction.editReply(`✅ Model switched to \`${modelId}\` for ${interactionSessionLabel(interaction)}. Takes effect on the next message.`);
         }
         else if (sub === "current") {
-            const sessionKey = interaction.channel?.isThread() ? interaction.channelId : interaction.user.id;
+            const sessionKey = interactionSessionKey(interaction);
             await interaction.deferReply({ ephemeral: true });
             const modelId = await sessions.getCurrentModel(sessionKey);
-            const scope = interaction.channel?.isThread() ? "this thread" : "your session";
+            const scope = interactionSessionLabel(interaction);
             await interaction.editReply(modelId
                 ? `🤖 Current model for ${scope}: \`${modelId}\``
                 : `🤖 No model explicitly set for ${scope} (using session default).`);

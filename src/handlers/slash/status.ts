@@ -1,5 +1,6 @@
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager } from "../../sessionManager.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 
 export async function handleStatus(
   interaction: ChatInputCommandInteraction,
@@ -7,9 +8,7 @@ export async function handleStatus(
 ): Promise<void> {
   try {
     await interaction.deferReply({ ephemeral: true });
-    const sessionKey = interaction.channel?.isThread()
-      ? interaction.channelId
-      : interaction.user.id;
+    const sessionKey = interactionSessionKey(interaction);
     const { status, authStatus } = await sessions.getStatus(sessionKey);
 
     const authLine = authStatus.isAuthenticated

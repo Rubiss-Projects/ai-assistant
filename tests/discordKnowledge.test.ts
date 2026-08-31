@@ -73,5 +73,29 @@ test("resolves contract IDs in a replied-to summary to exact Discord messages", 
   );
   assert.match(source.content, /Ben shall acquire one heroic copy of Marvel/);
   assert.match(source.content, /contracts-channel\/contract-message/);
+  assert.equal(source.channelId, "contracts-channel");
+  assert.deepEqual(source.sourceChannelIds, ["contracts-channel"]);
   assert.equal(source.authorId, "requester");
+});
+
+test("put this in memory resolves replied-to content instead of command wording", async () => {
+  const invocation = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    reference: { messageId: "source" },
+    fetchReference: async () => ({
+      content: "The actual record to preserve",
+      url: "https://discord.com/channels/guild-1/channel-1/source",
+      channelId: "channel-1",
+      author: { id: "user-2", bot: false },
+    }),
+  };
+  const source = await sourceText(
+    invocation as never,
+    "Put this in long-term memory, please",
+    {} as never,
+    "requester",
+    () => true,
+  );
+  assert.equal(source.content, "The actual record to preserve");
 });

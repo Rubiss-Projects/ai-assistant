@@ -1,10 +1,8 @@
+import { interactionSessionKey, interactionSessionLabel } from "../../common/discordSessionKey.js";
 export async function handleReset(interaction, sessions) {
     try {
-        // Use thread ID as session key when inside a thread (matches /chat thread sessions)
-        const sessionKey = interaction.channel?.isThread()
-            ? interaction.channelId
-            : interaction.user.id;
-        const scope = interaction.channel?.isThread() ? `This thread's ${sessions.activeProviderDisplayName(sessionKey)} session` : `Your ${sessions.activeProviderDisplayName(sessionKey)} session`;
+        const sessionKey = interactionSessionKey(interaction);
+        const scope = `${interactionSessionLabel(interaction)} (${sessions.activeProviderDisplayName(sessionKey)})`;
         await sessions.resetSession(sessionKey);
         await interaction.reply({
             content: `✅ ${scope} has been reset.`,

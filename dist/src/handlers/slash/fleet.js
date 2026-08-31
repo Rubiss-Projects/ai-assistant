@@ -1,8 +1,7 @@
 import { unsupportedMessage } from "../../sessionManager.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export async function handleFleet(interaction, sessions) {
-    const sessionKey = interaction.channel?.isThread()
-        ? interaction.channelId
-        : interaction.user.id;
+    const sessionKey = interactionSessionKey(interaction);
     try {
         await interaction.deferReply({ ephemeral: true });
         const prompt = interaction.options.getString("prompt") ?? undefined;

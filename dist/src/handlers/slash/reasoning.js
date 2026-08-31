@@ -1,8 +1,7 @@
 import { isUnsupported } from "../../sessionManager.js";
+import { interactionSessionKey, interactionSessionLabel } from "../../common/discordSessionKey.js";
 function sessionScope(interaction) {
-    return interaction.channel?.isThread()
-        ? { key: interaction.channelId, label: "this thread" }
-        : { key: interaction.user.id, label: "your session" };
+    return { key: interactionSessionKey(interaction), label: interactionSessionLabel(interaction) };
 }
 export async function handleReasoning(interaction, sessions) {
     const sub = interaction.options.getSubcommand(true);
