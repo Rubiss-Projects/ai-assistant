@@ -6,6 +6,7 @@ export interface DiscordMemory {
   id: string;
   guildId: string;
   channelId: string;
+  sourceChannelIds?: string[];
   authorId: string;
   content: string;
   sourceUrl: string;

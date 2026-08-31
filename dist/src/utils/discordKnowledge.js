@@ -50,21 +50,11 @@ function canRead(channel, userId) {
     return Boolean(permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]));
 }
 async function memoryIsVisible(memory, client, userId) {
-    try {
-        const channel = await client.channels.fetch(memory.channelId);
-        if (!channel || channel.isDMBased() || !("permissionsFor" in channel) || !canRead(channel, userId))
+    for (const channelId of memory.sourceChannelIds?.length ? memory.sourceChannelIds : [memory.channelId]) {
+        if (!await channelVisible(channelId, client, userId))
             return false;
-        if (channel.isThread() && channel.type === ChannelType.PrivateThread) {
-            const permissions = channel.permissionsFor(userId);
-            if (permissions?.has(PermissionFlagsBits.ManageThreads))
-                return true;
-            return Boolean(await channel.members.fetch(userId).catch(() => null));
-        }
-        return true;
     }
-    catch {
-        return false;
-    }
+    return true;
 }
 async function recalledMemories(guildId, prompt, client, userId, canIncludeAuthor) {
     const queryTerms = terms(prompt);
@@ -88,6 +78,7 @@ async function recalledMemories(guildId, prompt, client, userId, canIncludeAutho
 function memoryText(prompt) {
     return prompt
         .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep|commit|add|put|record)\b\s*(?:that|this|the following|:)?\s*/i, "")
+        .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "")
         .replace(/\s+\b(?:to|in|into)\s+(?:long-term\s+)?memory\b[\s\S]*$/i, "")
         .trim();
 }
@@ -113,9 +104,14 @@ async function contractRecordsFromHistory(guildId, referencedContent, client, re
     }
     if (found.size === 0)
         return null;
-    return [...found.values()]
-        .map((message) => `${message.content}\nSource: https://discord.com/channels/${guildId}/${message.channel_id}/${message.id}`)
-        .join("\n\n---\n\n");
+    const messages = [...found.values()];
+    return {
+        content: messages
+            .map((message) => `${message.content}\nSource: https://discord.com/channels/${guildId}/${message.channel_id}/${message.id}`)
+            .join("\n\n---\n\n"),
+        channelIds: [...new Set(messages.map((message) => message.channel_id))],
+        sourceUrl: `https://discord.com/channels/${guildId}/${messages[0].channel_id}/${messages[0].id}`,
+    };
 }
 export async function sourceText(invocation, prompt, client, requesterId, canIncludeAuthor) {
     const explicit = memoryText(prompt);
@@ -134,9 +130,10 @@ export async function sourceText(invocation, prompt, client, requesterId, canInc
                     ? await contractRecordsFromHistory(invocation.guildId, referenced.content, client, requesterId, canIncludeAuthor)
                     : null;
                 return {
-                    content: contracts ?? referenced.content.trim(),
-                    sourceUrl: referenced.url,
-                    channelId: referenced.channelId,
+                    content: contracts?.content ?? referenced.content.trim(),
+                    sourceUrl: contracts?.sourceUrl ?? referenced.url,
+                    channelId: contracts?.channelIds[0] ?? referenced.channelId,
+                    sourceChannelIds: contracts?.channelIds,
                     authorId: referenced.author.bot ? requesterId : referenced.author.id,
                 };
             }
@@ -294,7 +291,7 @@ export async function enrichWithDiscordKnowledge(invocation, prompt, client, can
         const source = await sourceText(invocation, prompt, client, requester, canIncludeAuthor);
         const channelId = source.channelId ?? invocation.channelId;
         const sourceUrl = source.sourceUrl ?? ("url" in invocation ? invocation.url : `https://discord.com/channels/${guildId}/${channelId}`);
-        store.add({ id: randomUUID(), guildId, channelId, authorId: source.authorId ?? requester, content: source.content, sourceUrl, createdAt: new Date().toISOString() });
+        store.add({ id: randomUUID(), guildId, channelId, ...(source.sourceChannelIds ? { sourceChannelIds: source.sourceChannelIds } : {}), authorId: source.authorId ?? requester, content: source.content, sourceUrl, createdAt: new Date().toISOString() });
         blocks.push(`[System-managed long-term memory action: the application has already persisted the following server memory. Briefly confirm exactly what was saved. Do not create a file and do not claim persistent memory is unavailable.\n${source.content}]`);
     }
     if (isHistoryIntent(prompt)) {

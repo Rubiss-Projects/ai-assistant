@@ -1,9 +1,8 @@
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export async function handleStatus(interaction, sessions) {
     try {
         await interaction.deferReply({ ephemeral: true });
-        const sessionKey = interaction.channel?.isThread()
-            ? interaction.channelId
-            : interaction.user.id;
+        const sessionKey = interactionSessionKey(interaction);
         const { status, authStatus } = await sessions.getStatus(sessionKey);
         const authLine = authStatus.isAuthenticated
             ? `✅ Authenticated as **${authStatus.login ?? "unknown"}** via \`${authStatus.authType}\` on \`${authStatus.host ?? "github.com"}\``

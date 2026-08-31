@@ -1,14 +1,13 @@
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager, chunkForDiscord, unsupportedMessage } from "../../sessionManager.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 
 export async function handleAgent(
   interaction: ChatInputCommandInteraction,
   sessions: SessionManager
 ): Promise<void> {
   const sub = interaction.options.getSubcommand(true);
-  const sessionKey = interaction.channel?.isThread()
-    ? interaction.channelId
-    : interaction.user.id;
+  const sessionKey = interactionSessionKey(interaction);
 
   try {
     if (sub === "list") {

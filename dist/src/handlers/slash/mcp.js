@@ -1,9 +1,8 @@
 import { unsupportedMessage } from "../../sessionManager.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export async function handleMcp(interaction, sessions) {
     const sub = interaction.options.getSubcommand(true);
-    const sessionKey = interaction.channel?.isThread()
-        ? interaction.channelId
-        : interaction.user.id;
+    const sessionKey = interactionSessionKey(interaction);
     try {
         if (sub === "list") {
             const servers = sessions.getMcpStatus(sessionKey);

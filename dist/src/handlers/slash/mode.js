@@ -1,4 +1,5 @@
 import { unsupportedMessage } from "../../sessionManager.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 const MODE_DESCRIPTIONS = {
     interactive: "normal chat",
     plan: "structured planning",
@@ -6,9 +7,7 @@ const MODE_DESCRIPTIONS = {
 };
 export async function handleMode(interaction, sessions) {
     const sub = interaction.options.getSubcommand(true);
-    const sessionKey = interaction.channel?.isThread()
-        ? interaction.channelId
-        : interaction.user.id;
+    const sessionKey = interactionSessionKey(interaction);
     try {
         if (sub === "get") {
             await interaction.deferReply({ ephemeral: true });

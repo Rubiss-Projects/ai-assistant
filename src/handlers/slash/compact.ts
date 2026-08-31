@@ -1,13 +1,12 @@
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager, unsupportedMessage } from "../../sessionManager.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 
 export async function handleCompact(
   interaction: ChatInputCommandInteraction,
   sessions: SessionManager
 ): Promise<void> {
-  const sessionKey = interaction.channel?.isThread()
-    ? interaction.channelId
-    : interaction.user.id;
+  const sessionKey = interactionSessionKey(interaction);
 
   try {
     await interaction.deferReply({ ephemeral: true });

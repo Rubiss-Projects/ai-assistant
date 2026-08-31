@@ -1,13 +1,12 @@
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager } from "../../sessionManager.js";
+import { interactionSessionKey, interactionSessionLabel } from "../../common/discordSessionKey.js";
 
 function sessionScope(interaction: ChatInputCommandInteraction): {
   key: string;
   label: string;
 } {
-  return interaction.channel?.isThread()
-    ? { key: interaction.channelId, label: "this thread" }
-    : { key: interaction.user.id, label: "your session" };
+  return { key: interactionSessionKey(interaction), label: interactionSessionLabel(interaction) };
 }
 
 export async function handleProvider(
