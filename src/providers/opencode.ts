@@ -2,13 +2,15 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
-import { withSystemPrompt } from "../common/systemPrompt.js";
+import { configuredSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
   ensureProviderWorkingDirectory,
   providerChildEnvironment,
   resolveConfiguredWorkspace,
+  SENSITIVE_PATH_ALLOW_GLOBS,
+  SENSITIVE_PATH_DENY_GLOBS,
   secureSystemPrompt,
 } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError, type AgentInfo, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SendMessageOptions, type SessionMode, type StatusInfo } from "./types.js";
@@ -60,20 +62,11 @@ function openCodeBin(): string {
 
 /** Inline policy has the highest normal config precedence in OpenCode v1. */
 export function openCodeSecurityConfig(): Record<string, unknown> {
-  const sensitivePathPolicy = {
-    "*": "allow",
-    "*.env": "deny",
-    "*.env.*": "deny",
-    "**/.env": "deny",
-    "**/.env.*": "deny",
-    "**/.codex": "deny",
-    "**/.codex/**": "deny",
-    "**/auth.json": "deny",
-    "**/.git-credentials": "deny",
-    "**/.netrc": "deny",
-    ".env.example": "allow",
-    "**/.env.example": "allow",
-  };
+  const sensitivePathPolicy = Object.fromEntries([
+    ["*", "allow"],
+    ...SENSITIVE_PATH_DENY_GLOBS.map((glob) => [glob, "deny"]),
+    ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => [glob, "allow"]),
+  ]);
   return {
     autoupdate: false,
     share: "disabled",
@@ -126,6 +119,12 @@ export function openCodeBaseRunArguments(
     ...(configuredSecurityMode(source) === "shared" ? ["--pure"] : []),
     "--auto",
   ];
+}
+
+export function openCodeRequestPrompt(prompt: string): string {
+  return configuredSecurityMode() === "shared"
+    ? `${secureSystemPrompt(configuredSystemPrompt())}\n\n${prompt}`
+    : withSystemPrompt(prompt);
 }
 
 /**
@@ -255,7 +254,6 @@ export class OpenCodeProvider implements Provider {
   ): Promise<string> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
-      const shared = configuredSecurityMode() === "shared";
       const args = openCodeBaseRunArguments();
       const sessionId = this.sessions.get(userId) ?? this.store.get(userId);
       if (sessionId) args.push("--session", sessionId);
@@ -264,7 +262,7 @@ export class OpenCodeProvider implements Provider {
       for (const img of imagePaths ?? []) {
         args.push("--file", img.path);
       }
-      args.push(withSystemPrompt(shared ? `${secureSystemPrompt()}\n\n${prompt}` : prompt));
+      args.push(openCodeRequestPrompt(prompt));
 
       const timeoutMs = configuredMilliseconds("OPENCODE_TIMEOUT_MS", 60 * 60 * 1000);
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });

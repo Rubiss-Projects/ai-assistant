@@ -6,6 +6,7 @@ import { resolve, dirname, join } from "path";
 import { homedir, tmpdir } from "os";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import { setupSecurityMode, setupSitesEnabled } from "./common/providerSecurity.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname_local = dirname(__filename);
 // Config dir: ~/.ai-assistant/ or override via AI_ASSISTANT_CONFIG_DIR
@@ -58,6 +59,19 @@ async function setup() {
     const adminUsers = await promptVar(rl, "Admin user IDs (comma-separated, leave empty to use allowed users)", "DISCORD_ADMIN_USERS", existing, false);
     const systemPrompt = await promptVar(rl, "Bot system prompt (optional operator instructions)", "AI_ASSISTANT_SYSTEM_PROMPT", existing, false);
     const systemPromptFile = await promptVar(rl, "System prompt file path (optional; takes precedence over inline prompt)", "AI_ASSISTANT_SYSTEM_PROMPT_FILE", existing, false);
+    const requestedSecurityMode = await promptVar(rl, "Provider security mode (shared | unrestricted)", "AI_ASSISTANT_SECURITY_MODE", existing, false);
+    const requestedSitesEnabled = await promptVar(rl, "Enable ChatGPT Sites in shared mode (true | false)", "AI_ASSISTANT_ENABLE_SITES", existing, false);
+    let securityMode;
+    let sitesEnabled;
+    try {
+        securityMode = setupSecurityMode(requestedSecurityMode);
+        sitesEnabled = setupSitesEnabled(requestedSitesEnabled);
+    }
+    catch (err) {
+        console.error(`\n❌ ${err instanceof Error ? err.message : String(err)}`);
+        rl.close();
+        process.exit(1);
+    }
     if (!token || !appId || !guildId) {
         console.error("\n❌ DISCORD_TOKEN, DISCORD_APP_ID, and DISCORD_GUILD_ID are required.");
         rl.close();
@@ -77,6 +91,8 @@ async function setup() {
         systemPromptFile
             ? `AI_ASSISTANT_SYSTEM_PROMPT_FILE=${JSON.stringify(systemPromptFile)}`
             : "# AI_ASSISTANT_SYSTEM_PROMPT_FILE=",
+        `AI_ASSISTANT_SECURITY_MODE=${securityMode}`,
+        `AI_ASSISTANT_ENABLE_SITES=${sitesEnabled}`,
     ];
     if (provider === "codex") {
         const openaiKey = await promptVar(rl, "OpenAI API Key (optional if Codex CLI is logged in)", "OPENAI_API_KEY", existing, false);

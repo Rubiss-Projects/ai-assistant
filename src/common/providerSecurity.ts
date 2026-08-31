@@ -36,6 +36,15 @@ export function configuredSitesEnabled(source: Environment = process.env): boole
   );
 }
 
+/** Setup defaults new installs to shared while preserving an explicit existing/user choice. */
+export function setupSecurityMode(configured?: string): SecurityMode {
+  return configuredSecurityMode({ AI_ASSISTANT_SECURITY_MODE: configured?.trim() || "shared" });
+}
+
+export function setupSitesEnabled(configured?: string): boolean {
+  return configuredSitesEnabled({ AI_ASSISTANT_ENABLE_SITES: configured?.trim() || "false" });
+}
+
 export function reportProviderSecurityConfiguration(
   source: Environment = process.env,
 ): void {
@@ -169,14 +178,43 @@ export function pathIsWithin(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== "..");
 }
 
-const SENSITIVE_FILE_NAMES = new Set([
+const SENSITIVE_FILE_NAME_LIST = [
   ".git-credentials",
   ".netrc",
   ".npmrc",
   ".pypirc",
   "auth.json",
-]);
-const SENSITIVE_DIRECTORY_NAMES = new Set([".aws", ".codex", ".config", ".copilot", ".opencode", ".ssh"]);
+] as const;
+const SENSITIVE_DIRECTORY_NAME_LIST = [
+  ".aws",
+  ".codex",
+  ".config",
+  ".copilot",
+  ".opencode",
+  ".ssh",
+] as const;
+const SENSITIVE_FILE_NAMES = new Set<string>(SENSITIVE_FILE_NAME_LIST);
+const SENSITIVE_DIRECTORY_NAMES = new Set<string>(SENSITIVE_DIRECTORY_NAME_LIST);
+
+/** Provider-native glob policies are derived from the same names as isSensitivePath(). */
+export const SENSITIVE_PATH_DENY_GLOBS = [
+  ".env",
+  ".env.*",
+  "**/.env",
+  "**/.env.*",
+  ...SENSITIVE_FILE_NAME_LIST.flatMap((name) => [name, `**/${name}`]),
+  ...SENSITIVE_DIRECTORY_NAME_LIST.flatMap((name) => [
+    name,
+    `${name}/**`,
+    `**/${name}`,
+    `**/${name}/**`,
+  ]),
+] as const;
+
+export const SENSITIVE_PATH_ALLOW_GLOBS = [
+  ".env.example",
+  "**/.env.example",
+] as const;
 
 export function isSensitivePath(candidate: string): boolean {
   const segments = path.normalize(candidate).split(path.sep).filter(Boolean);
