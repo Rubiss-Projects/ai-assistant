@@ -132,9 +132,17 @@ async function setup(): Promise<void> {
     existing,
     false
   );
+  const requestedWorkspaceRoot = await promptVar(
+    rl,
+    "Shared-mode workspace root",
+    "AI_ASSISTANT_WORKSPACE_ROOT",
+    existing,
+    false
+  );
 
   let securityMode: "shared" | "unrestricted";
   let sitesEnabled: boolean;
+  const workspaceRoot = resolve(requestedWorkspaceRoot || join(CONFIG_DIR, "workspaces"));
   try {
     securityMode = setupSecurityMode(requestedSecurityMode);
     sitesEnabled = setupSitesEnabled(requestedSitesEnabled);
@@ -166,6 +174,7 @@ async function setup(): Promise<void> {
       : "# AI_ASSISTANT_SYSTEM_PROMPT_FILE=",
     `AI_ASSISTANT_SECURITY_MODE=${securityMode}`,
     `AI_ASSISTANT_ENABLE_SITES=${sitesEnabled}`,
+    `AI_ASSISTANT_WORKSPACE_ROOT=${JSON.stringify(workspaceRoot)}`,
   ];
 
   if (provider === "codex") {
@@ -230,6 +239,7 @@ async function setup(): Promise<void> {
   );
   if (progressInterval) lines.push(`AI_PROGRESS_INTERVAL_MS=${progressInterval}`);
 
+  if (securityMode === "shared") mkdirSync(workspaceRoot, { recursive: true });
   writeFileSync(ENV_FILE, lines.join("\n") + "\n");
   console.log(`\n✅ Config saved to ${ENV_FILE}`);
   console.log(`✅ Provider set to: ${provider}`);

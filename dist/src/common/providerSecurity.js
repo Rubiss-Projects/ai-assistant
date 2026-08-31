@@ -109,12 +109,12 @@ export function providerChildEnvironment(provider, source = process.env) {
     }
     return result;
 }
-/** A configured root is an enforceable workspace boundary; no setting means legacy cwd behavior. */
+/** Shared mode always has an enforceable root; unrestricted mode keeps legacy cwd behavior. */
 export function configuredWorkspaceRoot(source = process.env) {
     if (!sharedSecurityEnabled(source))
         return undefined;
     const configured = source.AI_ASSISTANT_WORKSPACE_ROOT?.trim();
-    return configured ? path.resolve(configured) : undefined;
+    return path.resolve(configured || process.cwd());
 }
 export function defaultProviderWorkingDirectory(source = process.env) {
     return configuredWorkspaceRoot(source) ?? process.cwd();
@@ -161,13 +161,23 @@ const SENSITIVE_DIRECTORY_NAME_LIST = [
 ];
 const SENSITIVE_FILE_NAMES = new Set(SENSITIVE_FILE_NAME_LIST);
 const SENSITIVE_DIRECTORY_NAMES = new Set(SENSITIVE_DIRECTORY_NAME_LIST);
-/** Provider-native glob policies are derived from the same names as isSensitivePath(). */
+function caseVariants(value) {
+    let variants = [""];
+    for (const character of value) {
+        const choices = character.toLowerCase() === character.toUpperCase()
+            ? [character]
+            : [character.toLowerCase(), character.toUpperCase()];
+        variants = variants.flatMap((prefix) => choices.map((choice) => prefix + choice));
+    }
+    return variants;
+}
+const AUTH_JSON_CASE_VARIANTS = caseVariants("auth.json");
+/** Provider-native policies deny every hidden path and all case variants of auth.json. */
 export const SENSITIVE_FILE_DENY_GLOBS = [
-    ".env",
-    ".env.*",
-    "**/.env",
-    "**/.env.*",
-    ...SENSITIVE_FILE_NAME_LIST.flatMap((name) => [name, `**/${name}`]),
+    ".*",
+    "**/.*",
+    "**/.*/**",
+    ...AUTH_JSON_CASE_VARIANTS.flatMap((name) => [name, `**/${name}`]),
 ];
 export const SENSITIVE_DIRECTORY_DENY_GLOBS = SENSITIVE_DIRECTORY_NAME_LIST.flatMap((name) => [
     name,
@@ -181,7 +191,6 @@ export const SENSITIVE_PATH_DENY_GLOBS = [
 ];
 export const SENSITIVE_PATH_ALLOW_GLOBS = [
     ".env.example",
-    "**/.env.example",
 ];
 export function isSensitivePath(candidate) {
     const segments = path.normalize(candidate).split(path.sep).filter(Boolean);

@@ -126,6 +126,14 @@ test("configured workspace roots reject paths outside their boundary", () => {
     }),
     outside,
   );
+  assert.equal(
+    resolveConfiguredWorkspace(process.cwd(), { AI_ASSISTANT_SECURITY_MODE: "shared" }),
+    process.cwd(),
+  );
+  assert.throws(
+    () => resolveConfiguredWorkspace(outside, { AI_ASSISTANT_SECURITY_MODE: "shared" }),
+    /configured root/,
+  );
 });
 
 test("workspace policy allows source edits but denies credentials and traversal", () => {
@@ -209,10 +217,9 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   for (const glob of SENSITIVE_PATH_DENY_GLOBS) {
     assert.match(filesystemOverride, new RegExp(`${glob.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^,}]*deny`));
   }
-  assert.ok(
-    filesystemOverride.indexOf('"**/.env.example"="write"')
-      < filesystemOverride.indexOf('"**/.ssh/**"="deny"'),
-  );
+  assert.match(filesystemOverride, /"\.\*"="deny"/);
+  assert.match(filesystemOverride, /"AUTH\.JSON"="deny"/);
+  assert.equal(filesystemOverride.includes('"**/.env.example"="write"'), false);
 });
 
 test("Codex can explicitly enable Sites without enabling other connected apps", () => {
@@ -270,17 +277,16 @@ test("OpenCode shared mode is deny-by-default with no shell, plugins, external p
   assert.equal(permission.external_directory, "deny");
   assert.equal(permission.grep, "deny");
   assert.equal(permission.edit["*"], "allow");
-  assert.equal(permission.edit["**/.codex/**"], "deny");
-  assert.equal(permission.edit["**/.aws/**"], "deny");
-  assert.equal(permission.edit["**/.ssh/**"], "deny");
-  assert.equal(permission.edit["**/.npmrc"], "deny");
-  assert.equal(permission.edit["**/.pypirc"], "deny");
-  assert.equal(permission.edit["**/.env.example"], "allow");
+  assert.equal(permission.edit["**/.*/**"], "deny");
+  assert.equal(permission.edit["AUTH.JSON"], "deny");
+  assert.equal(permission.edit["**/AUTH.JSON"], "deny");
+  assert.equal(permission.edit[".env.example"], "allow");
+  assert.equal(permission.edit["**/.env.example"], undefined);
   assert.deepEqual(permission.edit, permission.read);
   const openCodeRuleOrder = Object.keys(permission.edit);
   for (const directoryGlob of SENSITIVE_DIRECTORY_DENY_GLOBS) {
     assert.ok(
-      openCodeRuleOrder.indexOf("**/.env.example") < openCodeRuleOrder.indexOf(directoryGlob),
+      openCodeRuleOrder.indexOf(".env.example") < openCodeRuleOrder.indexOf(directoryGlob),
     );
   }
   assert.deepEqual(config.plugin, []);
