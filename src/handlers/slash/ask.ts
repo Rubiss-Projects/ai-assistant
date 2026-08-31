@@ -25,6 +25,7 @@ export async function handleAsk(
         imageAttachment,
         interaction,
         canIncludeContextAuthor,
+        (internalPrompt) => sessions.runEphemeral(tempKey, internalPrompt),
       );
 
       try {

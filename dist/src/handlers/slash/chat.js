@@ -10,7 +10,7 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
         try {
             await interaction.deferReply();
             // Resolve after defer to avoid hitting Discord's 3s interaction window
-            const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor);
+            const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(interaction.user.id, internalPrompt));
             let response;
             try {
                 if (workspace)
@@ -46,7 +46,7 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
     try {
         await interaction.deferReply();
         // Resolve after defer to avoid hitting Discord's 3s interaction window
-        const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor);
+        const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(interaction.channelId, internalPrompt));
         try {
             if (interaction.channel?.isThread()) {
                 // Can't create a thread inside a thread — use the current thread as the session

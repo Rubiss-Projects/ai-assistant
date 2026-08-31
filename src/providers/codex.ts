@@ -5,6 +5,7 @@ import path from "path";
 import { Codex, Thread, type ThreadItem, type ThreadOptions, type UserInput } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
+import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
@@ -80,8 +81,10 @@ export class CodexProvider implements Provider {
   private mcpToolOverrides: Map<string, Record<string, string[]>> = new Map();
 
   constructor() {
+    const systemPrompt = configuredSystemPrompt();
     this.client = new Codex({
       ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+      ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
     });
   }
 

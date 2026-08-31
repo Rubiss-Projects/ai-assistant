@@ -14,6 +14,7 @@ import type {
   SessionMode,
   StatusInfo,
 } from "./providers/types.js";
+import { randomUUID } from "node:crypto";
 
 export { chunkForDiscord, isUnsupported, UnsupportedError };
 
@@ -132,6 +133,19 @@ export class SessionManager {
 
   sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[]): Promise<string> {
     return this.providerFor(userId).sendMessage(userId, prompt, imagePaths);
+  }
+
+  /** Run an internal one-shot inference without adding it to the user's conversation. */
+  async runEphemeral(key: string, prompt: string): Promise<string> {
+    const provider = this.providerFor(key);
+    const temporaryKey = `internal_${randomUUID()}`;
+    try {
+      return await provider.sendMessage(temporaryKey, prompt);
+    } finally {
+      await provider.resetSession(temporaryKey).catch((error) => {
+        console.warn("[SessionManager] Could not clean up internal session:", error);
+      });
+    }
   }
 
   getStatus(key?: string): Promise<StatusInfo> {

@@ -20,7 +20,7 @@ canIncludeContextAuthor = () => true) {
         const basePrompt = prompt || (message.reference?.messageId
             ? "Respond using the replied-to conversation context."
             : "See the attached file(s).");
-        const knowledgePrompt = await enrichWithDiscordKnowledge(message, basePrompt, client, canIncludeContextAuthor);
+        const knowledgePrompt = await enrichWithDiscordKnowledge(message, basePrompt, client, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(key, internalPrompt));
         const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments);
         let enrichedPrompt = await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor, contextAttachments);
         const result = await downloadFileAttachments([

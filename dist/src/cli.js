@@ -5,6 +5,7 @@ import { spawnSync } from "child_process";
 import { resolve, dirname, join } from "path";
 import { homedir, tmpdir } from "os";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname_local = dirname(__filename);
 // Config dir: ~/.ai-assistant/ or override via AI_ASSISTANT_CONFIG_DIR
@@ -21,17 +22,7 @@ function question(rl, prompt) {
 function parseEnvFile(path) {
     if (!existsSync(path))
         return {};
-    const out = {};
-    for (const line of readFileSync(path, "utf-8").split("\n")) {
-        const t = line.trim();
-        if (!t || t.startsWith("#"))
-            continue;
-        const idx = t.indexOf("=");
-        if (idx === -1)
-            continue;
-        out[t.slice(0, idx)] = t.slice(idx + 1);
-    }
-    return out;
+    return dotenv.parse(readFileSync(path, "utf-8"));
 }
 async function promptVar(rl, label, key, existing, required) {
     const current = existing[key] ?? "";
@@ -65,6 +56,8 @@ async function setup() {
     const freeChannels = await promptVar(rl, "Free channel IDs (comma-separated, bot replies without @mention)", "DISCORD_FREE_CHANNELS", existing, false);
     const allowedUsers = await promptVar(rl, "Allowed user IDs (comma-separated, leave empty to allow all users)", "DISCORD_ALLOWED_USERS", existing, false);
     const adminUsers = await promptVar(rl, "Admin user IDs (comma-separated, leave empty to use allowed users)", "DISCORD_ADMIN_USERS", existing, false);
+    const systemPrompt = await promptVar(rl, "Bot system prompt (optional operator instructions)", "AI_ASSISTANT_SYSTEM_PROMPT", existing, false);
+    const systemPromptFile = await promptVar(rl, "System prompt file path (optional; takes precedence over inline prompt)", "AI_ASSISTANT_SYSTEM_PROMPT_FILE", existing, false);
     if (!token || !appId || !guildId) {
         console.error("\n❌ DISCORD_TOKEN, DISCORD_APP_ID, and DISCORD_GUILD_ID are required.");
         rl.close();
@@ -78,6 +71,12 @@ async function setup() {
         freeChannels ? `DISCORD_FREE_CHANNELS=${freeChannels}` : "# DISCORD_FREE_CHANNELS=",
         allowedUsers ? `DISCORD_ALLOWED_USERS=${allowedUsers}` : "# DISCORD_ALLOWED_USERS=",
         adminUsers ? `DISCORD_ADMIN_USERS=${adminUsers}` : "# DISCORD_ADMIN_USERS=",
+        systemPrompt
+            ? `AI_ASSISTANT_SYSTEM_PROMPT=${JSON.stringify(systemPrompt)}`
+            : "# AI_ASSISTANT_SYSTEM_PROMPT=",
+        systemPromptFile
+            ? `AI_ASSISTANT_SYSTEM_PROMPT_FILE=${JSON.stringify(systemPromptFile)}`
+            : "# AI_ASSISTANT_SYSTEM_PROMPT_FILE=",
     ];
     if (provider === "codex") {
         const openaiKey = await promptVar(rl, "OpenAI API Key (optional if Codex CLI is logged in)", "OPENAI_API_KEY", existing, false);

@@ -11,6 +11,7 @@ export async function prepareSlashAttachments(
   directAttachment?: Attachment | null,
   interaction?: ChatInputCommandInteraction,
   canIncludeContextAuthor: (authorId: string) => boolean = () => true,
+  infer?: (prompt: string) => Promise<string>,
 ): Promise<{
   prompt: string;
   attachments: Array<{ path: string; displayName?: string }>;
@@ -23,7 +24,7 @@ export async function prepareSlashAttachments(
     size?: number;
   }> = [];
   const knowledgePrompt = interaction
-    ? await enrichWithDiscordKnowledge(interaction, prompt, client, canIncludeContextAuthor)
+    ? await enrichWithDiscordKnowledge(interaction, prompt, client, canIncludeContextAuthor, infer)
     : prompt;
   const enrichedPrompt = await resolveMessageLinks(
     knowledgePrompt,

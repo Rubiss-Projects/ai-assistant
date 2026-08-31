@@ -45,6 +45,8 @@ COPILOT_MODEL=claude-haiku-4.5
 CODEX_MODEL=gpt-5.6-sol
 CODEX_REASONING_EFFORT=low # minimal | low | medium | high | xhigh | max | ultra
 OPENCODE_MODEL=openrouter/anthropic/claude-sonnet-4.5
+# Optional instructions for the bot's personality and behavior
+AI_ASSISTANT_SYSTEM_PROMPT="You are our friendly community assistant."
 ```
 
 The full configuration template is `.env.example`; copy it to `.env` and
@@ -115,6 +117,30 @@ PROVIDER=codex
 All three expose the same Discord surface. Features a provider doesn't support
 (e.g. `/plan` on Codex/OpenCode) reply with a friendly
 "`<provider>` does not support `<feature>`" message instead of failing.
+
+### Custom system prompt
+
+The operator can give the bot persistent custom instructions without changing
+how Discord users talk to it:
+
+```env
+AI_ASSISTANT_SYSTEM_PROMPT="Use a playful tone, but be concise."
+```
+
+For a long or multiline prompt, point to a UTF-8 file instead. The file setting
+takes precedence when both are present:
+
+```env
+AI_ASSISTANT_SYSTEM_PROMPT_FILE=/home/bot/.ai-assistant/system-prompt.txt
+```
+
+`ai-assistant setup` offers both settings. Native/daemon installs load them
+from `~/.ai-assistant/.env`; Docker Compose passes the same setting from the
+project `.env`. A prompt file used in the provided container must live under
+`/data`, such as `/data/system-prompt.txt`, because that is its persistent
+Docker volume. Restart the bot after changing either setting. Existing Copilot
+and Codex sessions may need `/reset` to guarantee that newly changed session
+instructions take effect.
 
 ## Switching providers at runtime
 
@@ -257,10 +283,15 @@ lists empty, everybody in a server containing the bot can interact with it.
   later conversations. “Forget the cheese agreement” removes matching records.
   Each memory retains its source channel, and is returned only while the
   requester can still read that channel.
-- Requests such as “search this channel for the beach plans” scan recent
-  history; “search across the server” scans readable text channels. Results
-  include message permalinks. The per-channel scan defaults to 500 messages and
-  can be changed with `DISCORD_HISTORY_SEARCH_LIMIT`.
+- Requests such as “search this channel for the beach plans” use Discord's
+  indexed guild search; “search across the server” broadens the permitted
+  scope. The AI generates several synonym-aware queries, gathers up to 200
+  unique candidates, semantically reranks them, and supplies the best 50 with
+  message permalinks. Tune these pools with `DISCORD_SEARCH_CANDIDATE_LIMIT`
+  and `DISCORD_SEARCH_CONTEXT_LIMIT`.
+  Discord's search endpoint requires **Read Message History** and the
+  **Message Content Intent** to be enabled for the application in the Discord
+  Developer Portal.
 - `DISCORD_ATTACHMENT_MODE=native` passes accepted attachments to the provider
   as temporary files. Set `DISCORD_ATTACHMENT_MODE=text` for a shared bot: all
   non-image attachments are delimited as untrusted text in the prompt and no

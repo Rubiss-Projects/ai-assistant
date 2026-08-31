@@ -2,6 +2,7 @@ import { chunkForDiscord } from "./common/chunkForDiscord.js";
 import { ProviderStore } from "./common/providerStore.js";
 import { createProvider, isValidProviderName } from "./providers/index.js";
 import { PROVIDERS, isUnsupported, UnsupportedError } from "./providers/types.js";
+import { randomUUID } from "node:crypto";
 export { chunkForDiscord, isUnsupported, UnsupportedError };
 /**
  * Returns a friendly Discord-safe message for an UnsupportedError, or null when
@@ -109,6 +110,19 @@ export class SessionManager {
     // ── Chat & session operations (delegated to the active provider for key) ────
     sendMessage(userId, prompt, imagePaths) {
         return this.providerFor(userId).sendMessage(userId, prompt, imagePaths);
+    }
+    /** Run an internal one-shot inference without adding it to the user's conversation. */
+    async runEphemeral(key, prompt) {
+        const provider = this.providerFor(key);
+        const temporaryKey = `internal_${randomUUID()}`;
+        try {
+            return await provider.sendMessage(temporaryKey, prompt);
+        }
+        finally {
+            await provider.resetSession(temporaryKey).catch((error) => {
+                console.warn("[SessionManager] Could not clean up internal session:", error);
+            });
+        }
     }
     getStatus(key) {
         return this.providerFor(key).getStatus();

@@ -11,7 +11,7 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
         try {
             if (workspace)
                 sessions.setSessionWorkingDir(tempKey, workspace);
-            const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor);
+            const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(tempKey, internalPrompt));
             try {
                 response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined);
             }

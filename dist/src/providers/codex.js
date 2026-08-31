@@ -5,6 +5,7 @@ import path from "path";
 import { Codex } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
+import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, } from "./types.js";
 import { readFile } from "node:fs/promises";
 const require = createRequire(import.meta.url);
@@ -47,8 +48,10 @@ export class CodexProvider {
     reasoningEffortOverrides = new Map();
     mcpToolOverrides = new Map();
     constructor() {
+        const systemPrompt = configuredSystemPrompt();
         this.client = new Codex({
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+            ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
         });
     }
     threadOptions(key) {
