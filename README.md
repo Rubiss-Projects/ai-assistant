@@ -68,8 +68,9 @@ files, session state, provider credentials, and downloaded attachments remain
 inside that volume. In `shared` security mode, provider tools are rooted at
 `/data/workspaces`; provider login and session state elsewhere in `/data` are
 outside the tool boundary.
-Outbound networking stays enabled so Discord, model APIs, web search, package
-registries, and network-based tools continue to work.
+Container networking stays enabled for Discord, model APIs, and provider-hosted
+tools. Provider security mode can still restrict network access for local agent
+commands independently.
 
 Do not add host bind mounts, the Docker socket, `--privileged`, or host network
 mode when the bot is exposed to other people. Any of those can weaken or defeat
@@ -462,7 +463,7 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 - This local Discord policy does not alter [Codex Cloud automatic GitHub reviews](https://learn.chatgpt.com/docs/third-party/github), which are configured separately in Codex settings.
 - In `shared` mode, Copilot uses its hardened multi-user `empty` mode. It permits scoped file/search/web tools and read-only MCP calls, but no arbitrary shell, mutating MCP calls, or repository-defined MCP processes.
 - In `shared` mode, OpenCode uses a deny-by-default inline permission policy, disables plugins, shell execution, and content-wide grep, and cannot read or modify sensitive paths or access paths outside the assigned workspace.
-- In `shared` mode, Codex retains shell, build, and test support inside its filesystem permission profile. The shell receives a second, non-secret environment and cannot read provider login state.
+- In `shared` mode, Codex retains local shell, build, and test support inside its filesystem permission profile, but local commands have no network egress. Hosted web search and explicitly allowed apps/connectors use separate provider controls. The shell receives a second, non-secret environment and cannot read provider login state.
 - Docker sets `AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces`. It is enforced in `shared` mode; native shared deployments should set it to the directory tree the bot is allowed to edit. `unrestricted` mode intentionally retains the legacy current-directory and `/workspace` behavior.
 - The read-only GitHub connector may still reveal repository contents to Discord users. Use `DISCORD_ALLOWED_USERS` if repository confidentiality requires a tighter audience.
 - Use `DISCORD_ADMIN_USERS` to reserve configuration, workspace, MCP, and server-management actions for trusted users while allowing everyone selected by `DISCORD_ALLOWED_USERS` to chat and use public slash actions. See **Discord access and permissions** above for the complete command split and fallback rules.

@@ -192,12 +192,16 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
 
   assert.equal((config.features as Record<string, boolean>).plugins, false);
   assert.equal((config.features as Record<string, boolean>).hooks, false);
+  assert.equal((config.features as Record<string, boolean>).network_proxy, false);
   assert.equal(apps._default.enabled, false);
   assert.equal(apps.github.enabled, true);
   assert.equal(apps.github.default_tools_enabled, false);
   assert.equal(apps.github.destructive_enabled, false);
   assert.deepEqual(Object.keys(apps.github.tools).sort(), [...CODEX_GITHUB_READ_ONLY_TOOLS].sort());
   assert.ok(options.configOverrides?.includes("mcp_servers={}"));
+  assert.ok(
+    options.configOverrides?.includes("permissions.discord-bot.network={enabled=false}"),
+  );
   assert.equal(options.env?.DISCORD_TOKEN, undefined);
   assert.equal(options.baseUrl, "https://gateway.example/v1");
   const filesystemOverride = codexFilesystemPermissionOverride();
