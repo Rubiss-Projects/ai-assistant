@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -26,6 +26,7 @@ import {
   codexClientOptions,
   codexFilesystemPermissionOverride,
   codexThreadSecurityOptions,
+  createCodexSessionTemporaryDirectory,
 } from "../src/providers/codex.js";
 import {
   openCodeBaseRunArguments,
@@ -139,13 +140,17 @@ test("configured workspace roots reject paths outside their boundary", () => {
 test("workspace policy allows source edits but denies credentials and traversal", () => {
   const root = mkdtempSync(join(tmpdir(), "ai-workspace-policy-"));
   mkdirSync(join(root, "src"));
+  mkdirSync(join(root, ".codex"));
   writeFileSync(join(root, "src", "index.ts"), "export {};\n");
+  writeFileSync(join(root, ".codex", "token.txt"), "SECRET=value\n");
+  symlinkSync(join(root, ".codex"), join(root, "config"), "junction");
 
   assert.equal(workspacePathIsAllowed(root, "src/index.ts"), true);
   assert.equal(workspacePathIsAllowed(root, "src/new.ts"), true);
   assert.equal(workspacePathIsAllowed(root, ".env"), false);
   assert.equal(workspacePathIsAllowed(root, ".codex/auth.json"), false);
   assert.equal(workspacePathIsAllowed(root, "../auth.json"), false);
+  assert.equal(workspacePathIsAllowed(root, "config/token.txt"), false);
 });
 
 test("Copilot approves workspace files and read-only MCP, but rejects shell and mutations", async () => {
@@ -189,7 +194,9 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
   process.env.AI_ASSISTANT_ENABLE_SITES = "false";
   process.env.OPENAI_BASE_URL = "https://gateway.example/v1";
-  const options = codexClientOptions();
+  const isolatedTemp = mkdtempSync(join(tmpdir(), "ai-codex-session-"));
+  const options = codexClientOptions(isolatedTemp);
+  assert.throws(() => codexClientOptions(), /isolated temporary directory/);
   if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
   else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
   if (previousSites === undefined) delete process.env.AI_ASSISTANT_ENABLE_SITES;
@@ -212,8 +219,10 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
     options.configOverrides?.includes("permissions.discord-bot.network={enabled=false}"),
   );
   assert.equal(options.env?.DISCORD_TOKEN, undefined);
+  assert.equal(options.env?.TMPDIR, isolatedTemp);
   assert.equal(options.baseUrl, "https://gateway.example/v1");
   const filesystemOverride = codexFilesystemPermissionOverride();
+  assert.equal(filesystemOverride.includes('":slash_tmp"="write"'), false);
   for (const glob of SENSITIVE_PATH_DENY_GLOBS) {
     assert.match(filesystemOverride, new RegExp(`${glob.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^,}]*deny`));
   }
@@ -222,12 +231,27 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   assert.equal(filesystemOverride.includes('"**/.env.example"="write"'), false);
 });
 
+test("Codex shared sessions receive distinct private temporary directories", () => {
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  const first = createCodexSessionTemporaryDirectory();
+  const second = createCodexSessionTemporaryDirectory();
+  try {
+    assert.notEqual(first, second);
+    assert.equal(codexClientOptions(first).env?.TMPDIR, first);
+    assert.equal(codexClientOptions(second).env?.TMPDIR, second);
+  } finally {
+    if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+    else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+  }
+});
+
 test("Codex can explicitly enable Sites without enabling other connected apps", () => {
   const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
   const previousSites = process.env.AI_ASSISTANT_ENABLE_SITES;
   process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
   process.env.AI_ASSISTANT_ENABLE_SITES = "true";
-  const options = codexClientOptions();
+  const options = codexClientOptions(mkdtempSync(join(tmpdir(), "ai-codex-sites-session-")));
   if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
   else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
   if (previousSites === undefined) delete process.env.AI_ASSISTANT_ENABLE_SITES;

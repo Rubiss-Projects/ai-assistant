@@ -19,6 +19,11 @@ export const CODEX_GITHUB_READ_ONLY_TOOLS = [
     "search_repositories",
 ];
 const CODEX_PERMISSION_PROFILE = "discord-bot";
+export function createCodexSessionTemporaryDirectory() {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ai-assistant-codex-"));
+    fs.chmodSync(directory, 0o700);
+    return directory;
+}
 export function codexFilesystemPermissionOverride() {
     const sensitiveRules = [
         ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
@@ -26,15 +31,14 @@ export function codexFilesystemPermissionOverride() {
         // Directory denials come last so no nested filename exception can override them.
         ...SENSITIVE_DIRECTORY_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
     ].join(",");
-    return `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",":slash_tmp"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write",${sensitiveRules}}}`;
+    return `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write",${sensitiveRules}}}`;
 }
 export function codexThreadSecurityOptions(source = process.env) {
     return configuredSecurityMode(source) === "unrestricted"
         ? { sandboxMode: "danger-full-access", networkAccessEnabled: true }
         : {};
 }
-function shellEnvironment(workingDirectory) {
-    const childEnvironment = providerChildEnvironment("codex");
+function shellEnvironment(workingDirectory, childEnvironment) {
     const allowedNames = new Set([
         "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR",
         "LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR", "NODE_EXTRA_CA_CERTS",
@@ -46,7 +50,7 @@ function shellEnvironment(workingDirectory) {
     return result;
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions() {
+export function codexClientOptions(temporaryDirectory) {
     const systemPrompt = configuredSystemPrompt();
     if (configuredSecurityMode() === "unrestricted") {
         return {
@@ -55,13 +59,21 @@ export function codexClientOptions() {
             ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
         };
     }
+    if (!temporaryDirectory) {
+        throw new Error("Shared Codex clients require an isolated temporary directory.");
+    }
     const workingDirectory = ensureProviderWorkingDirectory();
     const sitesEnabled = configuredSitesEnabled();
+    const childEnvironment = Object.fromEntries(Object.entries(providerChildEnvironment("codex"))
+        .filter(([name]) => !["TEMP", "TMP", "TMPDIR"].includes(name.toUpperCase())));
+    childEnvironment.TEMP = temporaryDirectory;
+    childEnvironment.TMP = temporaryDirectory;
+    childEnvironment.TMPDIR = temporaryDirectory;
     const tools = Object.fromEntries(CODEX_GITHUB_READ_ONLY_TOOLS.map((tool) => [tool, { enabled: true, approval_mode: "approve" }]));
     return {
         ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
         ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
-        env: providerChildEnvironment("codex"),
+        env: childEnvironment,
         config: {
             developer_instructions: secureSystemPrompt(systemPrompt),
             ...(!process.env.OPENAI_API_KEY ? { forced_login_method: "chatgpt" } : {}),
@@ -84,7 +96,7 @@ export function codexClientOptions() {
                 inherit: "none",
                 ignore_default_excludes: false,
                 experimental_use_profile: false,
-                set: shellEnvironment(workingDirectory),
+                set: shellEnvironment(workingDirectory, childEnvironment),
             },
             apps: {
                 _default: { enabled: false, destructive_enabled: false, open_world_enabled: false },
@@ -141,7 +153,8 @@ function isCachedCodexModel(value) {
 export class CodexProvider {
     name = "codex";
     displayName = "OpenAI Codex";
-    client;
+    clients = new Map();
+    temporaryDirectories = new Map();
     sessions = new Map();
     pending = new Map();
     sessionOperationQueues = new Map();
@@ -152,8 +165,18 @@ export class CodexProvider {
     modelOverrides = new Map();
     reasoningEffortOverrides = new Map();
     mcpToolOverrides = new Map();
-    constructor() {
-        this.client = new Codex(codexClientOptions());
+    clientFor(key) {
+        const existing = this.clients.get(key);
+        if (existing)
+            return existing;
+        let temporaryDirectory;
+        if (configuredSecurityMode() === "shared") {
+            temporaryDirectory = createCodexSessionTemporaryDirectory();
+            this.temporaryDirectories.set(key, temporaryDirectory);
+        }
+        const client = new Codex(codexClientOptions(temporaryDirectory));
+        this.clients.set(key, client);
+        return client;
     }
     threadOptions(key) {
         const workingDirectory = this.workingDirOverrides.get(key) ?? ensureProviderWorkingDirectory();
@@ -175,9 +198,10 @@ export class CodexProvider {
         if (inFlight)
             return inFlight;
         const storedThreadId = this.store.get(key);
+        const client = this.clientFor(key);
         const creation = Promise.resolve(storedThreadId
-            ? this.client.resumeThread(storedThreadId, this.threadOptions(key))
-            : this.client.startThread(this.threadOptions(key)))
+            ? client.resumeThread(storedThreadId, this.threadOptions(key))
+            : client.startThread(this.threadOptions(key)))
             .then((thread) => {
             if (this.pending.get(key) !== creation)
                 return thread;
@@ -194,7 +218,7 @@ export class CodexProvider {
                 throw err;
             console.warn(`[CodexProvider] Resume failed for ${key} (${storedThreadId}), starting a new Codex thread:`, err);
             this.store.delete(key);
-            const fresh = this.client.startThread(this.threadOptions(key));
+            const fresh = client.startThread(this.threadOptions(key));
             this.sessions.set(key, fresh);
             return fresh;
         });
@@ -465,6 +489,11 @@ export class CodexProvider {
         this.messageQueues.delete(key);
         this.histories.delete(key);
         this.store.delete(key);
+        this.clients.delete(key);
+        const temporaryDirectory = this.temporaryDirectories.get(key);
+        this.temporaryDirectories.delete(key);
+        if (temporaryDirectory)
+            fs.rmSync(temporaryDirectory, { recursive: true, force: true });
     }
     setSessionWorkingDir(key, dir) {
         const canonical = resolveConfiguredWorkspace(dir);

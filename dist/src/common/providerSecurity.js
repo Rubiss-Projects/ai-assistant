@@ -138,6 +138,28 @@ function canonicalizeForPolicy(candidate) {
     const canonicalBase = fs.existsSync(cursor) ? fs.realpathSync.native(cursor) : cursor;
     return path.resolve(canonicalBase, ...missingSegments);
 }
+function pathContainsSymbolicLink(root, candidate) {
+    const absoluteRoot = path.resolve(root);
+    const absoluteCandidate = path.resolve(candidate);
+    const relative = path.relative(absoluteRoot, absoluteCandidate);
+    if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+        return true;
+    }
+    let cursor = absoluteRoot;
+    for (const segment of relative.split(path.sep).filter(Boolean)) {
+        cursor = path.join(cursor, segment);
+        try {
+            if (fs.lstatSync(cursor).isSymbolicLink())
+                return true;
+        }
+        catch (error) {
+            if (error.code === "ENOENT")
+                break;
+            return true;
+        }
+    }
+    return false;
+}
 export function pathIsWithin(root, candidate) {
     const canonicalRoot = canonicalizeForPolicy(root);
     const canonicalCandidate = canonicalizeForPolicy(candidate);
@@ -203,8 +225,18 @@ export function isSensitivePath(candidate) {
     return segments.some((segment) => SENSITIVE_DIRECTORY_NAMES.has(segment.toLowerCase()));
 }
 export function workspacePathIsAllowed(workingDirectory, requestedPath) {
-    const resolved = path.resolve(workingDirectory, requestedPath);
-    return pathIsWithin(workingDirectory, resolved) && !isSensitivePath(path.relative(workingDirectory, resolved));
+    const canonicalWorkingDirectory = canonicalizeForPolicy(workingDirectory);
+    const resolved = path.resolve(canonicalWorkingDirectory, requestedPath);
+    if (pathContainsSymbolicLink(canonicalWorkingDirectory, resolved))
+        return false;
+    const canonicalTarget = canonicalizeForPolicy(resolved);
+    if (!pathIsWithin(canonicalWorkingDirectory, canonicalTarget))
+        return false;
+    if (isSensitivePath(path.relative(canonicalWorkingDirectory, canonicalTarget)))
+        return false;
+    // Re-check after canonicalization so a link swap during policy evaluation fails closed.
+    return !pathContainsSymbolicLink(canonicalWorkingDirectory, resolved)
+        && canonicalizeForPolicy(resolved) === canonicalTarget;
 }
 export function resolveConfiguredWorkspace(requestedDirectory, source = process.env) {
     if (!requestedDirectory || requestedDirectory.includes("\0")) {
