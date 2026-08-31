@@ -67,7 +67,7 @@ const COMMON_ENVIRONMENT_KEYS = [
     "SSL_CERT_DIR",
 ];
 const PROVIDER_ENVIRONMENT_KEYS = {
-    codex: ["CODEX_HOME"],
+    codex: ["CODEX_HOME", "OPENAI_BASE_URL"],
     copilot: ["COPILOT_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"],
     opencode: [
         "XDG_CONFIG_HOME",

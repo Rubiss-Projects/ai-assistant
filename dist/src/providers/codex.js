@@ -42,6 +42,7 @@ export function codexClientOptions() {
     if (configuredSecurityMode() === "unrestricted") {
         return {
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+            ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
             ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
         };
     }
@@ -50,6 +51,7 @@ export function codexClientOptions() {
     const tools = Object.fromEntries(CODEX_GITHUB_READ_ONLY_TOOLS.map((tool) => [tool, { enabled: true, approval_mode: "approve" }]));
     return {
         ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+        ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
         env: providerChildEnvironment("codex"),
         config: {
             developer_instructions: secureSystemPrompt(systemPrompt),

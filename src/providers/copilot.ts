@@ -108,6 +108,12 @@ export function copilotClientOptions(
   };
 }
 
+export function copilotWorkspaceMcpEnabled(
+  source: Record<string, string | undefined> = process.env,
+): boolean {
+  return configuredSecurityMode(source) === "unrestricted";
+}
+
 function isSessionNotFoundError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /Session not found:/i.test(message);
@@ -230,7 +236,9 @@ export class CopilotProvider implements Provider {
     const workingDir = shared
       ? this.workingDirOverrides.get(key) ?? ensureProviderWorkingDirectory()
       : this.workingDirOverrides.get(key);
-    const mcpServers = this.buildMcpConfig(key);
+    // Workspace MCP configuration may contain stdio commands. Loading it in shared mode
+    // would execute repository-controlled code before the permission handler can intervene.
+    const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
     const configuredPrompt = configuredSystemPrompt();
     const sessionConfig: SessionConfigBase = shared
       ? {
