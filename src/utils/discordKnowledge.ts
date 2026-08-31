@@ -103,14 +103,11 @@ async function recalledMemories(guildId: string, prompt: string, client: Client,
 }
 
 function memoryText(prompt: string): string {
-  const supportsTrailingDestination = /^.*?\b(?:keep|commit|add|put|record)\b/i.test(prompt);
   let text = prompt
     .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep|commit|add|put|record)\b\s*(?:that|this|the following|:)?\s*/i, "")
     .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "")
     .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:that|the following)?\s*/i, "");
-  if (supportsTrailingDestination) {
-    text = text.replace(/\s+\b(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "");
-  }
+  text = text.replace(/^(this|that|it|these contracts|those contracts)\s+(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "$1");
   return text.trim();
 }
 
@@ -122,8 +119,9 @@ async function contractRecordsFromHistory(
   canIncludeAuthor: (authorId: string) => boolean,
   excludedMessageId?: string,
 ): Promise<{ content: string; channelIds: string[]; sourceUrl: string } | null> {
-  const contractIds = [...new Set(referencedContent.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [])].slice(0, 10);
+  const contractIds = [...new Set(referencedContent.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [])];
   if (contractIds.length === 0) return null;
+  if (contractIds.length > 10) return null;
   const found = new Map<string, APIMessage>();
   for (const contractId of contractIds) {
     try {
