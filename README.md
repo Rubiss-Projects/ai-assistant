@@ -58,7 +58,8 @@ Long tasks remain attached until the selected provider reports completion.
 Discord receives periodic “still working” updates (configured with
 `AI_PROGRESS_INTERVAL_MS`, default one minute). Each provider timeout is a
 one-hour hard limit by default; reaching it explicitly cancels or terminates the
-active run so work cannot silently continue after an error response.
+active run so work cannot silently continue after an error response. The bot
+waits up to `AI_CANCELLATION_GRACE_MS` (default five seconds) for confirmation.
 
 The included Compose configuration runs as an unprivileged user, drops all
 Linux capabilities, prevents privilege escalation, makes the image filesystem

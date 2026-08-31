@@ -194,6 +194,35 @@ test("long Copilot work reports progress and is explicitly aborted at the hard t
   }
 });
 
+test("Copilot evicts a session when cancellation cannot be confirmed", async () => {
+  const previousTimeout = process.env.COPILOT_TIMEOUT_MS;
+  const previousGrace = process.env.AI_CANCELLATION_GRACE_MS;
+  process.env.COPILOT_TIMEOUT_MS = "30";
+  process.env.AI_CANCELLATION_GRACE_MS = "20";
+  try {
+    const manager = createTestManager();
+    let disconnectCalls = 0;
+    const session: SessionLike = {
+      sessionId: "hung-session",
+      on: () => () => {},
+      send: async () => "message-1",
+      abort: () => new Promise(() => {}),
+      disconnect: async () => { disconnectCalls += 1; },
+    };
+    manager.sessions.set("user-1", session);
+
+    const error = await manager.sendMessage("user-1", "long task").catch((caught: unknown) => caught);
+    assert.equal((error as { cancellationConfirmed?: boolean }).cancellationConfirmed, false);
+    assert.equal(manager.sessions.has("user-1"), false);
+    assert.equal(disconnectCalls, 1);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.COPILOT_TIMEOUT_MS;
+    else process.env.COPILOT_TIMEOUT_MS = previousTimeout;
+    if (previousGrace === undefined) delete process.env.AI_CANCELLATION_GRACE_MS;
+    else process.env.AI_CANCELLATION_GRACE_MS = previousGrace;
+  }
+});
+
 test("getHistory returns null without resuming a stored session", async () => {
   const storedSessions: Record<string, string> = { "user-1": "stored-session" };
   const manager = createTestManager(storedSessions);

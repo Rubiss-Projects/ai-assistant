@@ -146,6 +146,13 @@ export class CodexProvider implements Provider {
     if (this.sessions.get(key) === thread) this.sessions.delete(key);
   }
 
+  private abandonTimedOutSession(key: string): void {
+    this.sessions.delete(key);
+    this.pending.delete(key);
+    this.sessionOperationQueues.delete(key);
+    this.store.delete(key);
+  }
+
   private async withLiveSession<T>(
     key: string,
     operation: (thread: Thread) => Promise<T>
@@ -226,20 +233,38 @@ export class CodexProvider implements Provider {
       const controller = new AbortController();
       let timedOut = false;
       const stopProgress = startProgressUpdates(options);
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, timeoutMs);
+      let abortGrace: ReturnType<typeof setTimeout> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
       let result;
       try {
-        result = await this.withLiveSession(userId, (thread) =>
+        const run = this.withLiveSession(userId, (thread) =>
           thread.run(input, { signal: controller.signal })
         );
+        const deadline = new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+            abortGrace = setTimeout(() => {
+              this.abandonTimedOutSession(userId);
+              reject(new RunTimeoutError(this.displayName, timeoutMs, false));
+            }, cancellationGraceMs);
+          }, timeoutMs);
+        });
+        result = await Promise.race([run, deadline]);
+        if (timedOut) {
+          this.abandonTimedOutSession(userId);
+          throw new RunTimeoutError(this.displayName, timeoutMs, true);
+        }
       } catch (error) {
-        if (timedOut) throw new RunTimeoutError(this.displayName, timeoutMs, true);
+        if (timedOut && !(error instanceof RunTimeoutError)) {
+          this.abandonTimedOutSession(userId);
+          throw new RunTimeoutError(this.displayName, timeoutMs, true);
+        }
         throw error;
       } finally {
         clearTimeout(timeout);
+        clearTimeout(abortGrace);
         stopProgress();
       }
 

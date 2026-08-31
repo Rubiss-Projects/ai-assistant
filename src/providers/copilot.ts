@@ -59,6 +59,7 @@ async function sendUntilIdle(
   options?: SendMessageOptions,
 ): Promise<string> {
   const hardTimeoutMs = configuredMilliseconds("COPILOT_TIMEOUT_MS", 60 * 60 * 1000);
+  const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
   let lastAssistantMessage: string | undefined;
   let settled = false;
   let hardTimer: ReturnType<typeof setTimeout> | undefined;
@@ -96,7 +97,7 @@ async function sendUntilIdle(
       });
       let abortDeadlineTimer: ReturnType<typeof setTimeout>;
       const abortDeadline = new Promise<boolean>((resolveAbort) => {
-        abortDeadlineTimer = setTimeout(() => resolveAbort(false), 5_000);
+        abortDeadlineTimer = setTimeout(() => resolveAbort(false), cancellationGraceMs);
       });
       Promise.race([abortAcknowledged, abortDeadline]).then((cancelled) => {
         clearTimeout(abortDeadlineTimer);
@@ -205,6 +206,14 @@ export class CopilotProvider implements Provider {
     );
   }
 
+  private abandonTimedOutSession(key: string, session: CopilotSession): void {
+    if (this.sessions.get(key) === session) this.sessions.delete(key);
+    this.store.delete(key);
+    session.disconnect().catch((err) =>
+      console.warn(`[CopilotProvider] Failed to disconnect timed-out session ${session.sessionId}:`, err)
+    );
+  }
+
   private async withLiveSession<T>(
     key: string,
     operation: (session: CopilotSession) => Promise<T>
@@ -271,9 +280,16 @@ export class CopilotProvider implements Provider {
         path: a.path,
         ...(a.displayName ? { displayName: a.displayName } : {}),
       }));
-      return this.withLiveSession(userId, (session) =>
-        sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options)
-      );
+      return this.withLiveSession(userId, async (session) => {
+        try {
+          return await sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options);
+        } catch (error) {
+          if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
+            this.abandonTimedOutSession(userId, session);
+          }
+          throw error;
+        }
+      });
     });
     this.messageQueues.set(userId, next.catch(() => {}));
     return next;

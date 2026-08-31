@@ -93,6 +93,33 @@ test("Codex long runs report progress and abort at the hard timeout", async () =
   }
 });
 
+test("Codex hard deadline releases the request when abort does not settle", async () => {
+  const previousTimeout = process.env.CODEX_TIMEOUT_MS;
+  const previousGrace = process.env.AI_CANCELLATION_GRACE_MS;
+  process.env.CODEX_TIMEOUT_MS = "30";
+  process.env.AI_CANCELLATION_GRACE_MS = "20";
+  try {
+    const codex = new CodexProvider();
+    const internal = codex as unknown as {
+      sessions: Map<string, { id: string; run: () => Promise<never> }>;
+    };
+    internal.sessions.set("hung-codex-run", {
+      id: "hung-thread",
+      run: () => new Promise(() => {}),
+    });
+
+    const error = await codex.sendMessage("hung-codex-run", "work").catch((caught: unknown) => caught);
+    assert.ok(error instanceof RunTimeoutError);
+    assert.equal(error.cancellationConfirmed, false);
+    assert.equal(internal.sessions.has("hung-codex-run"), false);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.CODEX_TIMEOUT_MS;
+    else process.env.CODEX_TIMEOUT_MS = previousTimeout;
+    if (previousGrace === undefined) delete process.env.AI_CANCELLATION_GRACE_MS;
+    else process.env.AI_CANCELLATION_GRACE_MS = previousGrace;
+  }
+});
+
 test("OpenCode provider reports unsupported features via UnsupportedError", async () => {
   const opencode = new OpenCodeProvider();
   const err = await opencode.compact().catch((e: unknown) => e);
