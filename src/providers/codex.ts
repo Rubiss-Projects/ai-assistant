@@ -13,8 +13,9 @@ import {
   ensureProviderWorkingDirectory,
   providerChildEnvironment,
   resolveConfiguredWorkspace,
+  SENSITIVE_DIRECTORY_DENY_GLOBS,
+  SENSITIVE_FILE_DENY_GLOBS,
   SENSITIVE_PATH_ALLOW_GLOBS,
-  SENSITIVE_PATH_DENY_GLOBS,
   secureSystemPrompt,
 } from "../common/providerSecurity.js";
 import {
@@ -51,8 +52,10 @@ const CODEX_PERMISSION_PROFILE = "discord-bot";
 
 export function codexFilesystemPermissionOverride(): string {
   const sensitiveRules = [
-    ...SENSITIVE_PATH_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
+    ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
     ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => `${JSON.stringify(glob)}="write"`),
+    // Directory denials come last so no nested filename exception can override them.
+    ...SENSITIVE_DIRECTORY_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
   ].join(",");
   return `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",":slash_tmp"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write",${sensitiveRules}}}`;
 }

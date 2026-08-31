@@ -4,7 +4,7 @@ import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { configuredSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
-import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_PATH_ALLOW_GLOBS, SENSITIVE_PATH_DENY_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
+import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError } from "./types.js";
 /**
  * Resolves the `opencode` executable. Prefers OPENCODE_BIN, then well-known
@@ -42,8 +42,10 @@ function openCodeBin() {
 export function openCodeSecurityConfig() {
     const sensitivePathPolicy = Object.fromEntries([
         ["*", "allow"],
-        ...SENSITIVE_PATH_DENY_GLOBS.map((glob) => [glob, "deny"]),
+        ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => [glob, "deny"]),
         ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => [glob, "allow"]),
+        // OpenCode uses the last matching rule, so credential-directory denials must win.
+        ...SENSITIVE_DIRECTORY_DENY_GLOBS.map((glob) => [glob, "deny"]),
     ]);
     return {
         autoupdate: false,
