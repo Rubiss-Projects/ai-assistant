@@ -106,7 +106,8 @@ function memoryText(prompt: string): string {
   const supportsTrailingDestination = /^.*?\b(?:keep|commit|add|put|record)\b/i.test(prompt);
   let text = prompt
     .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep|commit|add|put|record)\b\s*(?:that|this|the following|:)?\s*/i, "")
-    .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "");
+    .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "")
+    .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:that|the following)?\s*/i, "");
   if (supportsTrailingDestination) {
     text = text.replace(/\s+\b(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "");
   }
@@ -119,6 +120,7 @@ async function contractRecordsFromHistory(
   client: Client,
   requesterId: string,
   canIncludeAuthor: (authorId: string) => boolean,
+  excludedMessageId?: string,
 ): Promise<{ content: string; channelIds: string[]; sourceUrl: string } | null> {
   const contractIds = [...new Set(referencedContent.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [])].slice(0, 10);
   if (contractIds.length === 0) return null;
@@ -127,7 +129,7 @@ async function contractRecordsFromHistory(
     try {
       const candidates: APIMessage[] = [];
       for (const message of await searchGuild(client, guildId, contractId, undefined, 25)) {
-        if (message.author.id === client.user?.id) continue;
+        if (message.id === excludedMessageId) continue;
         if (!message.author.bot && !canIncludeAuthor(message.author.id)) continue;
         if (await channelVisible(message.channel_id, client, requesterId)) candidates.push(message);
       }
@@ -144,13 +146,13 @@ async function contractRecordsFromHistory(
             || a.timestamp.localeCompare(b.timestamp)
             || a.id.localeCompare(b.id);
         })[0];
-      if (selected) found.set(selected.id, selected);
+      if (selected) found.set(contractId.toUpperCase(), selected);
     } catch (error) {
       console.warn(`[discordKnowledge] Failed to resolve contract ${contractId} for memory:`, error);
     }
   }
-  if (found.size === 0) return null;
-  const messages = [...found.values()];
+  if (found.size !== contractIds.length) return null;
+  const messages = [...new Map([...found.values()].map((message) => [message.id, message])).values()];
   return {
     content: messages
     .map((message) => `${message.content}\nSource: https://discord.com/channels/${guildId}/${message.channel_id}/${message.id}`)
@@ -174,7 +176,7 @@ export async function sourceText(invocation: Invocation, prompt: string, client:
       const referenced = await invocation.fetchReference();
       if (referenced.content.trim() && (referenced.author.bot || canIncludeAuthor(referenced.author.id))) {
         const contracts = invocation.guildId
-          ? await contractRecordsFromHistory(invocation.guildId, referenced.content, client, requesterId, canIncludeAuthor)
+          ? await contractRecordsFromHistory(invocation.guildId, referenced.content, client, requesterId, canIncludeAuthor, referenced.id)
           : null;
         return {
           content: contracts?.content ?? referenced.content.trim(),
