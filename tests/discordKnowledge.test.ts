@@ -46,13 +46,22 @@ test("resolves contract IDs in a replied-to summary to exact Discord messages", 
     rest: {
       get: async () => ({
         total_results: 1,
-        messages: [[{
-          id: "contract-message",
-          channel_id: "contracts-channel",
-          content: contract,
-          author: { id: "gemini", bot: true, username: "Gemini" },
-          timestamp: new Date().toISOString(),
-        }]],
+        messages: [[
+          {
+            id: "summary-copy",
+            channel_id: "summary-channel",
+            content: "CONTRACT-BEN-MARVEL-2026-A and CONTRACT-OTHER were discussed in this summary.",
+            author: { id: "helper", bot: true, username: "Helper" },
+            timestamp: new Date().toISOString(),
+          },
+          {
+            id: "contract-message",
+            channel_id: "contracts-channel",
+            content: contract,
+            author: { id: "gemini", bot: true, username: "Gemini" },
+            timestamp: new Date().toISOString(),
+          },
+        ]],
       }),
     },
     channels: {
@@ -72,10 +81,31 @@ test("resolves contract IDs in a replied-to summary to exact Discord messages", 
     () => true,
   );
   assert.match(source.content, /Ben shall acquire one heroic copy of Marvel/);
+  assert.doesNotMatch(source.content, /OTHER were discussed/);
   assert.match(source.content, /contracts-channel\/contract-message/);
   assert.equal(source.channelId, "contracts-channel");
   assert.deepEqual(source.sourceChannelIds, ["contracts-channel"]);
   assert.equal(source.authorId, "requester");
+});
+
+test("substantive text beginning with a demonstrative remains explicit memory", async () => {
+  const source = await sourceText(
+    {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      reference: { messageId: "unrelated" },
+      fetchReference: async () => ({
+        content: "Unrelated replied-to content",
+        channelId: "channel-1",
+        author: { id: "user-2", bot: false },
+      }),
+    } as never,
+    "Remember that this deployment uses blue-green",
+    {} as never,
+    "requester",
+    () => true,
+  );
+  assert.equal(source.content, "this deployment uses blue-green");
 });
 
 test("put this in memory resolves replied-to content instead of command wording", async () => {
