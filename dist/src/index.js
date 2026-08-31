@@ -2,6 +2,7 @@ import { config } from "dotenv";
 config();
 import { SessionManager } from "./sessionManager.js";
 import { createBot } from "./bot.js";
+import { createHourlyReplyScheduler } from "./hourlyReplyScheduler.js";
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
     console.error("❌ DISCORD_TOKEN is not set in .env");
@@ -9,9 +10,12 @@ if (!token) {
 }
 const sessions = new SessionManager();
 const client = createBot(sessions);
+const hourlyReplyScheduler = createHourlyReplyScheduler(client);
+hourlyReplyScheduler?.start();
 async function shutdown(signal) {
     console.log(`\n${signal} received — shutting down...`);
     try {
+        hourlyReplyScheduler?.stop();
         client.destroy();
         await sessions.shutdown();
         console.log("✅ Shutdown complete.");
