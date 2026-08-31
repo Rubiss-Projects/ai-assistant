@@ -2,6 +2,7 @@ import { ChatInputCommandInteraction, Message, ThreadAutoArchiveDuration } from 
 import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 
 export async function handleChat(
   interaction: ChatInputCommandInteraction,
@@ -83,9 +84,10 @@ export async function handleChat(
     try {
       if (interaction.channel?.isThread()) {
         // Can't create a thread inside a thread — use the current thread as the session
-        if (workspace) sessions.setSessionWorkingDir(interaction.channelId, workspace);
+        const sessionKey = interactionSessionKey(interaction);
+        if (workspace) sessions.setSessionWorkingDir(sessionKey, workspace);
         const response = await sessions.sendMessage(
-          interaction.channelId,
+          sessionKey,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
           { onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
