@@ -97,7 +97,7 @@ async function setup() {
             lines.push(`OPENCODE_TIMEOUT_MS=${opencodeTimeout}`);
     }
     else {
-        const copilotTimeout = await promptVar(rl, "Copilot timeout in ms (default 600000)", "COPILOT_TIMEOUT_MS", existing, false);
+        const copilotTimeout = await promptVar(rl, "Copilot hard timeout in ms (default 3600000)", "COPILOT_TIMEOUT_MS", existing, false);
         if (copilotTimeout)
             lines.push(`COPILOT_TIMEOUT_MS=${copilotTimeout}`);
     }

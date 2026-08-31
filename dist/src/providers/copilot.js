@@ -5,7 +5,7 @@ import { CopilotClient, approveAll } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { configuredSystemPrompt } from "../common/systemPrompt.js";
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, } from "./types.js";
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
 const DEFAULT_MODEL = process.env.COPILOT_MODEL?.trim() || "claude-haiku-4.5";
 function isSessionNotFoundError(err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -28,6 +28,67 @@ function toHistoryEvent(event) {
         default:
             return null;
     }
+}
+function configuredMilliseconds(key, fallback, minimum) {
+    const parsed = Number(process.env[key]);
+    return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback;
+}
+async function sendUntilIdle(session, message, options) {
+    const progressIntervalMs = configuredMilliseconds("COPILOT_PROGRESS_INTERVAL_MS", 60_000, 10);
+    const hardTimeoutMs = configuredMilliseconds("COPILOT_TIMEOUT_MS", 60 * 60 * 1000, progressIntervalMs);
+    const startedAt = Date.now();
+    let lastAssistantMessage;
+    let settled = false;
+    let progressTimer;
+    let hardTimer;
+    return new Promise((resolve, reject) => {
+        let unsubscribe = () => { };
+        const finish = (operation) => {
+            if (settled)
+                return;
+            settled = true;
+            clearInterval(progressTimer);
+            clearTimeout(hardTimer);
+            unsubscribe();
+            operation();
+        };
+        unsubscribe = session.on((event) => {
+            if (event.type === "assistant.message") {
+                lastAssistantMessage = event.data.content;
+            }
+            else if (event.type === "session.idle") {
+                finish(() => resolve(lastAssistantMessage ?? "(no response)"));
+            }
+            else if (event.type === "session.error") {
+                finish(() => reject(new Error(event.data.message)));
+            }
+        });
+        progressTimer = setInterval(() => {
+            const elapsedMs = Date.now() - startedAt;
+            Promise.resolve(options?.onProgress?.({ elapsedMs, message: "The agent is still working." }))
+                .catch((error) => console.warn("[CopilotProvider] Progress callback failed:", error));
+        }, progressIntervalMs);
+        hardTimer = setTimeout(() => {
+            if (settled)
+                return;
+            settled = true;
+            clearInterval(progressTimer);
+            unsubscribe();
+            const abortAcknowledged = Promise.resolve().then(() => session.abort()).then(() => true, (error) => {
+                console.warn("[CopilotProvider] Failed to abort timed-out session:", error);
+                return false;
+            });
+            let abortDeadlineTimer;
+            const abortDeadline = new Promise((resolveAbort) => {
+                abortDeadlineTimer = setTimeout(() => resolveAbort(false), 5_000);
+            });
+            Promise.race([abortAcknowledged, abortDeadline]).then((cancelled) => {
+                clearTimeout(abortDeadlineTimer);
+                reject(new RunTimeoutError("GitHub Copilot", hardTimeoutMs, cancelled));
+            });
+        }, hardTimeoutMs);
+        session.send(message).catch((error) => finish(() => reject(error)));
+    });
 }
 /**
  * Session manager backed by the GitHub Copilot SDK. Each Provider method maps
@@ -149,7 +210,7 @@ export class CopilotProvider {
             return operation(resumed);
         }
     }
-    async sendMessage(userId, prompt, imagePaths) {
+    async sendMessage(userId, prompt, imagePaths, options) {
         const tail = this.messageQueues.get(userId) ?? Promise.resolve();
         const next = tail.then(async () => {
             const attachments = imagePaths?.map((a) => ({
@@ -157,9 +218,7 @@ export class CopilotProvider {
                 path: a.path,
                 ...(a.displayName ? { displayName: a.displayName } : {}),
             }));
-            const result = await this.withLiveSession(userId, (session) => session.sendAndWait({ prompt, ...(attachments?.length ? { attachments } : {}) }, parseInt(process.env.COPILOT_TIMEOUT_MS ?? "") || 10 * 60 * 1000 // default 10-minute timeout
-            ));
-            return result?.data?.content ?? "(no response)";
+            return this.withLiveSession(userId, (session) => sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options));
         });
         this.messageQueues.set(userId, next.catch(() => { }));
         return next;

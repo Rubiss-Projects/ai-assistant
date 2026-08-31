@@ -1,7 +1,7 @@
 import { chunkForDiscord } from "./common/chunkForDiscord.js";
 import { ProviderStore } from "./common/providerStore.js";
 import { createProvider, isValidProviderName } from "./providers/index.js";
-import { PROVIDERS, isUnsupported, UnsupportedError, type Provider } from "./providers/types.js";
+import { PROVIDERS, isUnsupported, RunTimeoutError, UnsupportedError, type Provider } from "./providers/types.js";
 import type {
   AgentInfo,
   AuthStatus,
@@ -11,12 +11,13 @@ import type {
   ModelInfo,
   PlanInfo,
   SendAttachment,
+  SendMessageOptions,
   SessionMode,
   StatusInfo,
 } from "./providers/types.js";
 import { randomUUID } from "node:crypto";
 
-export { chunkForDiscord, isUnsupported, UnsupportedError };
+export { chunkForDiscord, isUnsupported, RunTimeoutError, UnsupportedError };
 
 /**
  * Returns a friendly Discord-safe message for an UnsupportedError, or null when
@@ -26,6 +27,13 @@ export { chunkForDiscord, isUnsupported, UnsupportedError };
 export function unsupportedMessage(err: unknown): string | null {
   if (isUnsupported(err)) return `⚠️ ${err.message}`;
   return null;
+}
+
+export function runTimeoutMessage(err: unknown): string | null {
+  if (!(err instanceof RunTimeoutError)) return null;
+  return err.cancellationConfirmed
+    ? `⏱️ ${err.provider} reached its hard time limit, so the run was cancelled. Please try again.`
+    : `⚠️ ${err.provider} reached its hard time limit, but cancellation could not be confirmed. It may still be running.`;
 }
 
 /**
@@ -131,8 +139,8 @@ export class SessionManager {
 
   // ── Chat & session operations (delegated to the active provider for key) ────
 
-  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[]): Promise<string> {
-    return this.providerFor(userId).sendMessage(userId, prompt, imagePaths);
+  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<string> {
+    return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
   }
 
   /** Run an internal one-shot inference without adding it to the user's conversation. */

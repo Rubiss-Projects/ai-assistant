@@ -1,5 +1,6 @@
-import { chunkForDiscord } from "../../sessionManager.js";
+import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
+import { progressMessage } from "../../common/progressMessage.js";
 export async function handleAsk(interaction, sessions, canIncludeContextAuthor = () => true) {
     const prompt = interaction.options.getString("prompt", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -13,7 +14,7 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
                 sessions.setSessionWorkingDir(tempKey, workspace);
             const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(tempKey, internalPrompt));
             try {
-                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined);
+                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => interaction.editReply(progressMessage(elapsedMs)).then(() => { }) });
             }
             finally {
                 // Temp file cleanup is independent of session reset — always run both
@@ -32,7 +33,7 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
     }
     catch (err) {
         console.error("[/ask] Error:", err);
-        const msg = "❌ Something went wrong talking to the AI. Please try again.";
+        const msg = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
         if (interaction.deferred) {
             await interaction.editReply(msg).catch(() => { });
         }
