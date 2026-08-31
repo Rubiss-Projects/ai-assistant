@@ -27,6 +27,13 @@ export function configuredSitesEnabled(source = process.env) {
         return false;
     throw new Error(`Invalid AI_ASSISTANT_ENABLE_SITES: ${configured} (expected true or false)`);
 }
+/** Setup defaults new installs to shared while preserving an explicit existing/user choice. */
+export function setupSecurityMode(configured) {
+    return configuredSecurityMode({ AI_ASSISTANT_SECURITY_MODE: configured?.trim() || "shared" });
+}
+export function setupSitesEnabled(configured) {
+    return configuredSitesEnabled({ AI_ASSISTANT_ENABLE_SITES: configured?.trim() || "false" });
+}
 export function reportProviderSecurityConfiguration(source = process.env) {
     const mode = configuredSecurityMode(source);
     const sitesEnabled = configuredSitesEnabled(source);
@@ -137,14 +144,41 @@ export function pathIsWithin(root, candidate) {
     const relative = path.relative(canonicalRoot, canonicalCandidate);
     return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== "..");
 }
-const SENSITIVE_FILE_NAMES = new Set([
+const SENSITIVE_FILE_NAME_LIST = [
     ".git-credentials",
     ".netrc",
     ".npmrc",
     ".pypirc",
     "auth.json",
-]);
-const SENSITIVE_DIRECTORY_NAMES = new Set([".aws", ".codex", ".config", ".copilot", ".opencode", ".ssh"]);
+];
+const SENSITIVE_DIRECTORY_NAME_LIST = [
+    ".aws",
+    ".codex",
+    ".config",
+    ".copilot",
+    ".opencode",
+    ".ssh",
+];
+const SENSITIVE_FILE_NAMES = new Set(SENSITIVE_FILE_NAME_LIST);
+const SENSITIVE_DIRECTORY_NAMES = new Set(SENSITIVE_DIRECTORY_NAME_LIST);
+/** Provider-native glob policies are derived from the same names as isSensitivePath(). */
+export const SENSITIVE_PATH_DENY_GLOBS = [
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    ...SENSITIVE_FILE_NAME_LIST.flatMap((name) => [name, `**/${name}`]),
+    ...SENSITIVE_DIRECTORY_NAME_LIST.flatMap((name) => [
+        name,
+        `${name}/**`,
+        `**/${name}`,
+        `**/${name}/**`,
+    ]),
+];
+export const SENSITIVE_PATH_ALLOW_GLOBS = [
+    ".env.example",
+    "**/.env.example",
+];
 export function isSensitivePath(candidate) {
     const segments = path.normalize(candidate).split(path.sep).filter(Boolean);
     const fileName = (segments.at(-1) ?? "").toLowerCase();

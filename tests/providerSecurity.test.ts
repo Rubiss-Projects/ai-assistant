@@ -9,7 +9,10 @@ import {
   pathIsWithin,
   providerChildEnvironment,
   resolveConfiguredWorkspace,
+  SENSITIVE_PATH_DENY_GLOBS,
   secureSystemPrompt,
+  setupSecurityMode,
+  setupSitesEnabled,
   workspacePathIsAllowed,
 } from "../src/common/providerSecurity.js";
 import {
@@ -17,8 +20,18 @@ import {
   copilotWorkspaceMcpEnabled,
   createCopilotPermissionHandler,
 } from "../src/providers/copilot.js";
-import { CODEX_GITHUB_READ_ONLY_TOOLS, codexClientOptions, codexThreadSecurityOptions } from "../src/providers/codex.js";
-import { openCodeBaseRunArguments, openCodeChildEnvironment, openCodeSecurityConfig } from "../src/providers/opencode.js";
+import {
+  CODEX_GITHUB_READ_ONLY_TOOLS,
+  codexClientOptions,
+  codexFilesystemPermissionOverride,
+  codexThreadSecurityOptions,
+} from "../src/providers/codex.js";
+import {
+  openCodeBaseRunArguments,
+  openCodeChildEnvironment,
+  openCodeRequestPrompt,
+  openCodeSecurityConfig,
+} from "../src/providers/opencode.js";
 
 test("security configuration preserves legacy installs and validates explicit values", () => {
   assert.equal(configuredSecurityMode({}), "unrestricted");
@@ -40,6 +53,10 @@ test("security configuration preserves legacy installs and validates explicit va
     () => configuredSitesEnabled({ AI_ASSISTANT_ENABLE_SITES: "yes" }),
     /Invalid AI_ASSISTANT_ENABLE_SITES/,
   );
+  assert.equal(setupSecurityMode(), "shared");
+  assert.equal(setupSecurityMode("unrestricted"), "unrestricted");
+  assert.equal(setupSitesEnabled(), false);
+  assert.equal(setupSitesEnabled("true"), true);
 });
 
 test("shared provider child environments never inherit Discord or MCP secrets", () => {
@@ -183,6 +200,10 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   assert.ok(options.configOverrides?.includes("mcp_servers={}"));
   assert.equal(options.env?.DISCORD_TOKEN, undefined);
   assert.equal(options.baseUrl, "https://gateway.example/v1");
+  const filesystemOverride = codexFilesystemPermissionOverride();
+  for (const glob of SENSITIVE_PATH_DENY_GLOBS) {
+    assert.match(filesystemOverride, new RegExp(`${glob.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^,}]*deny`));
+  }
 });
 
 test("Codex can explicitly enable Sites without enabling other connected apps", () => {
@@ -241,6 +262,10 @@ test("OpenCode shared mode is deny-by-default with no shell, plugins, external p
   assert.equal(permission.grep, "deny");
   assert.equal(permission.edit["*"], "allow");
   assert.equal(permission.edit["**/.codex/**"], "deny");
+  assert.equal(permission.edit["**/.aws/**"], "deny");
+  assert.equal(permission.edit["**/.ssh/**"], "deny");
+  assert.equal(permission.edit["**/.npmrc"], "deny");
+  assert.equal(permission.edit["**/.pypirc"], "deny");
   assert.equal(permission.edit["**/.env.example"], "allow");
   assert.deepEqual(permission.edit, permission.read);
   assert.deepEqual(config.plugin, []);
@@ -270,4 +295,22 @@ test("OpenCode unrestricted mode restores its inherited environment and normal c
     openCodeBaseRunArguments({ AI_ASSISTANT_SECURITY_MODE: "shared" }).includes("--pure"),
     true,
   );
+});
+
+test("OpenCode shared mode includes operator instructions exactly once", () => {
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const previousPrompt = process.env.AI_ASSISTANT_SYSTEM_PROMPT;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  process.env.AI_ASSISTANT_SYSTEM_PROMPT = "operator-marker";
+  try {
+    const prompt = openCodeRequestPrompt("user request");
+    assert.equal(prompt.match(/operator-marker/g)?.length, 1);
+    assert.match(prompt, /External side effects are disabled/);
+    assert.match(prompt, /user request/);
+  } finally {
+    if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+    else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+    if (previousPrompt === undefined) delete process.env.AI_ASSISTANT_SYSTEM_PROMPT;
+    else process.env.AI_ASSISTANT_SYSTEM_PROMPT = previousPrompt;
+  }
 });

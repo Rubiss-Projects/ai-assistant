@@ -6,6 +6,7 @@ import { resolve, dirname, join } from "path";
 import { homedir, tmpdir } from "os";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import { setupSecurityMode, setupSitesEnabled } from "./common/providerSecurity.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname_local = dirname(__filename);
@@ -117,6 +118,31 @@ async function setup(): Promise<void> {
     existing,
     false
   );
+  const requestedSecurityMode = await promptVar(
+    rl,
+    "Provider security mode (shared | unrestricted)",
+    "AI_ASSISTANT_SECURITY_MODE",
+    existing,
+    false
+  );
+  const requestedSitesEnabled = await promptVar(
+    rl,
+    "Enable ChatGPT Sites in shared mode (true | false)",
+    "AI_ASSISTANT_ENABLE_SITES",
+    existing,
+    false
+  );
+
+  let securityMode: "shared" | "unrestricted";
+  let sitesEnabled: boolean;
+  try {
+    securityMode = setupSecurityMode(requestedSecurityMode);
+    sitesEnabled = setupSitesEnabled(requestedSitesEnabled);
+  } catch (err) {
+    console.error(`\n❌ ${err instanceof Error ? err.message : String(err)}`);
+    rl.close();
+    process.exit(1);
+  }
 
   if (!token || !appId || !guildId) {
     console.error("\n❌ DISCORD_TOKEN, DISCORD_APP_ID, and DISCORD_GUILD_ID are required.");
@@ -138,6 +164,8 @@ async function setup(): Promise<void> {
     systemPromptFile
       ? `AI_ASSISTANT_SYSTEM_PROMPT_FILE=${JSON.stringify(systemPromptFile)}`
       : "# AI_ASSISTANT_SYSTEM_PROMPT_FILE=",
+    `AI_ASSISTANT_SECURITY_MODE=${securityMode}`,
+    `AI_ASSISTANT_ENABLE_SITES=${sitesEnabled}`,
   ];
 
   if (provider === "codex") {

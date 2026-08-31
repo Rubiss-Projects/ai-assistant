@@ -7,7 +7,7 @@ import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
-import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, } from "../common/providerSecurity.js";
+import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_PATH_ALLOW_GLOBS, SENSITIVE_PATH_DENY_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, RunTimeoutError, } from "./types.js";
 import { readFile } from "node:fs/promises";
 const require = createRequire(import.meta.url);
@@ -19,6 +19,13 @@ export const CODEX_GITHUB_READ_ONLY_TOOLS = [
     "search_repositories",
 ];
 const CODEX_PERMISSION_PROFILE = "discord-bot";
+export function codexFilesystemPermissionOverride() {
+    const sensitiveRules = [
+        ...SENSITIVE_PATH_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
+        ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => `${JSON.stringify(glob)}="write"`),
+    ].join(",");
+    return `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",":slash_tmp"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write",${sensitiveRules}}}`;
+}
 export function codexThreadSecurityOptions(source = process.env) {
     return configuredSecurityMode(source) === "unrestricted"
         ? { sandboxMode: "danger-full-access", networkAccessEnabled: true }
@@ -101,7 +108,7 @@ export function codexClientOptions() {
         },
         configOverrides: [
             "mcp_servers={}",
-            `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",":slash_tmp"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write","**/.env"="deny","**/.env.*"="deny","**/.codex"="deny","**/.codex/**"="deny","**/auth.json"="deny","**/.git-credentials"="deny","**/.netrc"="deny"}}`,
+            codexFilesystemPermissionOverride(),
             `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,domains={"*"="allow"}}`,
         ],
     };
