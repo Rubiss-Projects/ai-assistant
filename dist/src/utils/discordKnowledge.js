@@ -89,14 +89,29 @@ async function contractRecordsFromHistory(guildId, referencedContent, client, re
     const found = new Map();
     for (const contractId of contractIds) {
         try {
+            const candidates = [];
             for (const message of await searchGuild(client, guildId, contractId, undefined, 25)) {
                 if (message.author.id === client.user?.id)
                     continue;
                 if (!message.author.bot && !canIncludeAuthor(message.author.id))
                     continue;
                 if (await channelVisible(message.channel_id, client, requesterId))
-                    found.set(message.id, message);
+                    candidates.push(message);
             }
+            const escapedId = contractId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const selected = candidates
+                .filter((message) => new RegExp(`\\b${escapedId}\\b`, "i").test(message.content))
+                .sort((a, b) => {
+                const score = (message) => {
+                    const ids = message.content.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [];
+                    return (new RegExp(`^\\s*${escapedId}\\b`, "i").test(message.content) ? 100_000 : 0)
+                        + (ids.length === 1 ? 10_000 : 0)
+                        + Math.min(message.content.length, 9_999);
+                };
+                return score(b) - score(a);
+            })[0];
+            if (selected)
+                found.set(selected.id, selected);
         }
         catch (error) {
             console.warn(`[discordKnowledge] Failed to resolve contract ${contractId} for memory:`, error);
@@ -118,7 +133,7 @@ export async function sourceText(invocation, prompt, client, requesterId, canInc
     const linked = prompt.match(MESSAGE_URL_RE);
     const isDeictic = !explicit
         || /\b(?:remember|save|store|keep|don['’]?t forget)\s+(?:this|that|it)(?:\s+(?:for later|in memory|please))*[.!?]*$/i.test(prompt)
-        || /^\s*(?:this|that|these|those)\b/i.test(explicit)
+        || /^\s*(?:this|that|it|these contracts|those contracts)\s*[.!?]*$/i.test(explicit)
         || /^(?:this|that|it)?\s*(?:https?:\/\/\S+)?[.!?]*$/i.test(explicit);
     if (!isDeictic)
         return { content: explicit, authorId: requesterId };
