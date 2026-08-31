@@ -60,6 +60,7 @@ function runOpenCode(
   opts: { cwd?: string; timeoutMs: number; providerName?: string }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
+    const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
     const child = spawn(openCodeBin(), args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -82,7 +83,7 @@ function runOpenCode(
         if (settled) return;
         settled = true;
         reject(new RunTimeoutError(opts.providerName ?? "OpenCode", opts.timeoutMs, false));
-      }, 5_000);
+      }, cancellationGraceMs);
     }, opts.timeoutMs);
 
     child.on("error", (err: Error) => {
