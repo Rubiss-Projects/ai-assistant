@@ -284,7 +284,7 @@ export async function enrichWithDiscordKnowledge(invocation, prompt, client, can
         const visible = [];
         const channelVisibility = new Map();
         for (const message of candidates.values()) {
-            if (!canIncludeAuthor(message.author.id))
+            if (message.author.bot || !canIncludeAuthor(message.author.id))
                 continue;
             let canSeeChannel = channelVisibility.get(message.channel_id);
             if (canSeeChannel === undefined) {

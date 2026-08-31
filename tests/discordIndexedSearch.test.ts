@@ -15,7 +15,11 @@ test("uses AI-planned Discord indexed searches and deduplicates results", async 
     rest: {
       get: async (route: string, options: { query: URLSearchParams }) => {
         calls.push({ route, query: options.query });
-        return { doing_deep_historical_index: false, total_results: 1, messages: [[apiMessage]] };
+        return {
+          doing_deep_historical_index: false,
+          total_results: 2,
+          messages: [[apiMessage], [{ ...apiMessage, id: "bot-message", content: "Bot-generated beach answer", author: { id: "bot-1", username: "Helper", bot: true } }]],
+        };
       },
     },
     channels: {
@@ -54,6 +58,7 @@ test("uses AI-planned Discord indexed searches and deduplicates results", async 
   assert.match(enriched, /We agreed to use the cabin/);
   assert.match(enriched, /discord\.com\/channels\/guild-1\/channel-1\/message-1/);
   assert.equal(enriched.match(/We agreed to use the cabin/g)?.length, 1);
+  assert.doesNotMatch(enriched, /Bot-generated beach answer/);
 });
 
 test("server-wide language omits the current-channel filter", async () => {
