@@ -10,6 +10,8 @@ services:
     environment:
       HOME: /data
       AI_ASSISTANT_CONFIG_DIR: /data
+      # Provider tools can access this directory, but not the adjacent login state under /data.
+      AI_ASSISTANT_WORKSPACE_ROOT: /data/workspaces
       REGISTER_COMMANDS_ON_START: ${REGISTER_COMMANDS_ON_START:-true}
     volumes:
       # Named volume only: no part of the host filesystem is exposed to the agent.

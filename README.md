@@ -1,6 +1,6 @@
 # AI Assistant
 
-A single personal Discord bot that runs on **GitHub Copilot**, **OpenAI Codex**, or **OpenCode** — pick your AI provider with one config value. Chat with your AI from Discord channels, DMs, and bot-owned threads, with full tool access, persistent per-conversation sessions, slash commands, and thread-based isolation.
+A single personal Discord bot that runs on **GitHub Copilot**, **OpenAI Codex**, or **OpenCode** — pick your AI provider with one config value. Chat with your AI from Discord channels, DMs, and bot-owned threads, with persistent per-conversation sessions, scoped coding tools, slash commands, and thread-based isolation.
 
 This repo replaces the two separate implementations, [ai-assistant-copilot-sdk](https://github.com/Rubiss-Projects/ai-assistant-copilot-sdk) and [ai-assistant-codex-sdk](https://github.com/Rubiss-Projects/ai-assistant-codex-sdk), with one codebase behind a provider abstraction.
 
@@ -65,16 +65,19 @@ The included Compose configuration runs as an unprivileged user, drops all
 Linux capabilities, prevents privilege escalation, makes the image filesystem
 read-only, and mounts only a Docker-managed volume at `/data`. Agent-created
 files, session state, provider credentials, and downloaded attachments remain
-inside that volume. Outbound networking stays enabled so Discord, model APIs,
-web search, package registries, and network-based tools continue to work.
+inside that volume. In `shared` security mode, provider tools are rooted at
+`/data/workspaces`; provider login and session state elsewhere in `/data` are
+outside the tool boundary.
+Outbound networking stays enabled so Discord, model APIs, web search, package
+registries, and network-based tools continue to work.
 
 Do not add host bind mounts, the Docker socket, `--privileged`, or host network
 mode when the bot is exposed to other people. Any of those can weaken or defeat
 the filesystem boundary. The Docker daemon and kernel are still part of the
 trusted computing base; keep Docker and the host patched.
 
-The image includes all three backends and their CLIs. API-key/token auth is the
-best fit for an unattended container:
+The image includes all three backends and their CLIs. Both persisted CLI login
+and explicitly configured API-key/token auth are supported:
 
 ```env
 # Copilot (account must have Copilot access)
@@ -445,10 +448,26 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 ## Security Notes
 
 - The bot token and all credentials live only in `.env`, which is git-ignored and never committed.
-- Use `DISCORD_ALLOWED_USERS` to restrict the bot to your own Discord user ID — especially important since the bot has full tool access to your machine.
+- `AI_ASSISTANT_SECURITY_MODE` controls provider capabilities for every current provider:
+
+  | Mode | Intended deployment | Behavior |
+  | --- | --- | --- |
+  | `shared` | Discord servers with multiple users | Isolates bot secrets, scopes file access, and blocks shell/connector mutations except explicitly enabled capabilities. |
+  | `unrestricted` | Private servers whose users are trusted as the operator | Preserves the legacy provider behavior, including inherited credentials, connected apps, shell access, and external side effects. |
+
+- New deployments created from `.env.example` use `shared`. Existing deployments with no `AI_ASSISTANT_SECURITY_MODE` remain `unrestricted` for backwards compatibility and emit a prominent startup warning. Invalid values stop startup.
+- In `shared` mode, every provider child receives an explicit environment allowlist. Discord credentials, MCP inputs, and future bot secrets are not inherited by provider processes.
+- In `shared` mode, external mutation is disabled independently of Discord prompt instructions. Codex connected apps default off except for the GitHub connector's known read-only repository tools; mutating and newly introduced connector tools remain disabled.
+- `AI_ASSISTANT_ENABLE_SITES=true` is an explicit Codex-only exception in `shared` mode. It enables the ChatGPT Sites plugin and Sites connector so Discord users can create, update, and publish Sites under the logged-in ChatGPT account; connector actions marked destructive remain blocked. Other connected apps remain default-denied. Leave it `false` unless everyone who can invoke the bot is trusted with that Sites identity and quota. In `unrestricted` mode, Sites follows the operator's normal Codex configuration along with all other capabilities.
+- This local Discord policy does not alter [Codex Cloud automatic GitHub reviews](https://learn.chatgpt.com/docs/third-party/github), which are configured separately in Codex settings.
+- In `shared` mode, Copilot uses its hardened multi-user `empty` mode. It permits scoped file/search/web tools and read-only MCP calls, but no arbitrary shell or mutating MCP calls.
+- In `shared` mode, OpenCode uses a deny-by-default inline permission policy, disables plugins and shell execution, and cannot access paths outside the assigned workspace.
+- In `shared` mode, Codex retains shell, build, and test support inside its filesystem permission profile. The shell receives a second, non-secret environment and cannot read provider login state.
+- Docker sets `AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces`. It is enforced in `shared` mode; native shared deployments should set it to the directory tree the bot is allowed to edit. `unrestricted` mode intentionally retains the legacy current-directory and `/workspace` behavior.
+- The read-only GitHub connector may still reveal repository contents to Discord users. Use `DISCORD_ALLOWED_USERS` if repository confidentiality requires a tighter audience.
 - Use `DISCORD_ADMIN_USERS` to reserve configuration, workspace, MCP, and server-management actions for trusted users while allowing everyone selected by `DISCORD_ALLOWED_USERS` to chat and use public slash actions. See **Discord access and permissions** above for the complete command split and fallback rules.
-- Copilot uses `approveAll` permissions — it will execute any tool Copilot requests without prompting. Only expose it to users you trust completely.
-- For a shared Discord bot, prefer the Docker deployment and set `DISCORD_ALLOWED_USERS` unless intentionally allowing the whole server. The container protects host files, but users can still consume credentials, model quota, network access, and the container's persistent data.
+- Mention-only behavior controls when the bot responds; it is not a tool authorization boundary.
+- For a shared Discord bot, prefer the Docker deployment. Users can still consume model quota and use the explicitly enabled read/network capabilities.
 - Thread sessions are isolated by thread ID, so different `/chat` conversations don't share context.
 
 ## Uninstall

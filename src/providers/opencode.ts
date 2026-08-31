@@ -4,6 +4,13 @@ import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { withSystemPrompt } from "../common/systemPrompt.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import {
+  configuredSecurityMode,
+  ensureProviderWorkingDirectory,
+  providerChildEnvironment,
+  resolveConfiguredWorkspace,
+  secureSystemPrompt,
+} from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError, type AgentInfo, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SendMessageOptions, type SessionMode, type StatusInfo } from "./types.js";
 
 /**
@@ -51,6 +58,69 @@ function openCodeBin(): string {
   return resolveOpenCodeBinary();
 }
 
+/** Inline policy has the highest normal config precedence in OpenCode v1. */
+export function openCodeSecurityConfig(): Record<string, unknown> {
+  return {
+    autoupdate: false,
+    share: "disabled",
+    plugin: [],
+    permission: {
+      "*": "deny",
+      read: {
+        "*": "allow",
+        "*.env": "deny",
+        "*.env.*": "deny",
+        "*.env.example": "allow",
+        "**/.codex/**": "deny",
+        "**/auth.json": "deny",
+        "**/.git-credentials": "deny",
+        "**/.netrc": "deny",
+      },
+      edit: "allow",
+      glob: "allow",
+      grep: "allow",
+      list: "allow",
+      // LSP servers are repository-controlled child processes and would inherit provider credentials.
+      lsp: "deny",
+      webfetch: "allow",
+      websearch: "allow",
+      question: "allow",
+      todowrite: "allow",
+      todoread: "allow",
+      external_directory: "deny",
+      bash: "deny",
+      task: "deny",
+      skill: "deny",
+    },
+  };
+}
+
+export function openCodeChildEnvironment(
+  source: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const environment = providerChildEnvironment("opencode", source);
+  if (configuredSecurityMode(source) === "unrestricted") {
+    return { ...environment, OPENCODE_DISABLE_AUTOUPDATE: "1" };
+  }
+  return {
+    ...environment,
+    OPENCODE_DISABLE_AUTOUPDATE: "1",
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(openCodeSecurityConfig()),
+  };
+}
+
+export function openCodeBaseRunArguments(
+  source: Record<string, string | undefined> = process.env,
+): string[] {
+  return [
+    "run",
+    "--format",
+    "json",
+    ...(configuredSecurityMode(source) === "shared" ? ["--pure"] : []),
+    "--auto",
+  ];
+}
+
 /**
  * Runs the `opencode` CLI non-interactively and returns its stdout.
  * Uses spawn (no shell) so prompts/arguments are never interpreted by a shell.
@@ -64,7 +134,7 @@ function runOpenCode(
     const child = spawn(openCodeBin(), args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, OPENCODE_DISABLE_AUTOUPDATE: "1" },
+      env: openCodeChildEnvironment(),
     });
 
     let stdout = "";
@@ -167,7 +237,7 @@ export class OpenCodeProvider implements Provider {
   }
 
   private workingDir(key: string): string {
-    return this.workingDirOverrides.get(key) ?? process.cwd();
+    return this.workingDirOverrides.get(key) ?? ensureProviderWorkingDirectory();
   }
 
   async sendMessage(
@@ -178,7 +248,8 @@ export class OpenCodeProvider implements Provider {
   ): Promise<string> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
-      const args = ["run", "--format", "json", "--auto"];
+      const shared = configuredSecurityMode() === "shared";
+      const args = openCodeBaseRunArguments();
       const sessionId = this.sessions.get(userId) ?? this.store.get(userId);
       if (sessionId) args.push("--session", sessionId);
       const model = this.modelOverrides.get(userId) ?? this.configuredModel();
@@ -186,7 +257,7 @@ export class OpenCodeProvider implements Provider {
       for (const img of imagePaths ?? []) {
         args.push("--file", img.path);
       }
-      args.push(withSystemPrompt(prompt));
+      args.push(withSystemPrompt(shared ? `${secureSystemPrompt()}\n\n${prompt}` : prompt));
 
       const timeoutMs = configuredMilliseconds("OPENCODE_TIMEOUT_MS", 60 * 60 * 1000);
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
@@ -226,7 +297,7 @@ export class OpenCodeProvider implements Provider {
   async getStatus(): Promise<StatusInfo> {
     let version = "unknown";
     try {
-      const res = await runOpenCode(["--version"], { cwd: process.cwd(), timeoutMs: 30_000 });
+      const res = await runOpenCode(["--version"], { cwd: ensureProviderWorkingDirectory(), timeoutMs: 30_000 });
       version = res.stdout.trim() || version;
     } catch (err) {
       console.warn("[OpenCodeProvider] Failed to read opencode version:", err);
@@ -235,7 +306,7 @@ export class OpenCodeProvider implements Provider {
     let isAuthenticated = false;
     let login: string | undefined;
     try {
-      const res = await runOpenCode(["auth", "list"], { cwd: process.cwd(), timeoutMs: 30_000 });
+      const res = await runOpenCode(["auth", "list"], { cwd: ensureProviderWorkingDirectory(), timeoutMs: 30_000 });
       isAuthenticated = res.code === 0;
       // Very loose: expose auth.json path as the login label.
       login = isAuthenticated ? "opencode auth (see ~/.local/share/opencode/auth.json)" : undefined;
@@ -265,7 +336,7 @@ export class OpenCodeProvider implements Provider {
   async listModels(): Promise<ModelInfo[]> {
     let stdout = "";
     try {
-      const res = await runOpenCode(["models"], { cwd: process.cwd(), timeoutMs: 60_000 });
+      const res = await runOpenCode(["models"], { cwd: ensureProviderWorkingDirectory(), timeoutMs: 60_000 });
       stdout = res.stdout;
     } catch (err) {
       console.warn("[OpenCodeProvider] Failed to list models:", err);
@@ -377,18 +448,7 @@ export class OpenCodeProvider implements Provider {
   }
 
   setSessionWorkingDir(key: string, dir: string): void {
-    if (!dir || dir.includes("\0")) {
-      throw new Error("Invalid workspace path.");
-    }
-    let canonical: string;
-    try {
-      canonical = fs.realpathSync.native(path.resolve(dir));
-    } catch {
-      throw new Error(`Workspace path does not exist: ${path.resolve(dir)}`);
-    }
-    if (!fs.statSync(canonical).isDirectory()) {
-      throw new Error(`Workspace path is not a directory: ${canonical}`);
-    }
+    const canonical = resolveConfiguredWorkspace(dir);
     this.workingDirOverrides.set(key, canonical);
     this.sessions.delete(key);
   }

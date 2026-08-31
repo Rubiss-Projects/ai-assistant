@@ -1,13 +1,75 @@
-import fs from "fs";
 import os from "os";
 import path from "path";
-import { CopilotClient, approveAll } from "@github/copilot-sdk";
+import { BuiltInTools, CopilotClient, ToolSet, approveAll } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
 const DEFAULT_MODEL = process.env.COPILOT_MODEL?.trim() || "claude-haiku-4.5";
+const COPILOT_LOCAL_TOOLS = [
+    "view",
+    "create",
+    "create_file",
+    "edit",
+    "apply_patch",
+    "str_replace_editor",
+    "grep",
+    "glob",
+    "report_intent",
+    "web_search",
+    "web_fetch",
+];
+export function createCopilotPermissionHandler(workingDirectory) {
+    return (request) => {
+        const reject = (feedback) => ({ kind: "reject", feedback });
+        if (request.managedApprovalRequired ||
+            ("requestSandboxBypass" in request && request.requestSandboxBypass === true)) {
+            return reject("Interactive approval and sandbox bypass are unavailable in Discord sessions.");
+        }
+        switch (request.kind) {
+            case "read":
+                return workspacePathIsAllowed(workingDirectory, request.path)
+                    ? { kind: "approve-once" }
+                    : reject("Reads are limited to non-sensitive files in the assigned workspace.");
+            case "write":
+                return workspacePathIsAllowed(workingDirectory, request.fileName)
+                    ? { kind: "approve-once" }
+                    : reject("Writes are limited to non-sensitive files in the assigned workspace.");
+            case "mcp":
+                return request.readOnly
+                    ? { kind: "approve-once" }
+                    : reject("Mutating connector and MCP tools are disabled for Discord sessions.");
+            case "url":
+                return { kind: "approve-once" };
+            case "shell":
+                return reject("Arbitrary shell execution is disabled for this shared provider.");
+            default:
+                return reject("This capability is not enabled for Discord sessions.");
+        }
+    };
+}
+function copilotAvailableTools() {
+    return new ToolSet()
+        .addBuiltIn(BuiltInTools.Isolated)
+        .addBuiltIn(COPILOT_LOCAL_TOOLS)
+        .addMcp("*");
+}
+export function copilotClientOptions(source = process.env) {
+    const gitHubToken = source.COPILOT_GITHUB_TOKEN?.trim() || source.GH_TOKEN?.trim();
+    if (configuredSecurityMode(source) === "unrestricted") {
+        return gitHubToken ? { gitHubToken } : undefined;
+    }
+    const environment = providerChildEnvironment("copilot", source);
+    const home = environment.HOME ?? environment.USERPROFILE ?? os.homedir();
+    return {
+        mode: "empty",
+        env: environment,
+        baseDirectory: source.COPILOT_HOME?.trim() || path.join(home, ".copilot"),
+        ...(gitHubToken ? { gitHubToken, useLoggedInUser: false } : { useLoggedInUser: true }),
+    };
+}
 function isSessionNotFoundError(err) {
     const message = err instanceof Error ? err.message : String(err);
     return /Session not found:/i.test(message);
@@ -107,8 +169,7 @@ export class CopilotProvider {
     // Per-session reasoning-effort override (host tracks the effective value)
     reasoningEffortOverrides = new Map();
     constructor() {
-        const gitHubToken = process.env.COPILOT_GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
-        this.client = new CopilotClient(gitHubToken ? { gitHubToken } : undefined);
+        this.client = new CopilotClient(copilotClientOptions());
     }
     async getOrCreateSession(key) {
         const existing = this.sessions.get(key);
@@ -117,17 +178,30 @@ export class CopilotProvider {
         const inFlight = this.pending.get(key);
         if (inFlight)
             return inFlight;
-        const userSkillsDir = path.join(os.homedir(), ".agents", "skills");
-        const workingDir = this.workingDirOverrides.get(key);
+        const shared = configuredSecurityMode() === "shared";
+        const workingDir = shared
+            ? this.workingDirOverrides.get(key) ?? ensureProviderWorkingDirectory()
+            : this.workingDirOverrides.get(key);
         const mcpServers = this.buildMcpConfig(key);
-        const systemPrompt = configuredSystemPrompt();
-        const sessionConfig = {
-            onPermissionRequest: approveAll,
-            skillDirectories: [userSkillsDir],
-            ...(workingDir ? { workingDirectory: workingDir } : {}),
-            ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-            ...(systemPrompt ? { systemMessage: { mode: "append", content: systemPrompt } } : {}),
-        };
+        const configuredPrompt = configuredSystemPrompt();
+        const sessionConfig = shared
+            ? {
+                onPermissionRequest: createCopilotPermissionHandler(workingDir),
+                availableTools: copilotAvailableTools(),
+                enableSessionStore: true,
+                workingDirectory: workingDir,
+                ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+                systemMessage: { mode: "append", content: secureSystemPrompt(configuredPrompt) },
+            }
+            : {
+                onPermissionRequest: approveAll,
+                skillDirectories: [path.join(os.homedir(), ".agents", "skills")],
+                ...(workingDir ? { workingDirectory: workingDir } : {}),
+                ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+                ...(configuredPrompt
+                    ? { systemMessage: { mode: "append", content: configuredPrompt } }
+                    : {}),
+            };
         const storedSessionId = this.store.get(key);
         const creation = (storedSessionId
             ? this.client
@@ -362,19 +436,7 @@ export class CopilotProvider {
         return result;
     }
     setSessionWorkingDir(key, dir) {
-        if (!dir || dir.includes("\0")) {
-            throw new Error("Invalid workspace path.");
-        }
-        let canonical;
-        try {
-            canonical = fs.realpathSync.native(path.resolve(dir));
-        }
-        catch {
-            throw new Error(`Workspace path does not exist: ${path.resolve(dir)}`);
-        }
-        if (!fs.statSync(canonical).isDirectory()) {
-            throw new Error(`Workspace path is not a directory: ${canonical}`);
-        }
+        const canonical = resolveConfiguredWorkspace(dir);
         this.workingDirOverrides.set(key, canonical);
     }
     getSessionWorkingDir(key) {
