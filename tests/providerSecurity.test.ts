@@ -12,7 +12,11 @@ import {
   secureSystemPrompt,
   workspacePathIsAllowed,
 } from "../src/common/providerSecurity.js";
-import { copilotClientOptions, createCopilotPermissionHandler } from "../src/providers/copilot.js";
+import {
+  copilotClientOptions,
+  copilotWorkspaceMcpEnabled,
+  createCopilotPermissionHandler,
+} from "../src/providers/copilot.js";
 import { CODEX_GITHUB_READ_ONLY_TOOLS, codexClientOptions, codexThreadSecurityOptions } from "../src/providers/codex.js";
 import { openCodeBaseRunArguments, openCodeChildEnvironment, openCodeSecurityConfig } from "../src/providers/opencode.js";
 
@@ -44,6 +48,7 @@ test("shared provider child environments never inherit Discord or MCP secrets", 
     PATH: "/usr/bin",
     HOME: "/data",
     CODEX_HOME: "/data/.codex",
+    OPENAI_BASE_URL: "https://gateway.example/v1",
     DISCORD_TOKEN: "discord-secret",
     DISCORD_APP_ID: "app-id",
     MCP_INPUT_GITHUB_TOKEN: "mcp-secret",
@@ -53,6 +58,7 @@ test("shared provider child environments never inherit Discord or MCP secrets", 
 
   const codex = providerChildEnvironment("codex", source);
   assert.equal(codex.CODEX_HOME, "/data/.codex");
+  assert.equal(codex.OPENAI_BASE_URL, "https://gateway.example/v1");
   assert.equal(codex.DISCORD_TOKEN, undefined);
   assert.equal(codex.OPENAI_API_KEY, undefined);
   assert.equal(codex.MCP_INPUT_GITHUB_TOKEN, undefined);
@@ -146,18 +152,24 @@ test("Copilot security mode switches between isolated and legacy client configur
   assert.equal(unrestricted?.gitHubToken, "github-token");
   assert.equal(unrestricted?.mode, undefined);
   assert.equal(unrestricted?.env, undefined);
+  assert.equal(copilotWorkspaceMcpEnabled({ AI_ASSISTANT_SECURITY_MODE: "shared" }), false);
+  assert.equal(copilotWorkspaceMcpEnabled({ AI_ASSISTANT_SECURITY_MODE: "unrestricted" }), true);
 });
 
 test("Codex shared mode enables only known GitHub read tools and clears personal MCP servers", () => {
   const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
   const previousSites = process.env.AI_ASSISTANT_ENABLE_SITES;
+  const previousBaseUrl = process.env.OPENAI_BASE_URL;
   process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
   process.env.AI_ASSISTANT_ENABLE_SITES = "false";
+  process.env.OPENAI_BASE_URL = "https://gateway.example/v1";
   const options = codexClientOptions();
   if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
   else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
   if (previousSites === undefined) delete process.env.AI_ASSISTANT_ENABLE_SITES;
   else process.env.AI_ASSISTANT_ENABLE_SITES = previousSites;
+  if (previousBaseUrl === undefined) delete process.env.OPENAI_BASE_URL;
+  else process.env.OPENAI_BASE_URL = previousBaseUrl;
   const config = options.config as Record<string, any>;
   const apps = config.apps as Record<string, any>;
 
@@ -170,6 +182,7 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   assert.deepEqual(Object.keys(apps.github.tools).sort(), [...CODEX_GITHUB_READ_ONLY_TOOLS].sort());
   assert.ok(options.configOverrides?.includes("mcp_servers={}"));
   assert.equal(options.env?.DISCORD_TOKEN, undefined);
+  assert.equal(options.baseUrl, "https://gateway.example/v1");
 });
 
 test("Codex can explicitly enable Sites without enabling other connected apps", () => {
@@ -225,7 +238,11 @@ test("OpenCode shared mode is deny-by-default with no shell, plugins, external p
   assert.equal(permission["*"], "deny");
   assert.equal(permission.bash, "deny");
   assert.equal(permission.external_directory, "deny");
-  assert.equal(permission.edit, "allow");
+  assert.equal(permission.grep, "deny");
+  assert.equal(permission.edit["*"], "allow");
+  assert.equal(permission.edit["**/.codex/**"], "deny");
+  assert.equal(permission.edit["**/.env.example"], "allow");
+  assert.deepEqual(permission.edit, permission.read);
   assert.deepEqual(config.plugin, []);
 
   const env = openCodeChildEnvironment({

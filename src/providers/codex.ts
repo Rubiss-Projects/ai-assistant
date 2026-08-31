@@ -76,6 +76,7 @@ export function codexClientOptions(): CodexOptions {
   if (configuredSecurityMode() === "unrestricted") {
     return {
       ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+      ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
       ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
     };
   }
@@ -88,6 +89,7 @@ export function codexClientOptions(): CodexOptions {
 
   return {
     ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+    ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
     env: providerChildEnvironment("codex"),
     config: {
       developer_instructions: secureSystemPrompt(systemPrompt),

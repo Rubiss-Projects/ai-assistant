@@ -84,7 +84,7 @@ const COMMON_ENVIRONMENT_KEYS = [
 ] as const;
 
 const PROVIDER_ENVIRONMENT_KEYS: Record<ProviderName, readonly string[]> = {
-  codex: ["CODEX_HOME"],
+  codex: ["CODEX_HOME", "OPENAI_BASE_URL"],
   copilot: ["COPILOT_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"],
   opencode: [
     "XDG_CONFIG_HOME",

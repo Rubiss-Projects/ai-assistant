@@ -60,25 +60,32 @@ function openCodeBin(): string {
 
 /** Inline policy has the highest normal config precedence in OpenCode v1. */
 export function openCodeSecurityConfig(): Record<string, unknown> {
+  const sensitivePathPolicy = {
+    "*": "allow",
+    "*.env": "deny",
+    "*.env.*": "deny",
+    "**/.env": "deny",
+    "**/.env.*": "deny",
+    "**/.codex": "deny",
+    "**/.codex/**": "deny",
+    "**/auth.json": "deny",
+    "**/.git-credentials": "deny",
+    "**/.netrc": "deny",
+    ".env.example": "allow",
+    "**/.env.example": "allow",
+  };
   return {
     autoupdate: false,
     share: "disabled",
     plugin: [],
     permission: {
       "*": "deny",
-      read: {
-        "*": "allow",
-        "*.env": "deny",
-        "*.env.*": "deny",
-        "*.env.example": "allow",
-        "**/.codex/**": "deny",
-        "**/auth.json": "deny",
-        "**/.git-credentials": "deny",
-        "**/.netrc": "deny",
-      },
-      edit: "allow",
+      read: sensitivePathPolicy,
+      edit: sensitivePathPolicy,
       glob: "allow",
-      grep: "allow",
+      // OpenCode matches grep permissions against the regex, not searched paths, so
+      // path-based secret exclusions cannot secure it. File reads remain available.
+      grep: "deny",
       list: "allow",
       // LSP servers are repository-controlled child processes and would inherit provider credentials.
       lsp: "deny",
