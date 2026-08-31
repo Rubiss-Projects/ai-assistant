@@ -4,6 +4,7 @@ import path from "path";
 import { CopilotClient, approveAll } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
+import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, } from "./types.js";
 const DEFAULT_MODEL = process.env.COPILOT_MODEL?.trim() || "claude-haiku-4.5";
 function isSessionNotFoundError(err) {
@@ -67,11 +68,13 @@ export class CopilotProvider {
         const userSkillsDir = path.join(os.homedir(), ".agents", "skills");
         const workingDir = this.workingDirOverrides.get(key);
         const mcpServers = this.buildMcpConfig(key);
+        const systemPrompt = configuredSystemPrompt();
         const sessionConfig = {
             onPermissionRequest: approveAll,
             skillDirectories: [userSkillsDir],
             ...(workingDir ? { workingDirectory: workingDir } : {}),
             ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+            ...(systemPrompt ? { systemMessage: { mode: "append", content: systemPrompt } } : {}),
         };
         const storedSessionId = this.store.get(key);
         const creation = (storedSessionId

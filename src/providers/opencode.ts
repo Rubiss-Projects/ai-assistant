@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
+import { withSystemPrompt } from "../common/systemPrompt.js";
 import { UnsupportedError, type AgentInfo, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SessionMode, type StatusInfo } from "./types.js";
 
 /**
@@ -163,7 +164,7 @@ export class OpenCodeProvider implements Provider {
       for (const img of imagePaths ?? []) {
         args.push("--file", img.path);
       }
-      args.push(prompt);
+      args.push(withSystemPrompt(prompt));
 
       const timeoutMs = parseInt(process.env.OPENCODE_TIMEOUT_MS ?? "", 10) || 10 * 60 * 1000;
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });

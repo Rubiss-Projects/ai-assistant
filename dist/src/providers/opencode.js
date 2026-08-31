@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
+import { withSystemPrompt } from "../common/systemPrompt.js";
 import { UnsupportedError } from "./types.js";
 /**
  * Resolves the `opencode` executable. Prefers OPENCODE_BIN, then well-known
@@ -129,7 +130,7 @@ export class OpenCodeProvider {
             for (const img of imagePaths ?? []) {
                 args.push("--file", img.path);
             }
-            args.push(prompt);
+            args.push(withSystemPrompt(prompt));
             const timeoutMs = parseInt(process.env.OPENCODE_TIMEOUT_MS ?? "", 10) || 10 * 60 * 1000;
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
             const { stdout, stderr, code } = await runOpenCode(args, {

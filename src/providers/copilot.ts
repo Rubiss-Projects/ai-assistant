@@ -5,6 +5,7 @@ import { CopilotClient, CopilotSession, MCPServerConfig, approveAll } from "@git
 import type { SessionEvent } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
+import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
@@ -92,11 +93,13 @@ export class CopilotProvider implements Provider {
     const userSkillsDir = path.join(os.homedir(), ".agents", "skills");
     const workingDir = this.workingDirOverrides.get(key);
     const mcpServers = this.buildMcpConfig(key);
+    const systemPrompt = configuredSystemPrompt();
     const sessionConfig = {
       onPermissionRequest: approveAll,
       skillDirectories: [userSkillsDir] as string[],
       ...(workingDir ? { workingDirectory: workingDir } : {}),
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      ...(systemPrompt ? { systemMessage: { mode: "append" as const, content: systemPrompt } } : {}),
     };
 
     const storedSessionId = this.store.get(key);

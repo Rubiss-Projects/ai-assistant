@@ -5,6 +5,7 @@ import { spawnSync } from "child_process";
 import { resolve, dirname, join } from "path";
 import { homedir, tmpdir } from "os";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname_local = dirname(__filename);
@@ -26,15 +27,7 @@ function question(rl: Interface, prompt: string): Promise<string> {
 
 function parseEnvFile(path: string): Record<string, string> {
   if (!existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(path, "utf-8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const idx = t.indexOf("=");
-    if (idx === -1) continue;
-    out[t.slice(0, idx)] = t.slice(idx + 1);
-  }
-  return out;
+  return dotenv.parse(readFileSync(path, "utf-8"));
 }
 
 async function promptVar(
@@ -110,6 +103,20 @@ async function setup(): Promise<void> {
     existing,
     false
   );
+  const systemPrompt = await promptVar(
+    rl,
+    "Bot system prompt (optional operator instructions)",
+    "AI_ASSISTANT_SYSTEM_PROMPT",
+    existing,
+    false
+  );
+  const systemPromptFile = await promptVar(
+    rl,
+    "System prompt file path (optional; takes precedence over inline prompt)",
+    "AI_ASSISTANT_SYSTEM_PROMPT_FILE",
+    existing,
+    false
+  );
 
   if (!token || !appId || !guildId) {
     console.error("\n❌ DISCORD_TOKEN, DISCORD_APP_ID, and DISCORD_GUILD_ID are required.");
@@ -125,6 +132,12 @@ async function setup(): Promise<void> {
     freeChannels ? `DISCORD_FREE_CHANNELS=${freeChannels}` : "# DISCORD_FREE_CHANNELS=",
     allowedUsers ? `DISCORD_ALLOWED_USERS=${allowedUsers}` : "# DISCORD_ALLOWED_USERS=",
     adminUsers ? `DISCORD_ADMIN_USERS=${adminUsers}` : "# DISCORD_ADMIN_USERS=",
+    systemPrompt
+      ? `AI_ASSISTANT_SYSTEM_PROMPT=${JSON.stringify(systemPrompt)}`
+      : "# AI_ASSISTANT_SYSTEM_PROMPT=",
+    systemPromptFile
+      ? `AI_ASSISTANT_SYSTEM_PROMPT_FILE=${JSON.stringify(systemPromptFile)}`
+      : "# AI_ASSISTANT_SYSTEM_PROMPT_FILE=",
   ];
 
   if (provider === "codex") {

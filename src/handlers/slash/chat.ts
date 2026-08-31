@@ -23,6 +23,7 @@ export async function handleChat(
         imageAttachment,
         interaction,
         canIncludeContextAuthor,
+        (internalPrompt) => sessions.runEphemeral(interaction.user.id, internalPrompt),
       );
 
       let response: string;
@@ -69,6 +70,7 @@ export async function handleChat(
       imageAttachment,
       interaction,
       canIncludeContextAuthor,
+      (internalPrompt) => sessions.runEphemeral(interaction.channelId, internalPrompt),
     );
 
     try {
