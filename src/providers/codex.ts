@@ -107,7 +107,7 @@ export function codexClientOptions(): CodexOptions {
       default_permissions: CODEX_PERMISSION_PROFILE,
       features: {
         apps: true,
-        network_proxy: true,
+        network_proxy: false,
         hooks: false,
         plugins: sitesEnabled,
         remote_plugin: false,
@@ -150,7 +150,7 @@ export function codexClientOptions(): CodexOptions {
     configOverrides: [
       "mcp_servers={}",
       codexFilesystemPermissionOverride(),
-      `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,domains={"*"="allow"}}`,
+      `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=false}`,
     ],
   };
 }
