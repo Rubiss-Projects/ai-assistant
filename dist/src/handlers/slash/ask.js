@@ -6,15 +6,24 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
     const workspace = interaction.options.getString("workspace", false);
     const imageAttachment = interaction.options.getAttachment("image", false);
     const tempKey = `ask_tmp_${interaction.user.id}_${Date.now()}`;
+    let durableReply;
     try {
         await interaction.deferReply({ ephemeral: true });
+        try {
+            durableReply = await interaction.user.send("⏳ Working on your request…");
+            await interaction.editReply("📬 I’ll deliver the result in our DM so long-running work is not lost.");
+        }
+        catch {
+            await interaction.editReply("❌ I can’t deliver a long-running private result because your DMs are closed. Enable DMs from this server and try again.");
+            return;
+        }
         let response;
         try {
             if (workspace)
                 sessions.setSessionWorkingDir(tempKey, workspace);
             const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(tempKey, internalPrompt));
             try {
-                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => interaction.editReply(progressMessage(elapsedMs)).then(() => { }) });
+                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
             }
             finally {
                 // Temp file cleanup is independent of session reset — always run both
@@ -26,15 +35,18 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
             await sessions.resetSession(tempKey);
         }
         const chunks = chunkForDiscord(response);
-        await interaction.editReply(chunks[0]);
+        await durableReply.edit(chunks[0]);
         for (const chunk of chunks.slice(1)) {
-            await interaction.followUp({ ephemeral: true, content: chunk });
+            await durableReply.reply(chunk);
         }
     }
     catch (err) {
         console.error("[/ask] Error:", err);
         const msg = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
-        if (interaction.deferred) {
+        if (durableReply) {
+            await durableReply.edit(msg).catch(() => { });
+        }
+        else if (interaction.deferred) {
             await interaction.editReply(msg).catch(() => { });
         }
         else {
