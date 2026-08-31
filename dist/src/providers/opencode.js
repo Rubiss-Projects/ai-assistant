@@ -43,6 +43,7 @@ function openCodeBin() {
  */
 function runOpenCode(args, opts) {
     return new Promise((resolve, reject) => {
+        const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
         const child = spawn(openCodeBin(), args, {
             cwd: opts.cwd,
             stdio: ["ignore", "pipe", "pipe"],
@@ -64,7 +65,7 @@ function runOpenCode(args, opts) {
                     return;
                 settled = true;
                 reject(new RunTimeoutError(opts.providerName ?? "OpenCode", opts.timeoutMs, false));
-            }, 5_000);
+            }, cancellationGraceMs);
         }, opts.timeoutMs);
         child.on("error", (err) => {
             if (settled)
