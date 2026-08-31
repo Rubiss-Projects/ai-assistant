@@ -103,11 +103,14 @@ async function recalledMemories(guildId: string, prompt: string, client: Client,
 }
 
 function memoryText(prompt: string): string {
-  return prompt
+  const supportsTrailingDestination = /^.*?\b(?:keep|commit|add|put|record)\b/i.test(prompt);
+  let text = prompt
     .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep|commit|add|put|record)\b\s*(?:that|this|the following|:)?\s*/i, "")
-    .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "")
-    .replace(/\s+\b(?:to|in|into)\s+(?:long-term\s+)?memory\b[\s\S]*$/i, "")
-    .trim();
+    .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "");
+  if (supportsTrailingDestination) {
+    text = text.replace(/\s+\b(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "");
+  }
+  return text.trim();
 }
 
 async function contractRecordsFromHistory(
@@ -135,10 +138,11 @@ async function contractRecordsFromHistory(
           const score = (message: APIMessage): number => {
             const ids = message.content.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [];
             return (new RegExp(`^\\s*${escapedId}\\b`, "i").test(message.content) ? 100_000 : 0)
-              + (ids.length === 1 ? 10_000 : 0)
-              + Math.min(message.content.length, 9_999);
+              + (ids.length === 1 ? 10_000 : 0);
           };
-          return score(b) - score(a);
+          return score(b) - score(a)
+            || a.timestamp.localeCompare(b.timestamp)
+            || a.id.localeCompare(b.id);
         })[0];
       if (selected) found.set(selected.id, selected);
     } catch (error) {

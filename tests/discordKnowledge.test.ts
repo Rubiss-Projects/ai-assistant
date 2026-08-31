@@ -48,18 +48,25 @@ test("resolves contract IDs in a replied-to summary to exact Discord messages", 
         total_results: 1,
         messages: [[
           {
+            id: "later-expanded-copy",
+            channel_id: "discussion-channel",
+            content: `${contract}\nLater commentary that must not become the canonical record.`,
+            author: { id: "helper", bot: true, username: "Helper" },
+            timestamp: "2026-02-01T00:00:00.000Z",
+          },
+          {
             id: "summary-copy",
             channel_id: "summary-channel",
             content: "CONTRACT-BEN-MARVEL-2026-A and CONTRACT-OTHER were discussed in this summary.",
             author: { id: "helper", bot: true, username: "Helper" },
-            timestamp: new Date().toISOString(),
+            timestamp: "2026-01-15T00:00:00.000Z",
           },
           {
             id: "contract-message",
             channel_id: "contracts-channel",
             content: contract,
             author: { id: "gemini", bot: true, username: "Gemini" },
-            timestamp: new Date().toISOString(),
+            timestamp: "2026-01-01T00:00:00.000Z",
           },
         ]],
       }),
@@ -82,6 +89,7 @@ test("resolves contract IDs in a replied-to summary to exact Discord messages", 
   );
   assert.match(source.content, /Ben shall acquire one heroic copy of Marvel/);
   assert.doesNotMatch(source.content, /OTHER were discussed/);
+  assert.doesNotMatch(source.content, /Later commentary/);
   assert.match(source.content, /contracts-channel\/contract-message/);
   assert.equal(source.channelId, "contracts-channel");
   assert.deepEqual(source.sourceChannelIds, ["contracts-channel"]);
@@ -106,6 +114,17 @@ test("substantive text beginning with a demonstrative remains explicit memory", 
     () => true,
   );
   assert.equal(source.content, "this deployment uses blue-green");
+});
+
+test("substantive facts containing in-memory wording remain intact", async () => {
+  const source = await sourceText(
+    { guildId: "guild-1", channelId: "channel-1" } as never,
+    "Remember that caching in memory reduces latency",
+    {} as never,
+    "requester",
+    () => true,
+  );
+  assert.equal(source.content, "caching in memory reduces latency");
 });
 
 test("put this in memory resolves replied-to content instead of command wording", async () => {
