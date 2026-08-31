@@ -59,6 +59,7 @@ export function classifyMemoryIntent(prompt: string): MemoryIntent {
     /^\s*(?:(?:hey|okay|ok)\s+)?(?:please\s+)?(?:remember|save|store)\b/i.test(prompt)
     || /\b(?:can|could|would|will) you (?:please\s+)?(?:remember|save|store)\s+(?:that|this)\b/i.test(prompt)
     || /\bkeep (?:this|that)\b/i.test(prompt)
+    || /^\s*(?:(?:hey|okay|ok)\s+)?(?:please\s+)?(?:commit|add|put|record)\b.*\b(?:to|in|into)\s+(?:long-term\s+)?memory\b/i.test(prompt)
   ) return "save";
   if (
     /^\s*(?:(?:hey|okay|ok)\s+)?(?:please\s+)?(?:forget|delete|remove)\b/i.test(prompt)
@@ -112,22 +113,61 @@ async function recalledMemories(guildId: string, prompt: string, client: Client,
 
 function memoryText(prompt: string): string {
   return prompt
-    .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep)\b\s*(?:that|this|the following|:)?\s*/i, "")
+    .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep|commit|add|put|record)\b\s*(?:that|this|the following|:)?\s*/i, "")
+    .replace(/\s+\b(?:to|in|into)\s+(?:long-term\s+)?memory\b[\s\S]*$/i, "")
     .trim();
 }
 
-async function sourceText(invocation: Invocation, prompt: string, client: Client, requesterId: string, canIncludeAuthor: (authorId: string) => boolean): Promise<{ content: string; sourceUrl?: string; channelId?: string; authorId?: string }> {
+async function contractRecordsFromHistory(
+  guildId: string,
+  referencedContent: string,
+  client: Client,
+  requesterId: string,
+  canIncludeAuthor: (authorId: string) => boolean,
+): Promise<string | null> {
+  const contractIds = [...new Set(referencedContent.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [])].slice(0, 10);
+  if (contractIds.length === 0) return null;
+  const found = new Map<string, APIMessage>();
+  for (const contractId of contractIds) {
+    try {
+      for (const message of await searchGuild(client, guildId, contractId, undefined, 25)) {
+        if (message.author.id === client.user?.id) continue;
+        if (!message.author.bot && !canIncludeAuthor(message.author.id)) continue;
+        if (await channelVisible(message.channel_id, client, requesterId)) found.set(message.id, message);
+      }
+    } catch (error) {
+      console.warn(`[discordKnowledge] Failed to resolve contract ${contractId} for memory:`, error);
+    }
+  }
+  if (found.size === 0) return null;
+  return [...found.values()]
+    .map((message) => `${message.content}\nSource: https://discord.com/channels/${guildId}/${message.channel_id}/${message.id}`)
+    .join("\n\n---\n\n");
+}
+
+export async function sourceText(invocation: Invocation, prompt: string, client: Client, requesterId: string, canIncludeAuthor: (authorId: string) => boolean): Promise<{ content: string; sourceUrl?: string; channelId?: string; authorId?: string }> {
   const explicit = memoryText(prompt);
   const linked = prompt.match(MESSAGE_URL_RE);
   const isDeictic = !explicit
     || /\b(?:remember|save|store|keep|don['’]?t forget)\s+(?:this|that|it)(?:\s+(?:for later|in memory|please))*[.!?]*$/i.test(prompt)
+    || /^\s*(?:this|that|these|those)\b/i.test(explicit)
     || /^(?:this|that|it)?\s*(?:https?:\/\/\S+)?[.!?]*$/i.test(explicit);
   if (!isDeictic) return { content: explicit, authorId: requesterId };
 
   if ("reference" in invocation && invocation.reference?.messageId) {
     try {
       const referenced = await invocation.fetchReference();
-      if (referenced.content.trim() && canIncludeAuthor(referenced.author.id)) return { content: referenced.content.trim(), sourceUrl: referenced.url, channelId: referenced.channelId, authorId: referenced.author.id };
+      if (referenced.content.trim() && (referenced.author.bot || canIncludeAuthor(referenced.author.id))) {
+        const contracts = invocation.guildId
+          ? await contractRecordsFromHistory(invocation.guildId, referenced.content, client, requesterId, canIncludeAuthor)
+          : null;
+        return {
+          content: contracts ?? referenced.content.trim(),
+          sourceUrl: referenced.url,
+          channelId: referenced.channelId,
+          authorId: referenced.author.bot ? requesterId : referenced.author.id,
+        };
+      }
     } catch { /* retain the user's text */ }
   }
   if (linked && linked[1] === invocation.guildId) {
@@ -270,7 +310,7 @@ export async function enrichWithDiscordKnowledge(invocation: Invocation, prompt:
     const channelId = source.channelId ?? invocation.channelId;
     const sourceUrl = source.sourceUrl ?? ("url" in invocation ? invocation.url : `https://discord.com/channels/${guildId}/${channelId}`);
     store.add({ id: randomUUID(), guildId, channelId, authorId: source.authorId ?? requester, content: source.content, sourceUrl, createdAt: new Date().toISOString() });
-    blocks.push(`[Long-term memory action: saved the following server memory. Briefly confirm it.\n${source.content}]`);
+    blocks.push(`[System-managed long-term memory action: the application has already persisted the following server memory. Briefly confirm exactly what was saved. Do not create a file and do not claim persistent memory is unavailable.\n${source.content}]`);
   }
 
   if (isHistoryIntent(prompt)) {

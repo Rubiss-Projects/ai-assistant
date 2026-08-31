@@ -4,7 +4,10 @@ import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/downloadAttachments.js";
 import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
-export async function handleMention(message, client, sessions, sessionKey, // defaults to message.author.id; pass channelId for thread sessions
+export function mentionSessionKey(message) {
+    return message.guildId ? `${message.author.id}:${message.channelId}` : message.author.id;
+}
+export async function handleMention(message, client, sessions, sessionKey, // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
 canIncludeContextAuthor = () => true) {
     // Strip all @mentions of the bot and trim
     const botMentionPattern = new RegExp(`<@!?${client.user.id}>`, "g");
@@ -19,7 +22,7 @@ canIncludeContextAuthor = () => true) {
             await message.reply("👋 Hi! Mention me with a question or command. Use `/ask` for one-shot queries, `/chat` for persistent conversation, or `/reset` to clear your history.");
             return;
         }
-        const key = sessionKey ?? message.author.id;
+        const key = sessionKey ?? mentionSessionKey(message);
         const basePrompt = prompt || (message.reference?.messageId
             ? "Respond using the replied-to conversation context."
             : "See the attached file(s).");
