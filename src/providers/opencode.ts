@@ -3,7 +3,8 @@ import fs from "fs";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { withSystemPrompt } from "../common/systemPrompt.js";
-import { UnsupportedError, type AgentInfo, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SessionMode, type StatusInfo } from "./types.js";
+import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import { RunTimeoutError, UnsupportedError, type AgentInfo, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SendMessageOptions, type SessionMode, type StatusInfo } from "./types.js";
 
 /**
  * Resolves the `opencode` executable. Prefers OPENCODE_BIN, then well-known
@@ -56,7 +57,7 @@ function openCodeBin(): string {
  */
 function runOpenCode(
   args: string[],
-  opts: { cwd?: string; timeoutMs: number }
+  opts: { cwd?: string; timeoutMs: number; providerName?: string }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(openCodeBin(), args, {
@@ -67,21 +68,40 @@ function runOpenCode(
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let cancellationDeadline: ReturnType<typeof setTimeout> | undefined;
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
 
+    let timedOut = false;
+    let cancellationRequested = false;
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`opencode run timed out after ${opts.timeoutMs}ms`));
+      timedOut = true;
+      cancellationRequested = child.kill("SIGKILL");
+      cancellationDeadline = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new RunTimeoutError(opts.providerName ?? "OpenCode", opts.timeoutMs, false));
+      }, 5_000);
     }, opts.timeoutMs);
 
     child.on("error", (err: Error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(err);
+      clearTimeout(cancellationDeadline);
+      reject(timedOut ? new RunTimeoutError(opts.providerName ?? "OpenCode", opts.timeoutMs, false) : err);
     });
 
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(cancellationDeadline);
+      if (timedOut) {
+        reject(new RunTimeoutError(opts.providerName ?? "OpenCode", opts.timeoutMs, cancellationRequested));
+        return;
+      }
       resolve({ stdout, stderr, code });
     });
   });
@@ -152,7 +172,8 @@ export class OpenCodeProvider implements Provider {
   async sendMessage(
     userId: string,
     prompt: string,
-    imagePaths?: SendAttachment[]
+    imagePaths?: SendAttachment[],
+    options?: SendMessageOptions,
   ): Promise<string> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
@@ -166,13 +187,13 @@ export class OpenCodeProvider implements Provider {
       }
       args.push(withSystemPrompt(prompt));
 
-      const timeoutMs = parseInt(process.env.OPENCODE_TIMEOUT_MS ?? "", 10) || 10 * 60 * 1000;
+      const timeoutMs = configuredMilliseconds("OPENCODE_TIMEOUT_MS", 60 * 60 * 1000);
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
 
+      const stopProgress = startProgressUpdates(options);
       const { stdout, stderr, code } = await runOpenCode(args, {
-        cwd: this.workingDir(userId),
-        timeoutMs,
-      });
+        cwd: this.workingDir(userId), timeoutMs, providerName: this.displayName,
+      }).finally(stopProgress);
 
       if (code !== 0) {
         const detail = stderr.trim() || stdout.trim();

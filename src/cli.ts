@@ -157,7 +157,7 @@ async function setup(): Promise<void> {
     );
     const codexTimeout = await promptVar(
       rl,
-      "Codex timeout in ms (default 600000)",
+      "Codex hard timeout in ms (default 3600000)",
       "CODEX_TIMEOUT_MS",
       existing,
       false
@@ -175,7 +175,7 @@ async function setup(): Promise<void> {
     );
     const opencodeTimeout = await promptVar(
       rl,
-      "OpenCode timeout in ms (default 600000)",
+      "OpenCode hard timeout in ms (default 3600000)",
       "OPENCODE_TIMEOUT_MS",
       existing,
       false
@@ -192,6 +192,15 @@ async function setup(): Promise<void> {
     );
     if (copilotTimeout) lines.push(`COPILOT_TIMEOUT_MS=${copilotTimeout}`);
   }
+
+  const progressInterval = await promptVar(
+    rl,
+    "Long-run progress update interval in ms (default 60000)",
+    "AI_PROGRESS_INTERVAL_MS",
+    existing,
+    false
+  );
+  if (progressInterval) lines.push(`AI_PROGRESS_INTERVAL_MS=${progressInterval}`);
 
   writeFileSync(ENV_FILE, lines.join("\n") + "\n");
   console.log(`\n✅ Config saved to ${ENV_FILE}`);

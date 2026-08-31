@@ -6,6 +6,7 @@ import { Codex, Thread, type ThreadItem, type ThreadOptions, type UserInput } fr
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { configuredSystemPrompt } from "../common/systemPrompt.js";
+import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
@@ -20,6 +21,8 @@ import {
   type Provider,
   type ReasoningEffort,
   type SendAttachment,
+  type SendMessageOptions,
+  RunTimeoutError,
   type SessionMode,
   type StatusInfo,
 } from "./types.js";
@@ -198,7 +201,8 @@ export class CodexProvider implements Provider {
   async sendMessage(
     userId: string,
     prompt: string,
-    imagePaths?: SendAttachment[]
+    imagePaths?: SendAttachment[],
+    options?: SendMessageOptions,
   ): Promise<string> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
@@ -218,12 +222,26 @@ export class CodexProvider implements Provider {
           : resolvedPrompt;
 
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
-      const timeoutMs = parseInt(process.env.CODEX_TIMEOUT_MS ?? "", 10) || 10 * 60 * 1000;
+      const timeoutMs = configuredMilliseconds("CODEX_TIMEOUT_MS", 60 * 60 * 1000);
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      const result = await this.withLiveSession(userId, (thread) =>
-        thread.run(input, { signal: controller.signal })
-      ).finally(() => clearTimeout(timeout));
+      let timedOut = false;
+      const stopProgress = startProgressUpdates(options);
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+      let result;
+      try {
+        result = await this.withLiveSession(userId, (thread) =>
+          thread.run(input, { signal: controller.signal })
+        );
+      } catch (error) {
+        if (timedOut) throw new RunTimeoutError(this.displayName, timeoutMs, true);
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+        stopProgress();
+      }
 
       if (result && this.sessions.get(userId)?.id) {
         this.store.set(userId, this.sessions.get(userId)!.id!);

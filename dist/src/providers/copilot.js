@@ -5,6 +5,7 @@ import { CopilotClient, approveAll } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { configuredSystemPrompt } from "../common/systemPrompt.js";
+import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
 const DEFAULT_MODEL = process.env.COPILOT_MODEL?.trim() || "claude-haiku-4.5";
 function isSessionNotFoundError(err) {
@@ -29,25 +30,19 @@ function toHistoryEvent(event) {
             return null;
     }
 }
-function configuredMilliseconds(key, fallback, minimum) {
-    const parsed = Number(process.env[key]);
-    return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback;
-}
 async function sendUntilIdle(session, message, options) {
-    const progressIntervalMs = configuredMilliseconds("COPILOT_PROGRESS_INTERVAL_MS", 60_000, 10);
-    const hardTimeoutMs = configuredMilliseconds("COPILOT_TIMEOUT_MS", 60 * 60 * 1000, progressIntervalMs);
-    const startedAt = Date.now();
+    const hardTimeoutMs = configuredMilliseconds("COPILOT_TIMEOUT_MS", 60 * 60 * 1000);
     let lastAssistantMessage;
     let settled = false;
-    let progressTimer;
     let hardTimer;
+    const stopProgress = startProgressUpdates(options);
     return new Promise((resolve, reject) => {
         let unsubscribe = () => { };
         const finish = (operation) => {
             if (settled)
                 return;
             settled = true;
-            clearInterval(progressTimer);
+            stopProgress();
             clearTimeout(hardTimer);
             unsubscribe();
             operation();
@@ -63,16 +58,11 @@ async function sendUntilIdle(session, message, options) {
                 finish(() => reject(new Error(event.data.message)));
             }
         });
-        progressTimer = setInterval(() => {
-            const elapsedMs = Date.now() - startedAt;
-            Promise.resolve(options?.onProgress?.({ elapsedMs, message: "The agent is still working." }))
-                .catch((error) => console.warn("[CopilotProvider] Progress callback failed:", error));
-        }, progressIntervalMs);
         hardTimer = setTimeout(() => {
             if (settled)
                 return;
             settled = true;
-            clearInterval(progressTimer);
+            stopProgress();
             unsubscribe();
             const abortAcknowledged = Promise.resolve().then(() => session.abort()).then(() => true, (error) => {
                 console.warn("[CopilotProvider] Failed to abort timed-out session:", error);
