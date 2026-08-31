@@ -1,6 +1,7 @@
 import { ChatInputCommandInteraction } from "discord.js";
-import { SessionManager, chunkForDiscord } from "../../sessionManager.js";
+import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
+import { progressMessage } from "../../common/progressMessage.js";
 
 export async function handleAsk(
   interaction: ChatInputCommandInteraction,
@@ -33,6 +34,7 @@ export async function handleAsk(
           tempKey,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
+          { onProgress: ({ elapsedMs }) => interaction.editReply(progressMessage(elapsedMs)).then(() => {}) },
         );
       } finally {
         // Temp file cleanup is independent of session reset — always run both
@@ -50,7 +52,7 @@ export async function handleAsk(
     }
   } catch (err) {
     console.error("[/ask] Error:", err);
-    const msg = "❌ Something went wrong talking to the AI. Please try again.";
+    const msg = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
     if (interaction.deferred) {
       await interaction.editReply(msg).catch(() => {});
     } else {

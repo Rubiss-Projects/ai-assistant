@@ -1,9 +1,9 @@
 import { chunkForDiscord } from "./common/chunkForDiscord.js";
 import { ProviderStore } from "./common/providerStore.js";
 import { createProvider, isValidProviderName } from "./providers/index.js";
-import { PROVIDERS, isUnsupported, UnsupportedError } from "./providers/types.js";
+import { PROVIDERS, isUnsupported, RunTimeoutError, UnsupportedError } from "./providers/types.js";
 import { randomUUID } from "node:crypto";
-export { chunkForDiscord, isUnsupported, UnsupportedError };
+export { chunkForDiscord, isUnsupported, RunTimeoutError, UnsupportedError };
 /**
  * Returns a friendly Discord-safe message for an UnsupportedError, or null when
  * the error is not one. Handlers use this so unsupported provider features show
@@ -13,6 +13,13 @@ export function unsupportedMessage(err) {
     if (isUnsupported(err))
         return `⚠️ ${err.message}`;
     return null;
+}
+export function runTimeoutMessage(err) {
+    if (!(err instanceof RunTimeoutError))
+        return null;
+    return err.cancellationConfirmed
+        ? `⏱️ ${err.provider} reached its hard time limit, so the run was cancelled. Please try again.`
+        : `⚠️ ${err.provider} reached its hard time limit, but cancellation could not be confirmed. It may still be running.`;
 }
 /**
  * Facade in front of all AI providers (Copilot / Codex / OpenCode).
@@ -108,8 +115,8 @@ export class SessionManager {
         await Promise.all(all.map((p) => p.shutdown()));
     }
     // ── Chat & session operations (delegated to the active provider for key) ────
-    sendMessage(userId, prompt, imagePaths) {
-        return this.providerFor(userId).sendMessage(userId, prompt, imagePaths);
+    sendMessage(userId, prompt, imagePaths, options) {
+        return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
     }
     /** Run an internal one-shot inference without adding it to the user's conversation. */
     async runEphemeral(key, prompt) {

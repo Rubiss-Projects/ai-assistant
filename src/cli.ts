@@ -185,7 +185,7 @@ async function setup(): Promise<void> {
   } else {
     const copilotTimeout = await promptVar(
       rl,
-      "Copilot timeout in ms (default 600000)",
+      "Copilot hard timeout in ms (default 3600000)",
       "COPILOT_TIMEOUT_MS",
       existing,
       false

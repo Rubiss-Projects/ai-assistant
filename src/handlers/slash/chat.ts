@@ -1,6 +1,7 @@
 import { ChatInputCommandInteraction, ThreadAutoArchiveDuration } from "discord.js";
-import { SessionManager, chunkForDiscord } from "../../sessionManager.js";
+import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
+import { progressMessage } from "../../common/progressMessage.js";
 
 export async function handleChat(
   interaction: ChatInputCommandInteraction,
@@ -33,6 +34,7 @@ export async function handleChat(
           interaction.user.id,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
+          { onProgress: ({ elapsedMs }) => interaction.editReply(progressMessage(elapsedMs)).then(() => {}) },
         );
       } finally {
         await prepared.cleanup();
@@ -46,9 +48,9 @@ export async function handleChat(
     } catch (err) {
       console.error("[/chat DM] Error:", err);
       const isPathError = err instanceof Error && err.message.startsWith("Workspace path") || err instanceof Error && err.message === "Invalid workspace path.";
-      const msg = isPathError
+      const msg = runTimeoutMessage(err) ?? (isPathError
         ? `❌ Invalid workspace: ${(err as Error).message}`
-        : "❌ Something went wrong talking to the AI. Please try again.";
+        : "❌ Something went wrong talking to the AI. Please try again.");
       if (interaction.deferred) {
         await interaction.editReply(msg).catch(() => {});
       } else {
@@ -81,6 +83,7 @@ export async function handleChat(
           interaction.channelId,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
+          { onProgress: ({ elapsedMs }) => interaction.editReply(progressMessage(elapsedMs)).then(() => {}) },
         );
         const chunks = chunkForDiscord(response);
         await interaction.editReply(chunks[0]);
@@ -105,6 +108,7 @@ export async function handleChat(
         thread.id,
         prepared.prompt,
         prepared.attachments.length ? prepared.attachments : undefined,
+        { onProgress: ({ elapsedMs }) => interaction.editReply(progressMessage(elapsedMs)).then(() => {}) },
       );
       for (const chunk of chunkForDiscord(response)) {
         await thread.send(chunk);
@@ -117,9 +121,9 @@ export async function handleChat(
   } catch (err) {
     console.error("[/chat] Error:", err);
     const isPathError = err instanceof Error && (err.message.startsWith("Workspace path") || err.message === "Invalid workspace path.");
-    const msg = isPathError
+    const msg = runTimeoutMessage(err) ?? (isPathError
       ? `❌ Invalid workspace: ${(err as Error).message}`
-      : "❌ Something went wrong talking to the AI. Please try again.";
+      : "❌ Something went wrong talking to the AI. Please try again.");
     if (interaction.deferred) {
       await interaction.editReply(msg).catch(() => {});
     } else {

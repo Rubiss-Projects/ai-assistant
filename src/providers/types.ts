@@ -73,6 +73,21 @@ export interface SendAttachment {
   kind?: "image" | "file";
 }
 
+export interface SendMessageOptions {
+  onProgress?: (update: { elapsedMs: number; message: string }) => void | Promise<void>;
+}
+
+export class RunTimeoutError extends Error {
+  constructor(
+    readonly provider: string,
+    readonly timeoutMs: number,
+    readonly cancellationConfirmed: boolean,
+  ) {
+    super(`${provider} exceeded its ${timeoutMs}ms hard timeout${cancellationConfirmed ? " and was cancelled" : "; cancellation could not be confirmed"}.`);
+    this.name = "RunTimeoutError";
+  }
+}
+
 /**
  * Provider-agnostic session manager contract. Every slash command handler and
  * the Discord bot talk only to this interface, so a provider can be swapped
@@ -87,7 +102,7 @@ export interface Provider {
   /** Human-facing name for /status etc., e.g. "GitHub Copilot". */
   readonly displayName: string;
 
-  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[]): Promise<string>;
+  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<string>;
   getStatus(): Promise<StatusInfo>;
   getHistory(userId: string): Promise<HistoryEvent[] | null>;
   listModels(): Promise<ModelInfo[]>;

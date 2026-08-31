@@ -1,9 +1,10 @@
 import { Message, Client } from "discord.js";
-import { SessionManager, chunkForDiscord } from "../sessionManager.js";
+import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../sessionManager.js";
 import { resolveMessageLinks } from "../utils/resolveMessageLinks.js";
 import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/downloadAttachments.js";
 import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
+import { progressMessage } from "../common/progressMessage.js";
 
 export async function handleMention(
   message: Message,
@@ -19,6 +20,8 @@ export async function handleMention(
   const contextAttachments: Array<{ url: string; contentType: string | null; name: string; size?: number }> = [];
   let cleanup = async (): Promise<void> => {};
   let typingInterval: ReturnType<typeof setInterval> | undefined;
+  let progressReply: Message | undefined;
+  let progressUpdates = Promise.resolve();
 
   try {
     if (!prompt && message.attachments.size === 0 && !message.reference?.messageId) {
@@ -68,8 +71,21 @@ export async function handleMention(
     const response = await sessions.sendMessage(
       key,
       enrichedPrompt,
-      prepared.fileAttachments.length ? prepared.fileAttachments : undefined
+      prepared.fileAttachments.length ? prepared.fileAttachments : undefined,
+      {
+        onProgress: ({ elapsedMs }) => {
+          progressUpdates = progressUpdates.catch(() => {}).then(async () => {
+            const content = progressMessage(elapsedMs);
+            if (progressReply) await progressReply.edit(content);
+            else progressReply = await message.reply(content);
+          });
+          return progressUpdates;
+        },
+      },
     );
+
+    await progressUpdates.catch(() => {});
+    if (progressReply) await progressReply.edit("✅ Finished — posting the result now.").catch(() => {});
 
     const chunks = chunkForDiscord(response);
     await message.reply(chunks[0]);
@@ -78,7 +94,10 @@ export async function handleMention(
     }
   } catch (err) {
     console.error("[mention] Error:", err);
-    await message.reply("❌ Something went wrong talking to the AI. Please try again.");
+    const failure = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
+    await progressUpdates.catch(() => {});
+    if (progressReply) await progressReply.edit(failure).catch(() => message.reply(failure).then(() => {}));
+    else await message.reply(failure);
   } finally {
     clearInterval(typingInterval);
     await cleanup();

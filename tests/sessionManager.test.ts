@@ -6,7 +6,9 @@ type AssistantResult = { data: { content: string } };
 
 type SessionLike = {
   sessionId: string;
-  sendAndWait?: (options: unknown, timeout?: number) => Promise<AssistantResult>;
+  send?: (options: unknown) => Promise<string>;
+  on?: (handler: (event: any) => void) => () => void;
+  abort?: () => Promise<void>;
   getEvents?: () => Promise<unknown[]>;
   rpc?: {
     model: {
@@ -63,7 +65,9 @@ test("sendMessage resumes and retries once when cached session is missing from C
 
   const staleSession: SessionLike = {
     sessionId: "stale-session",
-    sendAndWait: async () => {
+    on: () => () => {},
+    abort: async () => {},
+    send: async () => {
       staleSendCalls += 1;
       throw new Error("Request session.send failed with message: Session not found: stale-session");
     },
@@ -74,10 +78,18 @@ test("sendMessage resumes and retries once when cached session is missing from C
 
   const freshSession: SessionLike = {
     sessionId: "fresh-session",
-    sendAndWait: async (options) => {
+    on: (handler) => {
+      queueMicrotask(() => {
+        handler({ type: "assistant.message", data: { content: "retry ok" } });
+        handler({ type: "session.idle", data: {} });
+      });
+      return () => {};
+    },
+    abort: async () => {},
+    send: async (options) => {
       freshSendCalls += 1;
       assert.deepEqual(options, { prompt: "hello" });
-      return { data: { content: "retry ok" } };
+      return "message-1";
     },
     disconnect: async () => {},
   };
@@ -117,7 +129,9 @@ test("sendMessage does not evict or retry non-stale-session errors", async () =>
 
   const cachedSession: SessionLike = {
     sessionId: "cached-session",
-    sendAndWait: async () => {
+    on: () => () => {},
+    abort: async () => {},
+    send: async () => {
       throw new Error("rate limited");
     },
     disconnect: async () => {
@@ -144,6 +158,40 @@ test("sendMessage does not evict or retry non-stale-session errors", async () =>
   assert.equal(resumeCalls, 0);
   assert.equal(storedSessions["user-1"], "cached-session");
   assert.equal(manager.sessions.get("user-1"), cachedSession);
+});
+
+test("long Copilot work reports progress and is explicitly aborted at the hard timeout", async () => {
+  const previousProgress = process.env.COPILOT_PROGRESS_INTERVAL_MS;
+  const previousTimeout = process.env.COPILOT_TIMEOUT_MS;
+  process.env.COPILOT_PROGRESS_INTERVAL_MS = "20";
+  process.env.COPILOT_TIMEOUT_MS = "70";
+  try {
+    const manager = createTestManager();
+    let abortCalls = 0;
+    let progressCalls = 0;
+    const session: SessionLike = {
+      sessionId: "long-session",
+      on: () => () => {},
+      send: async () => "message-1",
+      abort: async () => { abortCalls += 1; },
+      disconnect: async () => {},
+    };
+    manager.sessions.set("user-1", session);
+
+    await assert.rejects(
+      () => manager.sendMessage("user-1", "long task", undefined, {
+        onProgress: () => { progressCalls += 1; },
+      }),
+      /hard timeout and was cancelled/,
+    );
+    assert.ok(progressCalls >= 1);
+    assert.equal(abortCalls, 1);
+  } finally {
+    if (previousProgress === undefined) delete process.env.COPILOT_PROGRESS_INTERVAL_MS;
+    else process.env.COPILOT_PROGRESS_INTERVAL_MS = previousProgress;
+    if (previousTimeout === undefined) delete process.env.COPILOT_TIMEOUT_MS;
+    else process.env.COPILOT_TIMEOUT_MS = previousTimeout;
+  }
 });
 
 test("getHistory returns null without resuming a stored session", async () => {
