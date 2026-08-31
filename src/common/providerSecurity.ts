@@ -171,6 +171,27 @@ function canonicalizeForPolicy(candidate: string): string {
   return path.resolve(canonicalBase, ...missingSegments);
 }
 
+function pathContainsSymbolicLink(root: string, candidate: string): boolean {
+  const absoluteRoot = path.resolve(root);
+  const absoluteCandidate = path.resolve(candidate);
+  const relative = path.relative(absoluteRoot, absoluteCandidate);
+  if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+    return true;
+  }
+
+  let cursor = absoluteRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    try {
+      if (fs.lstatSync(cursor).isSymbolicLink()) return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      return true;
+    }
+  }
+  return false;
+}
+
 export function pathIsWithin(root: string, candidate: string): boolean {
   const canonicalRoot = canonicalizeForPolicy(root);
   const canonicalCandidate = canonicalizeForPolicy(candidate);
@@ -247,8 +268,17 @@ export function workspacePathIsAllowed(
   workingDirectory: string,
   requestedPath: string,
 ): boolean {
-  const resolved = path.resolve(workingDirectory, requestedPath);
-  return pathIsWithin(workingDirectory, resolved) && !isSensitivePath(path.relative(workingDirectory, resolved));
+  const canonicalWorkingDirectory = canonicalizeForPolicy(workingDirectory);
+  const resolved = path.resolve(canonicalWorkingDirectory, requestedPath);
+  if (pathContainsSymbolicLink(canonicalWorkingDirectory, resolved)) return false;
+
+  const canonicalTarget = canonicalizeForPolicy(resolved);
+  if (!pathIsWithin(canonicalWorkingDirectory, canonicalTarget)) return false;
+  if (isSensitivePath(path.relative(canonicalWorkingDirectory, canonicalTarget))) return false;
+
+  // Re-check after canonicalization so a link swap during policy evaluation fails closed.
+  return !pathContainsSymbolicLink(canonicalWorkingDirectory, resolved)
+    && canonicalizeForPolicy(resolved) === canonicalTarget;
 }
 
 export function resolveConfiguredWorkspace(
