@@ -3,6 +3,9 @@ config();
 
 import { SessionManager } from "./sessionManager.js";
 import { createBot } from "./bot.js";
+import { reportProviderSecurityConfiguration } from "./common/providerSecurity.js";
+
+reportProviderSecurityConfiguration();
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {

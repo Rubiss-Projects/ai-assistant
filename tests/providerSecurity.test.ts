@@ -1,0 +1,256 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  configuredSecurityMode,
+  configuredSitesEnabled,
+  pathIsWithin,
+  providerChildEnvironment,
+  resolveConfiguredWorkspace,
+  secureSystemPrompt,
+  workspacePathIsAllowed,
+} from "../src/common/providerSecurity.js";
+import { copilotClientOptions, createCopilotPermissionHandler } from "../src/providers/copilot.js";
+import { CODEX_GITHUB_READ_ONLY_TOOLS, codexClientOptions, codexThreadSecurityOptions } from "../src/providers/codex.js";
+import { openCodeBaseRunArguments, openCodeChildEnvironment, openCodeSecurityConfig } from "../src/providers/opencode.js";
+
+test("security configuration preserves legacy installs and validates explicit values", () => {
+  assert.equal(configuredSecurityMode({}), "unrestricted");
+  assert.equal(configuredSecurityMode({ AI_ASSISTANT_SECURITY_MODE: "shared" }), "shared");
+  assert.equal(configuredSitesEnabled({}), false);
+  assert.equal(configuredSitesEnabled({ AI_ASSISTANT_ENABLE_SITES: "true" }), true);
+  assert.match(
+    secureSystemPrompt(undefined, {
+      AI_ASSISTANT_SECURITY_MODE: "shared",
+      AI_ASSISTANT_ENABLE_SITES: "true",
+    }),
+    /except for ChatGPT Sites/,
+  );
+  assert.throws(
+    () => configuredSecurityMode({ AI_ASSISTANT_SECURITY_MODE: "maybe" }),
+    /Invalid AI_ASSISTANT_SECURITY_MODE/,
+  );
+  assert.throws(
+    () => configuredSitesEnabled({ AI_ASSISTANT_ENABLE_SITES: "yes" }),
+    /Invalid AI_ASSISTANT_ENABLE_SITES/,
+  );
+});
+
+test("shared provider child environments never inherit Discord or MCP secrets", () => {
+  const source = {
+    AI_ASSISTANT_SECURITY_MODE: "shared",
+    PATH: "/usr/bin",
+    HOME: "/data",
+    CODEX_HOME: "/data/.codex",
+    DISCORD_TOKEN: "discord-secret",
+    DISCORD_APP_ID: "app-id",
+    MCP_INPUT_GITHUB_TOKEN: "mcp-secret",
+    OPENAI_API_KEY: "openai-key",
+    ANTHROPIC_API_KEY: "anthropic-key",
+  };
+
+  const codex = providerChildEnvironment("codex", source);
+  assert.equal(codex.CODEX_HOME, "/data/.codex");
+  assert.equal(codex.DISCORD_TOKEN, undefined);
+  assert.equal(codex.OPENAI_API_KEY, undefined);
+  assert.equal(codex.MCP_INPUT_GITHUB_TOKEN, undefined);
+
+  const opencode = providerChildEnvironment("opencode", source);
+  assert.equal(opencode.OPENAI_API_KEY, "openai-key");
+  assert.equal(opencode.ANTHROPIC_API_KEY, "anthropic-key");
+  assert.equal(opencode.DISCORD_TOKEN, undefined);
+});
+
+test("unrestricted provider child environments preserve legacy inheritance", () => {
+  const source = {
+    AI_ASSISTANT_SECURITY_MODE: "unrestricted",
+    PATH: "/usr/bin",
+    DISCORD_TOKEN: "discord-secret",
+    MCP_INPUT_GITHUB_TOKEN: "mcp-secret",
+  };
+  const environment = providerChildEnvironment("codex", source);
+  assert.equal(environment.DISCORD_TOKEN, "discord-secret");
+  assert.equal(environment.MCP_INPUT_GITHUB_TOKEN, "mcp-secret");
+});
+
+test("configured workspace roots reject paths outside their boundary", () => {
+  const root = mkdtempSync(join(tmpdir(), "ai-workspace-root-"));
+  const workspace = join(root, "project");
+  const credentials = join(root, ".codex");
+  const outside = mkdtempSync(join(tmpdir(), "ai-workspace-outside-"));
+  mkdirSync(workspace);
+  mkdirSync(credentials);
+
+  const source = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: root };
+  assert.equal(resolveConfiguredWorkspace(workspace, source), workspace);
+  assert.throws(
+    () => resolveConfiguredWorkspace(outside, source),
+    /configured root/,
+  );
+  assert.throws(
+    () => resolveConfiguredWorkspace(credentials, source),
+    /Credential and provider state/,
+  );
+  assert.equal(pathIsWithin(root, workspace), true);
+  assert.equal(pathIsWithin(root, outside), false);
+  assert.equal(
+    resolveConfiguredWorkspace(outside, {
+      AI_ASSISTANT_SECURITY_MODE: "unrestricted",
+      AI_ASSISTANT_WORKSPACE_ROOT: root,
+    }),
+    outside,
+  );
+});
+
+test("workspace policy allows source edits but denies credentials and traversal", () => {
+  const root = mkdtempSync(join(tmpdir(), "ai-workspace-policy-"));
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "index.ts"), "export {};\n");
+
+  assert.equal(workspacePathIsAllowed(root, "src/index.ts"), true);
+  assert.equal(workspacePathIsAllowed(root, "src/new.ts"), true);
+  assert.equal(workspacePathIsAllowed(root, ".env"), false);
+  assert.equal(workspacePathIsAllowed(root, ".codex/auth.json"), false);
+  assert.equal(workspacePathIsAllowed(root, "../auth.json"), false);
+});
+
+test("Copilot approves workspace files and read-only MCP, but rejects shell and mutations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ai-copilot-policy-"));
+  const decide = createCopilotPermissionHandler(root);
+  const invocation = { sessionId: "test" };
+
+  assert.equal((await decide({ kind: "read", path: "README.md", intention: "read" }, invocation)).kind, "approve-once");
+  assert.equal((await decide({ kind: "write", fileName: "src/new.ts", diff: "", intention: "edit", canOfferSessionApproval: false }, invocation)).kind, "approve-once");
+  assert.equal((await decide({ kind: "read", path: "../.codex/auth.json", intention: "read" }, invocation)).kind, "reject");
+  assert.equal((await decide({ kind: "mcp", serverName: "github", toolName: "get_repo", toolTitle: "Get repo", readOnly: true }, invocation)).kind, "approve-once");
+  assert.equal((await decide({ kind: "mcp", serverName: "github", toolName: "create_pull_request", toolTitle: "Create PR", readOnly: false }, invocation)).kind, "reject");
+  assert.equal((await decide({ kind: "shell", fullCommandText: "git push", intention: "publish", commands: [], possiblePaths: [], possibleUrls: [], hasWriteFileRedirection: false, canOfferSessionApproval: false }, invocation)).kind, "reject");
+});
+
+test("Copilot security mode switches between isolated and legacy client configuration", () => {
+  const shared = copilotClientOptions({
+    AI_ASSISTANT_SECURITY_MODE: "shared",
+    HOME: "/data",
+    DISCORD_TOKEN: "discord-secret",
+  });
+  assert.equal(shared?.mode, "empty");
+  assert.equal(shared?.env?.DISCORD_TOKEN, undefined);
+
+  const unrestricted = copilotClientOptions({
+    AI_ASSISTANT_SECURITY_MODE: "unrestricted",
+    GH_TOKEN: "github-token",
+    DISCORD_TOKEN: "discord-secret",
+  });
+  assert.equal(unrestricted?.gitHubToken, "github-token");
+  assert.equal(unrestricted?.mode, undefined);
+  assert.equal(unrestricted?.env, undefined);
+});
+
+test("Codex shared mode enables only known GitHub read tools and clears personal MCP servers", () => {
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const previousSites = process.env.AI_ASSISTANT_ENABLE_SITES;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  process.env.AI_ASSISTANT_ENABLE_SITES = "false";
+  const options = codexClientOptions();
+  if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+  else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+  if (previousSites === undefined) delete process.env.AI_ASSISTANT_ENABLE_SITES;
+  else process.env.AI_ASSISTANT_ENABLE_SITES = previousSites;
+  const config = options.config as Record<string, any>;
+  const apps = config.apps as Record<string, any>;
+
+  assert.equal((config.features as Record<string, boolean>).plugins, false);
+  assert.equal((config.features as Record<string, boolean>).hooks, false);
+  assert.equal(apps._default.enabled, false);
+  assert.equal(apps.github.enabled, true);
+  assert.equal(apps.github.default_tools_enabled, false);
+  assert.equal(apps.github.destructive_enabled, false);
+  assert.deepEqual(Object.keys(apps.github.tools).sort(), [...CODEX_GITHUB_READ_ONLY_TOOLS].sort());
+  assert.ok(options.configOverrides?.includes("mcp_servers={}"));
+  assert.equal(options.env?.DISCORD_TOKEN, undefined);
+});
+
+test("Codex can explicitly enable Sites without enabling other connected apps", () => {
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const previousSites = process.env.AI_ASSISTANT_ENABLE_SITES;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  process.env.AI_ASSISTANT_ENABLE_SITES = "true";
+  const options = codexClientOptions();
+  if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+  else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+  if (previousSites === undefined) delete process.env.AI_ASSISTANT_ENABLE_SITES;
+  else process.env.AI_ASSISTANT_ENABLE_SITES = previousSites;
+
+  const config = options.config as Record<string, any>;
+  const apps = config.apps as Record<string, any>;
+  assert.equal((config.features as Record<string, boolean>).plugins, true);
+  assert.equal((config.features as Record<string, boolean>).remote_plugin, false);
+  assert.equal(apps._default.enabled, false);
+  assert.equal(apps.sites.enabled, true);
+  assert.equal(apps.sites.default_tools_enabled, true);
+  assert.equal(apps.sites.destructive_enabled, false);
+  assert.equal(apps.github.destructive_enabled, false);
+});
+
+test("Codex unrestricted mode preserves legacy client configuration", () => {
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const previousPrompt = process.env.AI_ASSISTANT_SYSTEM_PROMPT;
+  const previousPromptFile = process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
+  delete process.env.AI_ASSISTANT_SYSTEM_PROMPT;
+  delete process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE;
+  const options = codexClientOptions();
+  if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+  else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+  if (previousPrompt === undefined) delete process.env.AI_ASSISTANT_SYSTEM_PROMPT;
+  else process.env.AI_ASSISTANT_SYSTEM_PROMPT = previousPrompt;
+  if (previousPromptFile === undefined) delete process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE;
+  else process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE = previousPromptFile;
+
+  assert.equal(options.env, undefined);
+  assert.equal(options.config, undefined);
+  assert.equal(options.configOverrides, undefined);
+  assert.deepEqual(
+    codexThreadSecurityOptions({ AI_ASSISTANT_SECURITY_MODE: "unrestricted" }),
+    { sandboxMode: "danger-full-access", networkAccessEnabled: true },
+  );
+  assert.deepEqual(codexThreadSecurityOptions({ AI_ASSISTANT_SECURITY_MODE: "shared" }), {});
+});
+
+test("OpenCode shared mode is deny-by-default with no shell, plugins, external paths, or MCP fallback", () => {
+  const config = openCodeSecurityConfig() as Record<string, any>;
+  const permission = config.permission as Record<string, any>;
+  assert.equal(permission["*"], "deny");
+  assert.equal(permission.bash, "deny");
+  assert.equal(permission.external_directory, "deny");
+  assert.equal(permission.edit, "allow");
+  assert.deepEqual(config.plugin, []);
+
+  const env = openCodeChildEnvironment({
+    AI_ASSISTANT_SECURITY_MODE: "shared",
+    PATH: "/usr/bin",
+    DISCORD_TOKEN: "discord-secret",
+  });
+  assert.equal(env.DISCORD_TOKEN, undefined);
+  assert.deepEqual(JSON.parse(env.OPENCODE_CONFIG_CONTENT), config);
+});
+
+test("OpenCode unrestricted mode restores its inherited environment and normal config", () => {
+  const env = openCodeChildEnvironment({
+    AI_ASSISTANT_SECURITY_MODE: "unrestricted",
+    DISCORD_TOKEN: "discord-secret",
+  });
+  assert.equal(env.DISCORD_TOKEN, "discord-secret");
+  assert.equal(env.OPENCODE_CONFIG_CONTENT, undefined);
+  assert.equal(env.OPENCODE_DISABLE_AUTOUPDATE, "1");
+  assert.equal(
+    openCodeBaseRunArguments({ AI_ASSISTANT_SECURITY_MODE: "unrestricted" }).includes("--pure"),
+    false,
+  );
+  assert.equal(
+    openCodeBaseRunArguments({ AI_ASSISTANT_SECURITY_MODE: "shared" }).includes("--pure"),
+    true,
+  );
+});

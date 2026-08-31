@@ -2,11 +2,19 @@ import fs from "fs";
 import { createRequire } from "node:module";
 import os from "os";
 import path from "path";
-import { Codex, Thread, type ThreadItem, type ThreadOptions, type UserInput } from "@openai/codex-sdk";
+import { Codex, Thread, type CodexOptions, type ThreadItem, type ThreadOptions, type UserInput } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { configuredSystemPrompt } from "../common/systemPrompt.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import {
+  configuredSecurityMode,
+  configuredSitesEnabled,
+  ensureProviderWorkingDirectory,
+  providerChildEnvironment,
+  resolveConfiguredWorkspace,
+  secureSystemPrompt,
+} from "../common/providerSecurity.js";
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
@@ -30,6 +38,110 @@ import { readFile } from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+export const CODEX_GITHUB_READ_ONLY_TOOLS = [
+  "get_repo",
+  "fetch",
+  "fetch_file",
+  "search_repositories",
+] as const;
+
+const CODEX_PERMISSION_PROFILE = "discord-bot";
+
+export function codexThreadSecurityOptions(
+  source: Record<string, string | undefined> = process.env,
+): Pick<ThreadOptions, "sandboxMode" | "networkAccessEnabled"> {
+  return configuredSecurityMode(source) === "unrestricted"
+    ? { sandboxMode: "danger-full-access", networkAccessEnabled: true }
+    : {};
+}
+
+function shellEnvironment(workingDirectory: string): Record<string, string> {
+  const childEnvironment = providerChildEnvironment("codex");
+  const allowedNames = new Set([
+    "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR",
+    "LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR", "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE", "SSL_CERT_DIR",
+  ]);
+  const result = Object.fromEntries(
+    Object.entries(childEnvironment).filter(([name]) => allowedNames.has(name.toUpperCase())),
+  );
+  result.HOME = workingDirectory;
+  result.USERPROFILE = workingDirectory;
+  return result;
+}
+
+/** Host-owned settings that Discord prompts and project config cannot relax. */
+export function codexClientOptions(): CodexOptions {
+  const systemPrompt = configuredSystemPrompt();
+  if (configuredSecurityMode() === "unrestricted") {
+    return {
+      ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+      ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
+    };
+  }
+
+  const workingDirectory = ensureProviderWorkingDirectory();
+  const sitesEnabled = configuredSitesEnabled();
+  const tools = Object.fromEntries(
+    CODEX_GITHUB_READ_ONLY_TOOLS.map((tool) => [tool, { enabled: true, approval_mode: "approve" }]),
+  );
+
+  return {
+    ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
+    env: providerChildEnvironment("codex"),
+    config: {
+      developer_instructions: secureSystemPrompt(systemPrompt),
+      ...(!process.env.OPENAI_API_KEY ? { forced_login_method: "chatgpt" } : {}),
+      default_permissions: CODEX_PERMISSION_PROFILE,
+      features: {
+        apps: true,
+        network_proxy: true,
+        hooks: false,
+        plugins: sitesEnabled,
+        remote_plugin: false,
+        memories: false,
+        computer_use: false,
+        browser_use: false,
+        browser_use_external: false,
+        shell_snapshot: false,
+        skill_mcp_dependency_install: false,
+        workspace_dependencies: false,
+      },
+      shell_environment_policy: {
+        inherit: "none",
+        ignore_default_excludes: false,
+        experimental_use_profile: false,
+        set: shellEnvironment(workingDirectory),
+      },
+      apps: {
+        _default: { enabled: false, destructive_enabled: false, open_world_enabled: false },
+        github: {
+          enabled: true,
+          default_tools_enabled: false,
+          destructive_enabled: false,
+          open_world_enabled: false,
+          tools,
+        },
+        ...(sitesEnabled
+          ? {
+              sites: {
+                enabled: true,
+                default_tools_enabled: true,
+                default_tools_approval_mode: "approve",
+                destructive_enabled: false,
+                open_world_enabled: true,
+              },
+            }
+          : {}),
+      },
+    },
+    configOverrides: [
+      "mcp_servers={}",
+      `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",":slash_tmp"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write","**/.env"="deny","**/.env.*"="deny","**/.codex"="deny","**/.codex/**"="deny","**/auth.json"="deny","**/.git-credentials"="deny","**/.netrc"="deny"}}`,
+      `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,domains={"*"="allow"}}`,
+    ],
+  };
+}
 
 function configuredCodexModel(): string {
   return process.env.CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
@@ -84,25 +196,21 @@ export class CodexProvider implements Provider {
   private mcpToolOverrides: Map<string, Record<string, string[]>> = new Map();
 
   constructor() {
-    const systemPrompt = configuredSystemPrompt();
-    this.client = new Codex({
-      ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
-      ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
-    });
+    this.client = new Codex(codexClientOptions());
   }
 
   private threadOptions(key: string): ThreadOptions {
-    const workingDirectory = this.workingDirOverrides.get(key) ?? process.cwd();
-    return {
+    const workingDirectory = this.workingDirOverrides.get(key) ?? ensureProviderWorkingDirectory();
+    const options: ThreadOptions = {
       model: this.modelOverrides.get(key) ?? configuredCodexModel(),
       modelReasoningEffort:
         this.reasoningEffortOverrides.get(key) ?? configuredCodexReasoningEffort(),
       workingDirectory,
       skipGitRepoCheck: true,
       approvalPolicy: "never",
-      sandboxMode: "danger-full-access",
-      networkAccessEnabled: true,
+      ...codexThreadSecurityOptions(),
     };
+    return options;
   }
 
   private async getOrCreateSession(key: string): Promise<Thread> {
@@ -467,18 +575,7 @@ export class CodexProvider implements Provider {
   }
 
   setSessionWorkingDir(key: string, dir: string): void {
-    if (!dir || dir.includes("\0")) {
-      throw new Error("Invalid workspace path.");
-    }
-    let canonical: string;
-    try {
-      canonical = fs.realpathSync.native(path.resolve(dir));
-    } catch {
-      throw new Error(`Workspace path does not exist: ${path.resolve(dir)}`);
-    }
-    if (!fs.statSync(canonical).isDirectory()) {
-      throw new Error(`Workspace path is not a directory: ${canonical}`);
-    }
+    const canonical = resolveConfiguredWorkspace(dir);
     this.workingDirOverrides.set(key, canonical);
     this.sessions.delete(key);
   }
