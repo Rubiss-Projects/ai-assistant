@@ -76,22 +76,25 @@ async function recalledMemories(guildId, prompt, client, userId, canIncludeAutho
     return visible;
 }
 function memoryText(prompt) {
-    return prompt
+    let text = prompt
         .replace(/^.*?\b(?:remember|save|store|don['’]?t forget|keep|commit|add|put|record)\b\s*(?:that|this|the following|:)?\s*/i, "")
         .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "")
-        .replace(/\s+\b(?:to|in|into)\s+(?:long-term\s+)?memory\b[\s\S]*$/i, "")
-        .trim();
+        .replace(/^\s*(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:that|the following)?\s*/i, "");
+    text = text.replace(/^(this|that|it|these contracts|those contracts)\s+(?:to|in|into)\s+(?:long-term\s+)?memory\b\s*[,.:;-]?\s*(?:please\b)?\s*[.!?]*$/i, "$1");
+    return text.trim();
 }
-async function contractRecordsFromHistory(guildId, referencedContent, client, requesterId, canIncludeAuthor) {
-    const contractIds = [...new Set(referencedContent.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [])].slice(0, 10);
+async function contractRecordsFromHistory(guildId, referencedContent, client, requesterId, canIncludeAuthor, excludedMessageId) {
+    const contractIds = [...new Set(referencedContent.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [])];
     if (contractIds.length === 0)
+        return null;
+    if (contractIds.length > 10)
         return null;
     const found = new Map();
     for (const contractId of contractIds) {
         try {
             const candidates = [];
             for (const message of await searchGuild(client, guildId, contractId, undefined, 25)) {
-                if (message.author.id === client.user?.id)
+                if (message.id === excludedMessageId)
                     continue;
                 if (!message.author.bot && !canIncludeAuthor(message.author.id))
                     continue;
@@ -105,21 +108,22 @@ async function contractRecordsFromHistory(guildId, referencedContent, client, re
                 const score = (message) => {
                     const ids = message.content.match(/\bCONTRACT-[A-Z0-9-]+\b/gi) ?? [];
                     return (new RegExp(`^\\s*${escapedId}\\b`, "i").test(message.content) ? 100_000 : 0)
-                        + (ids.length === 1 ? 10_000 : 0)
-                        + Math.min(message.content.length, 9_999);
+                        + (ids.length === 1 ? 10_000 : 0);
                 };
-                return score(b) - score(a);
+                return score(b) - score(a)
+                    || a.timestamp.localeCompare(b.timestamp)
+                    || a.id.localeCompare(b.id);
             })[0];
             if (selected)
-                found.set(selected.id, selected);
+                found.set(contractId.toUpperCase(), selected);
         }
         catch (error) {
             console.warn(`[discordKnowledge] Failed to resolve contract ${contractId} for memory:`, error);
         }
     }
-    if (found.size === 0)
+    if (found.size !== contractIds.length)
         return null;
-    const messages = [...found.values()];
+    const messages = [...new Map([...found.values()].map((message) => [message.id, message])).values()];
     return {
         content: messages
             .map((message) => `${message.content}\nSource: https://discord.com/channels/${guildId}/${message.channel_id}/${message.id}`)
@@ -142,7 +146,7 @@ export async function sourceText(invocation, prompt, client, requesterId, canInc
             const referenced = await invocation.fetchReference();
             if (referenced.content.trim() && (referenced.author.bot || canIncludeAuthor(referenced.author.id))) {
                 const contracts = invocation.guildId
-                    ? await contractRecordsFromHistory(invocation.guildId, referenced.content, client, requesterId, canIncludeAuthor)
+                    ? await contractRecordsFromHistory(invocation.guildId, referenced.content, client, requesterId, canIncludeAuthor, referenced.id)
                     : null;
                 return {
                     content: contracts?.content ?? referenced.content.trim(),

@@ -139,6 +139,28 @@ test("destination-first memory wording stores only the substantive fact", async 
   assert.equal(source.content, "launch is Tuesday");
 });
 
+test("facts ending in a memory location are not mistaken for destinations", async () => {
+  const source = await sourceText(
+    { guildId: "guild-1", channelId: "channel-1" } as never,
+    "Record that the CPU writes state to memory",
+    {} as never,
+    "requester",
+    () => true,
+  );
+  assert.equal(source.content, "the CPU writes state to memory");
+});
+
+test("over-limit contract summaries are retained instead of partially resolved", async () => {
+  const content = Array.from({ length: 11 }, (_, index) => `CONTRACT-${index + 1}`).join(" ");
+  const source = await sourceText({
+    guildId: "guild-1",
+    channelId: "summary-channel",
+    reference: { messageId: "summary" },
+    fetchReference: async () => ({ id: "summary", content, channelId: "summary-channel", author: { id: "assistant", bot: true } }),
+  } as never, "Commit these contracts to memory", { user: { id: "assistant" } } as never, "requester", () => true);
+  assert.equal(source.content, content);
+});
+
 test("an incomplete multi-contract lookup retains the replied-to summary", async () => {
   const invocation = {
     guildId: "guild-1",

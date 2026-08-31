@@ -70,6 +70,9 @@ export async function handleChat(
   try {
     await interaction.deferReply();
     durableReply = await interaction.fetchReply();
+    const currentSessionKey = interaction.channel?.isThread()
+      ? interactionSessionKey(interaction)
+      : interaction.channelId;
     // Resolve after defer to avoid hitting Discord's 3s interaction window
     const prepared = await prepareSlashAttachments(
       message,
@@ -78,16 +81,15 @@ export async function handleChat(
       imageAttachment,
       interaction,
       canIncludeContextAuthor,
-      (internalPrompt) => sessions.runEphemeral(interaction.channelId, internalPrompt),
+      (internalPrompt) => sessions.runEphemeral(currentSessionKey, internalPrompt),
     );
 
     try {
       if (interaction.channel?.isThread()) {
         // Can't create a thread inside a thread — use the current thread as the session
-        const sessionKey = interactionSessionKey(interaction);
-        if (workspace) sessions.setSessionWorkingDir(sessionKey, workspace);
+        if (workspace) sessions.setSessionWorkingDir(currentSessionKey, workspace);
         const response = await sessions.sendMessage(
-          sessionKey,
+          currentSessionKey,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
           { onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },

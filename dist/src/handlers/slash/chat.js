@@ -2,6 +2,7 @@ import { ThreadAutoArchiveDuration } from "discord.js";
 import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
+import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export async function handleChat(interaction, sessions, canIncludeContextAuthor = () => true) {
     const message = interaction.options.getString("message", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -52,14 +53,17 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
     try {
         await interaction.deferReply();
         durableReply = await interaction.fetchReply();
+        const currentSessionKey = interaction.channel?.isThread()
+            ? interactionSessionKey(interaction)
+            : interaction.channelId;
         // Resolve after defer to avoid hitting Discord's 3s interaction window
-        const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(interaction.channelId, internalPrompt));
+        const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(currentSessionKey, internalPrompt));
         try {
             if (interaction.channel?.isThread()) {
                 // Can't create a thread inside a thread — use the current thread as the session
                 if (workspace)
-                    sessions.setSessionWorkingDir(interaction.channelId, workspace);
-                const response = await sessions.sendMessage(interaction.channelId, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
+                    sessions.setSessionWorkingDir(currentSessionKey, workspace);
+                const response = await sessions.sendMessage(currentSessionKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
                 const chunks = chunkForDiscord(response);
                 await durableReply.edit(chunks[0]);
                 for (const chunk of chunks.slice(1)) {
