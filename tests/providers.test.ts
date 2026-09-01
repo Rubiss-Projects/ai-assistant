@@ -180,6 +180,51 @@ test("Codex captures completed image-generation paths without an artifact marker
   }
 });
 
+test("Codex finds new thread-scoped generated images omitted from the SDK stream", async () => {
+  const previousHome = process.env.CODEX_HOME;
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const codexHome = mkdtempSync(join(tmpdir(), "codex-generated-home-"));
+  const threadId = "thread-fallback";
+  const generatedDirectory = join(codexHome, "generated_images", threadId);
+  const otherThreadDirectory = join(codexHome, "generated_images", "other-thread");
+  mkdirSync(generatedDirectory, { recursive: true });
+  mkdirSync(otherThreadDirectory, { recursive: true });
+  const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  writeFileSync(join(generatedDirectory, "older.png"), png);
+  writeFileSync(join(otherThreadDirectory, "unrelated.png"), png);
+  process.env.CODEX_HOME = codexHome;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
+  try {
+    const codex = new CodexProvider();
+    const internal = codex as unknown as { sessions: Map<string, unknown> };
+    const workspace = mkdtempSync(join(tmpdir(), "codex-image-workspace-"));
+    codex.setSessionWorkingDir("image-fallback", workspace);
+    internal.sessions.set("image-fallback", {
+      id: threadId,
+      runStreamed: async () => {
+        writeFileSync(join(generatedDirectory, "fresh.png"), png);
+        return {
+          events: (async function* () {
+            yield { type: "item.completed", item: { type: "agent_message", id: "answer", text: "Done." } };
+            yield { type: "turn.completed", usage: {} };
+          })(),
+        };
+      },
+    });
+
+    const response = await codex.sendMessage("image-fallback", "make an image");
+    assert.equal(response.content, "Done.");
+    assert.equal(response.attachments.length, 1);
+    assert.equal(response.attachments[0].displayName, "generated-image-1.png");
+    assert.deepEqual(response.attachments[0].data, png);
+  } finally {
+    if (previousHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+    if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+    else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+  }
+});
+
 test("OpenCode provider reports unsupported features via UnsupportedError", async () => {
   const opencode = new OpenCodeProvider();
   const err = await opencode.compact().catch((e: unknown) => e);
