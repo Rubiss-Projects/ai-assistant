@@ -454,6 +454,12 @@ export class CopilotProvider {
     }
     setSessionWorkingDir(key, dir) {
         const canonical = resolveConfiguredWorkspace(dir);
+        const current = this.workingDirOverrides.get(key) ?? this.sessionWorkingDirectories.get(key);
+        const comparable = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+        if (current && comparable(current) === comparable(canonical)) {
+            this.workingDirOverrides.set(key, canonical);
+            return;
+        }
         this.workingDirOverrides.set(key, canonical);
         // Queue the transition behind any active creation/send. A later operation
         // will queue behind this one and cannot observe a half-evicted session.
