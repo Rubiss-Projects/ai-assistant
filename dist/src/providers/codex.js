@@ -199,13 +199,67 @@ function isThreadNotFoundError(err) {
 function isCachedCodexModel(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function codexGeneratedImagesRoot() {
+    return path.join(path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")), "generated_images");
+}
+function generatedImageThreadDirectory(threadId) {
+    if (!threadId || !/^[A-Za-z0-9_-]+$/.test(threadId))
+        return undefined;
+    return path.join(codexGeneratedImagesRoot(), threadId);
+}
+function snapshotThreadGeneratedImages(threadId) {
+    const directory = generatedImageThreadDirectory(threadId);
+    const snapshot = new Map();
+    if (!directory)
+        return snapshot;
+    let entries;
+    try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+    }
+    catch {
+        return snapshot;
+    }
+    for (const entry of entries) {
+        if (!entry.isFile() || !/\.(?:gif|jpe?g|png|webp)$/i.test(entry.name))
+            continue;
+        try {
+            const metadata = fs.lstatSync(path.join(directory, entry.name));
+            if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1)
+                continue;
+            snapshot.set(entry.name, `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeMs}`);
+        }
+        catch {
+            // A concurrently removed file cannot be a completed output for this turn.
+        }
+    }
+    return snapshot;
+}
+function newThreadGeneratedImages(threadId, before) {
+    const directory = generatedImageThreadDirectory(threadId);
+    if (!directory)
+        return [];
+    const after = snapshotThreadGeneratedImages(threadId);
+    return [...after]
+        .filter(([name, identity]) => before.get(name) !== identity)
+        .map(([name]) => path.join(directory, name));
+}
 async function runCodexCapturingEvents(thread, input, signal) {
+    const threadIdBeforeRun = thread.id;
+    const generatedImagesBeforeRun = snapshotThreadGeneratedImages(threadIdBeforeRun);
+    const filesystemGeneratedImages = () => {
+        const threadIdAfterRun = thread.id;
+        const before = threadIdBeforeRun === threadIdAfterRun ? generatedImagesBeforeRun : new Map();
+        return newThreadGeneratedImages(threadIdAfterRun, before);
+    };
     if (typeof thread.runStreamed !== "function") {
         const result = await thread.run(input, { signal });
         return {
             finalResponse: result.finalResponse,
             items: result.items,
-            generatedImagePaths: codexGeneratedImagePaths(result.items),
+            generatedImagePaths: [...new Set([
+                    ...codexGeneratedImagePaths(result.items),
+                    ...filesystemGeneratedImages(),
+                ])],
         };
     }
     const streamed = await thread.runStreamed(input, { signal });
@@ -225,6 +279,8 @@ async function runCodexCapturingEvents(thread, input, signal) {
             throw new Error(record.error?.message || "Codex turn failed.");
         }
     }
+    for (const savedPath of filesystemGeneratedImages())
+        generatedImagePaths.add(savedPath);
     return { finalResponse, items, generatedImagePaths: [...generatedImagePaths] };
 }
 /**
@@ -418,7 +474,7 @@ export class CodexProvider {
                     this.store.set(userId, this.sessions.get(userId).id);
                 }
                 const finalResponse = result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
-                const generatedRoot = path.join(path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")), "generated_images");
+                const generatedRoot = codexGeneratedImagesRoot();
                 return {
                     content: finalResponse,
                     artifacts: result.generatedImagePaths.map((savedPath, index) => ({

@@ -16,6 +16,7 @@ const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
 export const ARTIFACT_INSTRUCTIONS = [
   "When a turn includes an artifact-output directory and you create a file that the user explicitly asked to download or view, save the file in that directory.",
   "Save images intended for inline viewing as PNG, JPEG, GIF, or WebP rather than SVG, because Discord does not preview SVG attachments.",
+  "This Discord client cannot see images displayed only inside a provider interface: even if an image-generation tool says its output is already displayed, copy the raster image into the artifact-output directory and emit its artifact marker.",
   "Include one marker on its own line at the end of your final response using the workspace-relative path: [[artifact:artifact-output/path/to/file]].",
   "Include only completed output artifacts, not every file edited during ordinary coding work.",
 ].join(" ");
