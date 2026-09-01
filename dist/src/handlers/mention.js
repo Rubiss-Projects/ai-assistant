@@ -7,6 +7,24 @@ import { progressMessage } from "../common/progressMessage.js";
 export function mentionSessionKey(message) {
     return message.guildId ? `${message.author.id}:${message.channelId}` : message.author.id;
 }
+export async function deliverMentionResponse(sourceMessage, progressReply, response) {
+    const chunks = chunkForDiscord(response);
+    if (progressReply) {
+        try {
+            await progressReply.edit(chunks[0]);
+            for (const chunk of chunks.slice(1)) {
+                await progressReply.reply(chunk);
+            }
+            return;
+        }
+        catch (error) {
+            console.warn("[mention] Could not replace the progress message; sending a new reply:", error);
+        }
+    }
+    for (const chunk of chunks) {
+        await sourceMessage.reply(chunk);
+    }
+}
 export async function handleMention(message, client, sessions, sessionKey, // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
 canIncludeContextAuthor = () => true) {
     // Strip all @mentions of the bot and trim
@@ -59,13 +77,7 @@ canIncludeContextAuthor = () => true) {
             },
         });
         await progressUpdates.catch(() => { });
-        if (progressReply)
-            await progressReply.edit("✅ Finished — posting the result now.").catch(() => { });
-        const chunks = chunkForDiscord(response);
-        await message.reply(chunks[0]);
-        for (const chunk of chunks.slice(1)) {
-            await message.reply(chunk);
-        }
+        await deliverMentionResponse(message, progressReply, response);
     }
     catch (err) {
         console.error("[mention] Error:", err);
