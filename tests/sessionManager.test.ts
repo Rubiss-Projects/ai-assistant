@@ -40,6 +40,8 @@ type TestableCopilotProvider = {
   getCurrentModel: CopilotProvider["getCurrentModel"];
   setSessionWorkingDir: CopilotProvider["setSessionWorkingDir"];
   sessions: Map<string, SessionLike>;
+  sessionOperationQueues: Map<string, Promise<unknown>>;
+  sessionWorkingDirectories: Map<string, string>;
   store: StoreLike;
   client: ClientLike;
 };
@@ -264,10 +266,33 @@ test("changing a Copilot workspace evicts the session bound to the old directory
   });
 
   manager.setSessionWorkingDir("user-1", mkdtempSync(join(tmpdir(), "copilot-workspace-")));
-  await Promise.resolve();
+  await manager.sessionOperationQueues.get("user-1");
 
   assert.equal(manager.sessions.has("user-1"), false);
   assert.equal(disconnectCalls, 1);
+});
+
+test("changing a Copilot workspace waits for active session work before disconnecting", async () => {
+  const manager = createTestManager();
+  let releaseWork!: () => void;
+  const activeWork = new Promise<void>((resolve) => { releaseWork = resolve; });
+  let disconnectCalls = 0;
+  manager.sessions.set("user-1", {
+    sessionId: "busy-session",
+    disconnect: async () => { disconnectCalls += 1; },
+  });
+  manager.sessionOperationQueues.set("user-1", activeWork);
+
+  manager.setSessionWorkingDir("user-1", mkdtempSync(join(tmpdir(), "copilot-workspace-")));
+  const transition = manager.sessionOperationQueues.get("user-1")!;
+  await Promise.resolve();
+  assert.equal(disconnectCalls, 0);
+  assert.equal(manager.sessions.has("user-1"), true);
+
+  releaseWork();
+  await transition;
+  assert.equal(disconnectCalls, 1);
+  assert.equal(manager.sessions.has("user-1"), false);
 });
 
 test("getHistory maps message events and excludes non-history events", async () => {

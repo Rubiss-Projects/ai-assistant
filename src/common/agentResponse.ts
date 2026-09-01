@@ -11,6 +11,7 @@ const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_ATTACHMENTS = 10;
 const ABSOLUTE_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const DISCORD_MAX_ATTACHMENTS = 10;
+const CLEANUP_RETRY_MULTIPLIERS = [1, 5, 30] as const;
 const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
 
 export const ARTIFACT_INSTRUCTIONS = [
@@ -67,6 +68,15 @@ function cleanupArtifactRun(run: ArtifactRun): void {
   }
 }
 
+function scheduleArtifactCleanup(run: ArtifactRun): void {
+  cleanupArtifactRun(run);
+  const baseDelay = configuredMilliseconds("AI_OUTPUT_CLEANUP_RETRY_MS", 1_000, 1);
+  for (const multiplier of CLEANUP_RETRY_MULTIPLIERS) {
+    const timer = setTimeout(() => cleanupArtifactRun(run), baseDelay * multiplier);
+    timer.unref?.();
+  }
+}
+
 export function withArtifactOutputPrompt(prompt: string, run: ArtifactRun): string {
   const portablePath = run.relativeDirectory.split(path.sep).join("/");
   return `${prompt}\n\n<artifact-output>For this turn, save downloadable outputs only under ${portablePath}/ and mark them with their workspace-relative path.</artifact-output>`;
@@ -101,7 +111,7 @@ async function loadAttachment(
   } catch {
     return { warning: attachmentWarning(displayName, "the file does not exist.") };
   }
-  if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink()) {
+  if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink() || beforeOpen.nlink !== 1) {
     return { warning: attachmentWarning(displayName, "only regular files can be attached.") };
   }
   if (beforeOpen.size > maxBytes) {
@@ -117,7 +127,9 @@ async function loadAttachment(
       !opened.isFile() ||
       opened.dev !== beforeOpen.dev ||
       opened.ino !== beforeOpen.ino ||
-      opened.size !== beforeOpen.size
+      opened.size !== beforeOpen.size ||
+      opened.nlink !== 1 ||
+      opened.nlink !== beforeOpen.nlink
     ) {
       return { warning: attachmentWarning(displayName, "the file changed while it was being opened.") };
     }
@@ -197,6 +209,8 @@ export async function captureAgentArtifacts(
   try {
     return await prepareAgentResponse(await operation(run), run);
   } finally {
-    cleanupArtifactRun(run);
+    // Repeat cleanup after returning because a provider that could not confirm
+    // cancellation may still have a late writer targeting this unique run path.
+    scheduleArtifactCleanup(run);
   }
 }

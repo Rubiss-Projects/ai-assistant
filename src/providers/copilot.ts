@@ -218,6 +218,8 @@ export class CopilotProvider implements Provider {
   private store: SessionStore = new SessionStore(this.name);
   // Per-session working directory override (affects MCP loading and agent file ops)
   private workingDirOverrides: Map<string, string> = new Map();
+  // Directory actually bound into each live SDK session.
+  private sessionWorkingDirectories: Map<string, string> = new Map();
   // Per-session MCP tool overrides: server name → tools array (["*"] = enabled, [] = disabled)
   private mcpToolOverrides: Map<string, Record<string, string[]>> = new Map();
   // Per-session reasoning-effort override (host tracks the effective value)
@@ -280,6 +282,7 @@ export class CopilotProvider implements Provider {
           return session;
         }
         this.sessions.set(key, session);
+        this.sessionWorkingDirectories.set(key, workingDir ?? ensureProviderWorkingDirectory());
         this.pending.delete(key);
         this.store.set(key, session.sessionId);
         return session;
@@ -298,6 +301,7 @@ export class CopilotProvider implements Provider {
   private async evictCachedSession(key: string, session: CopilotSession): Promise<void> {
     if (this.sessions.get(key) === session) {
       this.sessions.delete(key);
+      this.sessionWorkingDirectories.delete(key);
     }
     await session.disconnect().catch((err) =>
       console.warn(`[CopilotProvider] Failed to disconnect stale session ${session.sessionId}:`, err)
@@ -305,7 +309,10 @@ export class CopilotProvider implements Provider {
   }
 
   private abandonTimedOutSession(key: string, session: CopilotSession): void {
-    if (this.sessions.get(key) === session) this.sessions.delete(key);
+    if (this.sessions.get(key) === session) {
+      this.sessions.delete(key);
+      this.sessionWorkingDirectories.delete(key);
+    }
     this.store.delete(key);
     session.disconnect().catch((err) =>
       console.warn(`[CopilotProvider] Failed to disconnect timed-out session ${session.sessionId}:`, err)
@@ -380,7 +387,9 @@ export class CopilotProvider implements Provider {
       }));
       return this.withLiveSession(userId, async (session) => {
         try {
-          const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
+          const workingDirectory = this.sessionWorkingDirectories.get(userId)
+            ?? this.workingDirOverrides.get(userId)
+            ?? ensureProviderWorkingDirectory();
           return await captureAgentArtifacts(workingDirectory, (artifactRun) =>
             sendUntilIdle(
               session,
@@ -538,6 +547,7 @@ export class CopilotProvider implements Provider {
     const storedSessionId = this.store.get(key);
 
     this.sessions.delete(key);
+    this.sessionWorkingDirectories.delete(key);
     this.pending.delete(key);
     this.sessionOperationQueues.delete(key);
     this.messageQueues.delete(key);
@@ -580,11 +590,16 @@ export class CopilotProvider implements Provider {
   setSessionWorkingDir(key: string, dir: string): void {
     const canonical = resolveConfiguredWorkspace(dir);
     this.workingDirOverrides.set(key, canonical);
-    const existing = this.sessions.get(key);
-    this.sessions.delete(key);
-    this.pending.delete(key);
-    if (existing) existing.disconnect().catch((error) => {
-      console.warn(`[CopilotProvider] Could not disconnect session after workspace change for ${key}:`, error);
+    // Queue the transition behind any active creation/send. A later operation
+    // will queue behind this one and cannot observe a half-evicted session.
+    void this.enqueueSessionOperation(key, async () => {
+      const existing = this.sessions.get(key);
+      this.sessions.delete(key);
+      this.sessionWorkingDirectories.delete(key);
+      this.store.delete(key);
+      if (existing) await existing.disconnect().catch((error) => {
+        console.warn(`[CopilotProvider] Could not disconnect session after workspace change for ${key}:`, error);
+      });
     });
   }
 
@@ -617,6 +632,7 @@ export class CopilotProvider implements Provider {
   async shutdown(): Promise<void> {
     const allSessions = Array.from(this.sessions.values());
     this.sessions.clear();
+    this.sessionWorkingDirectories.clear();
     this.pending.clear();
     this.sessionOperationQueues.clear();
     await Promise.all(
