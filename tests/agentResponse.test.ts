@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import fs, { mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { linkSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
@@ -123,6 +123,41 @@ test("symbolic-link artifacts are rejected", async (context) => {
   }
   assert.equal(response.attachments.length, 0);
   assert.match(response.content, /outside the allowed workspace|only regular files|could not be read safely/);
+});
+
+test("hard-linked workspace files cannot be exported as turn artifacts", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const privateFile = join(workspace, "private.txt");
+  writeFileSync(privateFile, "private workspace data");
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    linkSync(privateFile, join(run.directory, "report.txt"));
+    return marker(workspace, run, "report.txt");
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /only regular files/);
+});
+
+test("late artifact writers are removed by deferred cleanup", async () => {
+  const previous = process.env.AI_OUTPUT_CLEANUP_RETRY_MS;
+  process.env.AI_OUTPUT_CLEANUP_RETRY_MS = "10";
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-cleanup-"));
+  let runDirectory = "";
+  try {
+    await captureAgentArtifacts(workspace, async (run) => {
+      runDirectory = run.directory;
+      setTimeout(() => {
+        fs.mkdirSync(run.directory, { recursive: true });
+        writeFileSync(join(run.directory, "late.txt"), "late");
+      }, 5);
+      return "done";
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(fs.existsSync(runDirectory), false);
+  } finally {
+    if (previous === undefined) delete process.env.AI_OUTPUT_CLEANUP_RETRY_MS;
+    else process.env.AI_OUTPUT_CLEANUP_RETRY_MS = previous;
+  }
 });
 
 test("a same-size file swap between validation and open is rejected", async () => {
