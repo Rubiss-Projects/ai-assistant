@@ -5,7 +5,7 @@ import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/downloadAttachments.js";
 import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
-import { discordResponseOptions } from "../common/discordResponse.js";
+import { deliverDiscordAttachments, discordTextOptions } from "../common/discordResponse.js";
 import type { AgentResponse } from "../providers/types.js";
 
 export function mentionSessionKey(message: Pick<Message, "guildId" | "channelId" | "author">): string {
@@ -20,43 +20,50 @@ export async function deliverMentionResponse(
   const chunks = chunkForDiscord(response.content);
   if (progressReply) {
     try {
-      await progressReply.edit(discordResponseOptions(chunks[0], response.attachments));
+      await progressReply.edit(discordTextOptions(chunks[0]));
     } catch (error) {
       console.warn("[mention] Could not replace the progress message; sending a new reply:", error);
       for (let index = 0; index < chunks.length; index++) {
-        await sourceMessage.reply(discordResponseOptions(
-          chunks[index],
-          index === 0 ? response.attachments : [],
-        ));
+        await sourceMessage.reply(discordTextOptions(chunks[index]));
       }
+      await deliverDiscordAttachments(
+        (options) => sourceMessage.reply(options),
+        response.attachments,
+      );
       return;
     }
 
     for (let index = 1; index < chunks.length; index++) {
       try {
-        await progressReply.reply(discordResponseOptions(chunks[index]));
+        await progressReply.reply(discordTextOptions(chunks[index]));
       } catch (error) {
         console.warn("[mention] Could not send an overflow reply; retrying the unsent remainder:", error);
         for (const unsentChunk of chunks.slice(index)) {
           try {
-            await sourceMessage.reply(discordResponseOptions(unsentChunk));
+            await sourceMessage.reply(discordTextOptions(unsentChunk));
           } catch (fallbackError) {
             console.error("[mention] Could not deliver the remaining response:", fallbackError);
             return;
           }
         }
+        await deliverDiscordAttachments(
+          (options) => sourceMessage.reply(options),
+          response.attachments,
+        );
         return;
       }
     }
+    await deliverDiscordAttachments(
+      (options) => progressReply.reply(options),
+      response.attachments,
+    );
     return;
   }
 
-  for (let index = 0; index < chunks.length; index++) {
-    await sourceMessage.reply(discordResponseOptions(
-      chunks[index],
-      index === 0 ? response.attachments : [],
-    ));
+  for (const chunk of chunks) {
+    await sourceMessage.reply(discordTextOptions(chunk));
   }
+  await deliverDiscordAttachments((options) => sourceMessage.reply(options), response.attachments);
 }
 
 export async function handleMention(

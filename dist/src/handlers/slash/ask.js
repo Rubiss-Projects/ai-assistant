@@ -1,7 +1,7 @@
 import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
-import { discordResponseOptions } from "../../common/discordResponse.js";
+import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 export async function handleAsk(interaction, sessions, canIncludeContextAuthor = () => true) {
     const prompt = interaction.options.getString("prompt", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -36,10 +36,11 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
             await sessions.resetSession(tempKey);
         }
         const chunks = chunkForDiscord(response.content);
-        await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
+        await durableReply.edit(discordTextOptions(chunks[0]));
         for (const chunk of chunks.slice(1)) {
-            await durableReply.reply(discordResponseOptions(chunk));
+            await durableReply.reply(discordTextOptions(chunk));
         }
+        await deliverDiscordAttachments((options) => durableReply.reply(options), response.attachments);
     }
     catch (err) {
         console.error("[/ask] Error:", err);

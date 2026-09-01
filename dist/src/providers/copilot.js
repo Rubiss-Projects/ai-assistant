@@ -4,7 +4,7 @@ import { BuiltInTools, CopilotClient, ToolSet, approveAll } from "@github/copilo
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
-import { prepareAgentResponse } from "../common/agentResponse.js";
+import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
@@ -295,9 +295,11 @@ export class CopilotProvider {
             }));
             return this.withLiveSession(userId, async (session) => {
                 try {
-                    const response = await sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options);
                     const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-                    return prepareAgentResponse(response, workingDirectory);
+                    return await captureAgentArtifacts(workingDirectory, (artifactRun) => sendUntilIdle(session, {
+                        prompt: withArtifactOutputPrompt(prompt, artifactRun),
+                        ...(attachments?.length ? { attachments } : {}),
+                    }, options));
                 }
                 catch (error) {
                     if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
@@ -444,6 +446,13 @@ export class CopilotProvider {
     setSessionWorkingDir(key, dir) {
         const canonical = resolveConfiguredWorkspace(dir);
         this.workingDirOverrides.set(key, canonical);
+        const existing = this.sessions.get(key);
+        this.sessions.delete(key);
+        this.pending.delete(key);
+        if (existing)
+            existing.disconnect().catch((error) => {
+                console.warn(`[CopilotProvider] Could not disconnect session after workspace change for ${key}:`, error);
+            });
     }
     getSessionWorkingDir(key) {
         return this.workingDirOverrides.get(key);

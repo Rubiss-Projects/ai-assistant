@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
-import { prepareAgentResponse } from "../common/agentResponse.js";
+import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -266,30 +266,29 @@ export class OpenCodeProvider implements Provider {
       for (const img of imagePaths ?? []) {
         args.push("--file", img.path);
       }
-      args.push(openCodeRequestPrompt(prompt));
-
       const timeoutMs = configuredMilliseconds("OPENCODE_TIMEOUT_MS", 60 * 60 * 1000);
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
+      const workingDirectory = this.workingDir(userId);
+      const response = await captureAgentArtifacts(workingDirectory, async (artifactRun) => {
+        args.push(openCodeRequestPrompt(withArtifactOutputPrompt(prompt, artifactRun)));
+        const stopProgress = startProgressUpdates(options);
+        const { stdout, stderr, code } = await runOpenCode(args, {
+          cwd: workingDirectory, timeoutMs, providerName: this.displayName,
+        }).finally(stopProgress);
 
-      const stopProgress = startProgressUpdates(options);
-      const { stdout, stderr, code } = await runOpenCode(args, {
-        cwd: this.workingDir(userId), timeoutMs, providerName: this.displayName,
-      }).finally(stopProgress);
+        if (code !== 0) {
+          const detail = stderr.trim() || stdout.trim();
+          throw new Error(detail || "opencode run failed");
+        }
 
-      if (code !== 0) {
-        const detail = stderr.trim() || stdout.trim();
-        throw new Error(detail || "opencode run failed");
-      }
-
-      const events = parseEvents(stdout);
-      const newSessionId = sessionIdFromEvents(events);
-      if (newSessionId) {
-        this.sessions.set(userId, newSessionId);
-        this.store.set(userId, newSessionId);
-      }
-
-      const responseText = finalTextFromEvents(events) || "(no response)";
-      const response = prepareAgentResponse(responseText, this.workingDir(userId));
+        const events = parseEvents(stdout);
+        const newSessionId = sessionIdFromEvents(events);
+        if (newSessionId) {
+          this.sessions.set(userId, newSessionId);
+          this.store.set(userId, newSessionId);
+        }
+        return finalTextFromEvents(events) || "(no response)";
+      });
       this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;
     });

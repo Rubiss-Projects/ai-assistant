@@ -97,7 +97,7 @@ test("mention response retries only unsent overflow chunks", async () => {
   assert.deepEqual(sourceReplies, chunks.slice(2).map((content) => ({ content, files: [] })));
 });
 
-test("mention response attaches artifacts only to the first Discord message", async () => {
+test("mention response sends artifacts separately after all text chunks", async () => {
   const edits: DiscordOptions[] = [];
   const overflowReplies: DiscordOptions[] = [];
   const attachment = { data: Buffer.from("patch"), displayName: "changes.patch" };
@@ -111,6 +111,32 @@ test("mention response attaches artifacts only to the first Discord message", as
     { content: "a".repeat(2_001), attachments: [attachment] },
   );
 
-  assert.deepEqual(edits[0].files, [{ attachment: attachment.data, name: "changes.patch" }]);
+  assert.deepEqual(edits[0].files, []);
   assert.deepEqual(overflowReplies[0].files, []);
+  assert.deepEqual(overflowReplies[1], {
+    content: "📎 `changes.patch`",
+    files: [{ attachment: attachment.data, name: "changes.patch" }],
+  });
+});
+
+test("mention response preserves text and reports an attachment upload failure", async () => {
+  const edits: DiscordOptions[] = [];
+  const replies: DiscordOptions[] = [];
+  const attachment = { data: Buffer.from("patch"), displayName: "changes.patch" };
+
+  await deliverMentionResponse(
+    { reply: async () => ({}) } as never,
+    {
+      edit: async (options: DiscordOptions) => { edits.push(options); return {}; },
+      reply: async (options: DiscordOptions) => {
+        if (options.files.length) throw new Error("Discord rejected upload");
+        replies.push(options);
+        return {};
+      },
+    } as never,
+    { content: "Final answer", attachments: [attachment] },
+  );
+
+  assert.deepEqual(edits, [{ content: "Final answer", files: [] }]);
+  assert.match(replies[0].content, /Could not upload.*changes\.patch/);
 });

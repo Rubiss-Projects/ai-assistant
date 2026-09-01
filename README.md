@@ -379,6 +379,7 @@ The AI configuration changes as follows:
 | `COPILOT_TIMEOUT_MS` | `CODEX_TIMEOUT_MS` | Provider hard timeout (default 1 hour; timed-out work is explicitly cancelled); plus `OPENCODE_TIMEOUT_MS` for OpenCode |
 | `AI_PROGRESS_INTERVAL_MS` | `AI_PROGRESS_INTERVAL_MS` | Provider-agnostic “still working” interval (default 1 minute) |
 | `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | Maximum bytes per agent-created Discord attachment (default 10 MiB) |
+| `AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES` | `AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES` | Maximum combined bytes retained for one response (default 10 MiB; hard cap 100 MiB) |
 | `AI_OUTPUT_ATTACHMENT_MAX_COUNT` | `AI_OUTPUT_ATTACHMENT_MAX_COUNT` | Maximum agent-created attachments per response (default 10) |
 | Copilot model IDs (`COPILOT_MODEL`) | Codex/OpenAI model IDs (`CODEX_MODEL`) | `COPILOT_MODEL` / `CODEX_MODEL` / `OPENCODE_MODEL` |
 | — | — | New `PROVIDER=copilot\|codex\|opencode` sets the default backend |

@@ -6,7 +6,7 @@ import { Codex, Thread, type CodexOptions, type ThreadItem, type ThreadOptions, 
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
-import { prepareAgentResponse } from "../common/agentResponse.js";
+import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -377,62 +377,61 @@ export class CodexProvider implements Provider {
         return `[Discord attachment: ${attachment.displayName ?? "file"}]\n${text}\n[/Discord attachment]`;
       }));
       const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
-      const input: string | UserInput[] =
-        images.length > 0
-          ? [
-              { type: "text", text: resolvedPrompt },
-              ...images.map((a) => ({ type: "local_image" as const, path: a.path })),
-            ]
-          : resolvedPrompt;
-
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
-      const timeoutMs = configuredMilliseconds("CODEX_TIMEOUT_MS", 60 * 60 * 1000);
-      const controller = new AbortController();
-      let timedOut = false;
-      const stopProgress = startProgressUpdates(options);
-      let abortGrace: ReturnType<typeof setTimeout> | undefined;
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
-      let result;
-      try {
-        const run = this.withLiveSession(userId, (thread) =>
-          thread.run(input, { signal: controller.signal })
-        );
-        const deadline = new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(() => {
-            timedOut = true;
-            controller.abort();
-            abortGrace = setTimeout(() => {
-              this.abandonTimedOutSession(userId);
-              reject(new RunTimeoutError(this.displayName, timeoutMs, false));
-            }, cancellationGraceMs);
-          }, timeoutMs);
-        });
-        result = await Promise.race([run, deadline]);
-        if (timedOut) {
-          this.abandonTimedOutSession(userId);
-          throw new RunTimeoutError(this.displayName, timeoutMs, true);
-        }
-      } catch (error) {
-        if (timedOut && !(error instanceof RunTimeoutError)) {
-          this.abandonTimedOutSession(userId);
-          throw new RunTimeoutError(this.displayName, timeoutMs, true);
-        }
-        throw error;
-      } finally {
-        clearTimeout(timeout);
-        clearTimeout(abortGrace);
-        stopProgress();
-      }
-
-      if (result && this.sessions.get(userId)?.id) {
-        this.store.set(userId, this.sessions.get(userId)!.id!);
-      }
-
-      const responseText =
-        result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
       const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-      const response = prepareAgentResponse(responseText, workingDirectory);
+      const response = await captureAgentArtifacts(workingDirectory, async (artifactRun) => {
+        const artifactPrompt = withArtifactOutputPrompt(resolvedPrompt, artifactRun);
+        const input: string | UserInput[] =
+          images.length > 0
+            ? [
+                { type: "text", text: artifactPrompt },
+                ...images.map((a) => ({ type: "local_image" as const, path: a.path })),
+              ]
+            : artifactPrompt;
+        const timeoutMs = configuredMilliseconds("CODEX_TIMEOUT_MS", 60 * 60 * 1000);
+        const controller = new AbortController();
+        let timedOut = false;
+        const stopProgress = startProgressUpdates(options);
+        let abortGrace: ReturnType<typeof setTimeout> | undefined;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
+        let result;
+        try {
+          const run = this.withLiveSession(userId, (thread) =>
+            thread.run(input, { signal: controller.signal })
+          );
+          const deadline = new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+              timedOut = true;
+              controller.abort();
+              abortGrace = setTimeout(() => {
+                this.abandonTimedOutSession(userId);
+                reject(new RunTimeoutError(this.displayName, timeoutMs, false));
+              }, cancellationGraceMs);
+            }, timeoutMs);
+          });
+          result = await Promise.race([run, deadline]);
+          if (timedOut) {
+            this.abandonTimedOutSession(userId);
+            throw new RunTimeoutError(this.displayName, timeoutMs, true);
+          }
+        } catch (error) {
+          if (timedOut && !(error instanceof RunTimeoutError)) {
+            this.abandonTimedOutSession(userId);
+            throw new RunTimeoutError(this.displayName, timeoutMs, true);
+          }
+          throw error;
+        } finally {
+          clearTimeout(timeout);
+          clearTimeout(abortGrace);
+          stopProgress();
+        }
+
+        if (result && this.sessions.get(userId)?.id) {
+          this.store.set(userId, this.sessions.get(userId)!.id!);
+        }
+        return result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
+      });
       this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;
     });

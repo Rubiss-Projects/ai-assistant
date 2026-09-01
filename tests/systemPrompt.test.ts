@@ -20,7 +20,7 @@ test("operator system prompt is optional while artifact instructions remain enab
   delete process.env.AI_ASSISTANT_SYSTEM_PROMPT;
   delete process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE;
   assert.equal(configuredSystemPrompt(), undefined);
-  assert.match(providerSystemPrompt(), /\[\[artifact:relative\/path\/to\/file\]\]/);
+  assert.match(providerSystemPrompt(), /\[\[artifact:artifact-output\/path\/to\/file\]\]/);
   assert.match(withSystemPrompt("hello"), /artifact:[\s\S]*hello/);
 }));
 
