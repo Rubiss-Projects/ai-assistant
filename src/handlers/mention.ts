@@ -10,6 +10,29 @@ export function mentionSessionKey(message: Pick<Message, "guildId" | "channelId"
   return message.guildId ? `${message.author.id}:${message.channelId}` : message.author.id;
 }
 
+export async function deliverMentionResponse(
+  sourceMessage: Pick<Message, "reply">,
+  progressReply: Pick<Message, "edit" | "reply"> | undefined,
+  response: string,
+): Promise<void> {
+  const chunks = chunkForDiscord(response);
+  if (progressReply) {
+    try {
+      await progressReply.edit(chunks[0]);
+      for (const chunk of chunks.slice(1)) {
+        await progressReply.reply(chunk);
+      }
+      return;
+    } catch (error) {
+      console.warn("[mention] Could not replace the progress message; sending a new reply:", error);
+    }
+  }
+
+  for (const chunk of chunks) {
+    await sourceMessage.reply(chunk);
+  }
+}
+
 export async function handleMention(
   message: Message,
   client: Client,
@@ -89,13 +112,7 @@ export async function handleMention(
     );
 
     await progressUpdates.catch(() => {});
-    if (progressReply) await progressReply.edit("✅ Finished — posting the result now.").catch(() => {});
-
-    const chunks = chunkForDiscord(response);
-    await message.reply(chunks[0]);
-    for (const chunk of chunks.slice(1)) {
-      await message.reply(chunk);
-    }
+    await deliverMentionResponse(message, progressReply, response);
   } catch (err) {
     console.error("[mention] Error:", err);
     const failure = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
