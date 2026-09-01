@@ -122,7 +122,7 @@ test("symbolic-link artifacts are rejected", async (context) => {
     return;
   }
   assert.equal(response.attachments.length, 0);
-  assert.match(response.content, /only regular files|could not be read safely/);
+  assert.match(response.content, /outside the allowed workspace|only regular files|could not be read safely/);
 });
 
 test("a same-size file swap between validation and open is rejected", async () => {
