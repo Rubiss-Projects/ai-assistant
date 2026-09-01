@@ -6,6 +6,7 @@ import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/
 import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../common/discordResponse.js";
+import { userVisibleErrorMessage } from "../common/userVisibleError.js";
 import type { AgentResponse } from "../providers/types.js";
 
 export function mentionSessionKey(message: Pick<Message, "guildId" | "channelId" | "author">): string {
@@ -148,7 +149,7 @@ export async function handleMention(
     await deliverMentionResponse(message, progressReply, response);
   } catch (err) {
     console.error("[mention] Error:", err);
-    const failure = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
+    const failure = userVisibleErrorMessage(err) ?? runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
     await progressUpdates.catch(() => {});
     if (progressReply) await progressReply.edit(failure).catch(() => message.reply(failure).then(() => {}));
     else await message.reply(failure);

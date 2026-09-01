@@ -90,6 +90,13 @@ test("real vector SVG artifacts remain downloadable without lossy normalization"
   assert.equal(response.attachments[0].data.toString(), svg);
 });
 
+test("attachment success claims are corrected when no artifact was produced", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const response = await captureAgentArtifacts(workspace, async () => "Done — it is attached above.");
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /No attachment was produced/);
+});
+
 test("pre-existing workspace files and duplicate markers are not raw export authority", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   writeFileSync(join(workspace, "source.txt"), "private workspace data");

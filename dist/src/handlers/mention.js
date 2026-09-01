@@ -5,6 +5,7 @@ import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/
 import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../common/discordResponse.js";
+import { userVisibleErrorMessage } from "../common/userVisibleError.js";
 export function mentionSessionKey(message) {
     return message.guildId ? `${message.author.id}:${message.channelId}` : message.author.id;
 }
@@ -105,7 +106,7 @@ canIncludeContextAuthor = () => true) {
     }
     catch (err) {
         console.error("[mention] Error:", err);
-        const failure = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
+        const failure = userVisibleErrorMessage(err) ?? runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
         await progressUpdates.catch(() => { });
         if (progressReply)
             await progressReply.edit(failure).catch(() => message.reply(failure).then(() => { }));

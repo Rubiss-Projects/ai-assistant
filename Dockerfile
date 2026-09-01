@@ -11,6 +11,12 @@ COPY src ./src
 COPY scripts ./scripts
 RUN npm run build && npm prune --omit=dev
 
+# Copy the native Codex executable to a stable system path. Shared-mode
+# Bubblewrap mounts system binaries but intentionally does not expose /app's
+# dependency tree to commands executed later inside the sandbox.
+RUN node -e "const fs=require('fs');const path=require('path');const arch=process.arch==='arm64'?'arm64':'x64';const triple=arch==='arm64'?'aarch64-unknown-linux-musl':'x86_64-unknown-linux-musl';const pkg=require.resolve('@openai/codex-linux-'+arch+'/package.json');fs.copyFileSync(path.join(path.dirname(pkg),'vendor',triple,'bin','codex'),'/app/codex-native')" \
+    && chmod 0555 /app/codex-native
+
 FROM node:20-bookworm-slim AS runtime
 
 ARG VERSION=dev
@@ -35,13 +41,15 @@ WORKDIR /app
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/codex-native /usr/local/bin/codex
 COPY scripts/container-entrypoint.sh ./container-entrypoint.sh
 RUN chmod 0555 /app/container-entrypoint.sh
 
 ENV NODE_ENV=production \
     HOME=/data \
     AI_ASSISTANT_CONFIG_DIR=/data \
-    PATH=/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin
+    PATH=/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin \
+    CODEX_EXECUTABLE_PATH=/usr/local/bin/codex
 
 USER 10001:10001
 WORKDIR /data

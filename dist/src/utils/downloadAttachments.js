@@ -2,6 +2,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { readFile, writeFile, unlink } from "fs/promises";
 import { randomUUID } from "crypto";
+import { normalizePreviewableImage } from "../common/agentResponse.js";
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB per file
 const MAX_FILE_COUNT = 5;
 const FETCH_TIMEOUT_MS = 30_000; // 30 seconds per file download
@@ -111,19 +112,20 @@ export async function downloadFileAttachments(attachments) {
                 console.warn(`[downloadAttachments] Skipping oversized file "${attachment.name}" (actual: ${buffer.byteLength} bytes)`);
                 continue;
             }
-            const imageExt = detectedImageExtension(buffer);
+            const normalized = normalizePreviewableImage(buffer, attachment.name);
+            const imageExt = detectedImageExtension(normalized.data);
             const isImage = imageExt !== undefined;
             const textMode = (process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() === "text";
             if (textMode && !isImage) {
-                downloaded.push({ data: buffer, displayName: attachment.name, contentType: attachment.contentType, isImage });
+                downloaded.push({ data: normalized.data, displayName: normalized.displayName, contentType: attachment.contentType, isImage });
             }
             else {
                 const originalExt = attachment.name.match(/\.[^.]+$/)?.[0] ?? ".txt";
                 const tempPath = join(tmpdir(), `discord-file-${randomUUID()}${imageExt ?? originalExt}`);
-                await writeFile(tempPath, buffer);
+                await writeFile(tempPath, normalized.data);
                 downloaded.push({
                     filePath: tempPath,
-                    displayName: attachment.name,
+                    displayName: normalized.displayName,
                     contentType: attachment.contentType,
                     isImage,
                 });

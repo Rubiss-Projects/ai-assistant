@@ -31,7 +31,7 @@ const RASTER_EXTENSIONS = {
     "image/png": ".png",
     "image/webp": ".webp",
 };
-function rasterSignatureMatches(data, mimeType) {
+export function rasterSignatureMatches(data, mimeType) {
     switch (mimeType) {
         case "image/png":
             return data.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
@@ -48,7 +48,7 @@ function rasterSignatureMatches(data, mimeType) {
     }
 }
 /** Unwrap the single embedded raster emitted by some image tools as an SVG shell. */
-function normalizePreviewableImage(data, displayName) {
+export function normalizePreviewableImage(data, displayName) {
     if (path.extname(displayName).toLowerCase() !== ".svg")
         return { data, displayName };
     const svg = data.toString("utf8");
@@ -208,7 +208,12 @@ async function prepareAgentResponse(content, run) {
     const visibleContent = [text || (attachments.length ? "📎 Attached file(s)." : "(no response)"), ...warnings]
         .filter(Boolean)
         .join("\n\n");
-    return { content: visibleContent, attachments };
+    const claimsDelivery = /\b(?:attached|uploaded)\b/i.test(text)
+        && !/\b(?:not|never|wasn't|isn't|couldn't|failed to)\s+(?:attached|uploaded)\b/i.test(text);
+    const deliveryWarning = attachments.length === 0 && claimsDelivery
+        ? "⚠️ No attachment was produced for this response."
+        : "";
+    return { content: [visibleContent, deliveryWarning].filter(Boolean).join("\n\n"), attachments };
 }
 export async function captureAgentArtifacts(workingDirectory, operation) {
     const run = createArtifactRun(workingDirectory);

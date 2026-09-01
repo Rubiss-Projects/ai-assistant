@@ -4,6 +4,7 @@ import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js"
 import { progressMessage } from "../../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 import type { AgentResponse } from "../../providers/types.js";
+import { userVisibleErrorMessage } from "../../common/userVisibleError.js";
 
 export async function handleAsk(
   interaction: ChatInputCommandInteraction,
@@ -63,7 +64,7 @@ export async function handleAsk(
     await deliverDiscordAttachments((options) => durableReply!.reply(options), response.attachments);
   } catch (err) {
     console.error("[/ask] Error:", err);
-    const msg = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
+    const msg = userVisibleErrorMessage(err) ?? runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
     if (durableReply) {
       await durableReply.edit(msg).catch(() => {});
     } else if (interaction.deferred) {
