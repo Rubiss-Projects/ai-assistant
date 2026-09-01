@@ -62,6 +62,34 @@ test("per-turn prompt names the isolated artifact directory", async () => {
   });
 });
 
+test("single-raster SVG wrappers are uploaded with a Discord-previewable image name", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image width="1" height="1" href="data:image/png;base64,${png.toString("base64")}"/></svg>`;
+    writeFileSync(join(run.directory, "generated.svg"), svg);
+    return marker(workspace, run, "generated.svg");
+  });
+
+  assert.equal(response.attachments[0].displayName, "generated.png");
+  assert.deepEqual(response.attachments[0].data, png);
+});
+
+test("real vector SVG artifacts remain downloadable without lossy normalization", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>`;
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "vector.svg"), svg);
+    return marker(workspace, run, "vector.svg");
+  });
+
+  assert.equal(response.attachments[0].displayName, "vector.svg");
+  assert.equal(response.attachments[0].data.toString(), svg);
+});
+
 test("pre-existing workspace files and duplicate markers are not raw export authority", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   writeFileSync(join(workspace, "source.txt"), "private workspace data");
