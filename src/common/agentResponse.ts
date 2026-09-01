@@ -15,6 +15,7 @@ const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
 
 export const ARTIFACT_INSTRUCTIONS = [
   "When a turn includes an artifact-output directory and you create a file that the user explicitly asked to download or view, save the file in that directory.",
+  "Save images intended for inline viewing as PNG, JPEG, GIF, or WebP rather than SVG, because Discord does not preview SVG attachments.",
   "Include one marker on its own line at the end of your final response using the workspace-relative path: [[artifact:artifact-output/path/to/file]].",
   "Include only completed output artifacts, not every file edited during ordinary coding work.",
 ].join(" ");
@@ -35,6 +36,58 @@ function safeDisplayName(candidate: string): string {
 
 function attachmentWarning(name: string, reason: string): string {
   return `⚠️ Could not attach \`${safeDisplayName(name)}\`: ${reason}`;
+}
+
+const RASTER_EXTENSIONS: Record<string, string> = {
+  "image/gif": ".gif",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+function rasterSignatureMatches(data: Buffer, mimeType: string): boolean {
+  switch (mimeType) {
+    case "image/png":
+      return data.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
+    case "image/jpeg":
+      return data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+    case "image/gif":
+      return data.subarray(0, 6).toString("ascii") === "GIF87a"
+        || data.subarray(0, 6).toString("ascii") === "GIF89a";
+    case "image/webp":
+      return data.subarray(0, 4).toString("ascii") === "RIFF"
+        && data.subarray(8, 12).toString("ascii") === "WEBP";
+    default:
+      return false;
+  }
+}
+
+/** Unwrap the single embedded raster emitted by some image tools as an SVG shell. */
+function normalizePreviewableImage(data: Buffer, displayName: string): ResponseAttachment {
+  if (path.extname(displayName).toLowerCase() !== ".svg") return { data, displayName };
+
+  const svg = data.toString("utf8");
+  const imageTag = svg.match(/<image\b[\s\S]*?(?:\/\s*>|>\s*<\/image\s*>)/i)?.[0];
+  if (!imageTag) return { data, displayName };
+
+  const shell = svg.replace(imageTag, "");
+  if (!/^\s*(?:<\?xml[^>]*>\s*)?<svg\b[^>]*>\s*<\/svg\s*>\s*$/is.test(shell)) {
+    return { data, displayName };
+  }
+
+  const embedded = imageTag.match(
+    /\b(?:href|xlink:href)\s*=\s*(["'])data:(image\/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/=\s]+)\1/i,
+  );
+  if (!embedded) return { data, displayName };
+  const mimeType = embedded[2].toLowerCase();
+  const base64 = embedded[3].replace(/\s/g, "");
+  if (base64.length === 0 || base64.length % 4 !== 0) return { data, displayName };
+
+  const raster = Buffer.from(base64, "base64");
+  if (raster.toString("base64") !== base64) return { data, displayName };
+  if (!rasterSignatureMatches(raster, mimeType)) return { data, displayName };
+  const extension = RASTER_EXTENSIONS[mimeType];
+  return { data: raster, displayName: `${path.basename(displayName, path.extname(displayName))}${extension}` };
 }
 
 function createArtifactRun(workingDirectory: string): ArtifactRun {
@@ -133,7 +186,7 @@ async function loadAttachment(
     if (data.byteLength !== opened.size) {
       return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
     }
-    return { attachment: { data, displayName } };
+    return { attachment: normalizePreviewableImage(data, displayName) };
   } catch {
     return { warning: attachmentWarning(displayName, "the file could not be read safely.") };
   } finally {
