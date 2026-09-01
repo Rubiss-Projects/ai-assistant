@@ -28,7 +28,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build production image
         run: docker build --tag ai-assistant-runtime-test .
-      - name: Verify shared-mode Codex executable visibility
+      - name: Verify shared-mode Codex runtime bundle
         run: |
-          docker run --rm --entrypoint /bin/sh ai-assistant-runtime-test -c 'test -x /usr/local/bin/codex && /usr/local/bin/codex --version'
-          docker run --rm --entrypoint node -e AI_ASSISTANT_SECURITY_MODE=shared -e AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces -e CODEX_EXECUTABLE_PATH=/usr/local/bin/codex ai-assistant-runtime-test --input-type=module -e "import { codexClientOptions } from '/app/dist/src/providers/codex.js'; import fs from 'node:fs'; const tmp=fs.mkdtempSync('/tmp/codex-smoke-'); if (codexClientOptions(tmp).codexPathOverride !== '/usr/local/bin/codex') process.exit(1);"
+          docker run --rm --entrypoint /bin/sh ai-assistant-runtime-test -c 'test -x /usr/local/lib/codex/bin/codex && test -x /usr/local/lib/codex/codex-resources/bwrap && test -x /usr/local/lib/codex/codex-resources/zsh/bin/zsh && test -x /usr/local/lib/codex/codex-path/rg && /usr/local/lib/codex/bin/codex --version'
+          docker run --rm --entrypoint node -e AI_ASSISTANT_SECURITY_MODE=shared -e AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces -e CODEX_EXECUTABLE_PATH=/usr/local/lib/codex/bin/codex ai-assistant-runtime-test --input-type=module -e "import { codexClientOptions } from '/app/dist/src/providers/codex.js'; import fs from 'node:fs'; const tmp=fs.mkdtempSync('/tmp/codex-smoke-'); if (codexClientOptions(tmp).codexPathOverride !== '/usr/local/lib/codex/bin/codex') process.exit(1);"
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /data:rw,nosuid,nodev,size=64m,uid=10001,gid=10001 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001 --entrypoint /usr/local/lib/codex/bin/codex ai-assistant-runtime-test sandbox -- /bin/true
