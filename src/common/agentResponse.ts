@@ -26,6 +26,17 @@ export interface ArtifactRun {
   relativeDirectory: string;
 }
 
+export interface ProviderArtifact {
+  path: string;
+  trustedRoot: string;
+  displayName?: string;
+}
+
+export interface AgentOperationResult {
+  content: string;
+  artifacts?: ProviderArtifact[];
+}
+
 function boundedConfiguration(key: string, fallback: number, maximum: number): number {
   return Math.min(configuredMilliseconds(key, fallback, 1), maximum);
 }
@@ -194,6 +205,69 @@ async function loadAttachment(
   }
 }
 
+async function importProviderArtifact(
+  run: ArtifactRun,
+  artifact: ProviderArtifact,
+  index: number,
+): Promise<{ marker?: string; warning?: string }> {
+  const requestedName = artifact.displayName ?? (path.basename(artifact.path) || `provider-artifact-${index + 1}`);
+  let canonicalRoot: string;
+  let canonicalSource: string;
+  try {
+    canonicalRoot = fs.realpathSync.native(artifact.trustedRoot);
+    canonicalSource = fs.realpathSync.native(artifact.path);
+  } catch {
+    return { warning: attachmentWarning(requestedName, "the provider output does not exist.") };
+  }
+  const relativeSource = path.relative(canonicalRoot, canonicalSource);
+  if (relativeSource === "" || relativeSource === ".." || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
+    return { warning: attachmentWarning(requestedName, "the provider output is outside its trusted directory.") };
+  }
+
+  let beforeOpen: fs.Stats;
+  try {
+    beforeOpen = fs.lstatSync(canonicalSource);
+  } catch {
+    return { warning: attachmentWarning(requestedName, "the provider output does not exist.") };
+  }
+  const maxBytes = boundedConfiguration(
+    "AI_OUTPUT_ATTACHMENT_MAX_BYTES",
+    DEFAULT_MAX_ATTACHMENT_BYTES,
+    ABSOLUTE_MAX_TOTAL_BYTES,
+  );
+  if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink() || beforeOpen.nlink !== 1) {
+    return { warning: attachmentWarning(requestedName, "the provider output is not a regular file.") };
+  }
+  if (beforeOpen.size > maxBytes) {
+    return { warning: attachmentWarning(requestedName, `it exceeds the configured ${maxBytes}-byte limit.`) };
+  }
+
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+    handle = await fs.promises.open(canonicalSource, fsConstants.O_RDONLY | noFollow);
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== beforeOpen.dev || opened.ino !== beforeOpen.ino
+      || opened.size !== beforeOpen.size || opened.nlink !== 1) {
+      return { warning: attachmentWarning(requestedName, "the provider output changed while it was being opened.") };
+    }
+    const data = await handle.readFile();
+    if (data.byteLength !== opened.size) {
+      return { warning: attachmentWarning(requestedName, "the provider output changed while it was being read.") };
+    }
+    const normalized = normalizePreviewableImage(data, safeDisplayName(requestedName));
+    const baseName = safeDisplayName(normalized.displayName);
+    const destinationName = fs.existsSync(path.join(run.directory, baseName)) ? `${index + 1}-${baseName}` : baseName;
+    const destination = path.join(run.directory, destinationName);
+    await fs.promises.writeFile(destination, normalized.data, { flag: "wx", mode: 0o600 });
+    return { marker: path.relative(run.workingDirectory, destination) };
+  } catch {
+    return { warning: attachmentWarning(requestedName, "the provider output could not be imported safely.") };
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 async function prepareAgentResponse(content: string, run: ArtifactRun): Promise<AgentResponse> {
   const requestedPaths: string[] = [];
   const text = content.replace(ARTIFACT_MARKER, (_marker, requestedPath: string) => {
@@ -257,11 +331,21 @@ async function prepareAgentResponse(content: string, run: ArtifactRun): Promise<
 
 export async function captureAgentArtifacts(
   workingDirectory: string,
-  operation: (run: ArtifactRun) => Promise<string>,
+  operation: (run: ArtifactRun) => Promise<string | AgentOperationResult>,
 ): Promise<AgentResponse> {
   const run = createArtifactRun(workingDirectory);
   try {
-    return await prepareAgentResponse(await operation(run), run);
+    const output = await operation(run);
+    if (typeof output === "string") return await prepareAgentResponse(output, run);
+
+    const markers: string[] = [];
+    const warnings: string[] = [];
+    for (let index = 0; index < (output.artifacts?.length ?? 0); index++) {
+      const imported = await importProviderArtifact(run, output.artifacts![index], index);
+      if (imported.marker) markers.push(`[[artifact:${imported.marker}]]`);
+      if (imported.warning) warnings.push(imported.warning);
+    }
+    return await prepareAgentResponse([output.content, ...markers, ...warnings].filter(Boolean).join("\n\n"), run);
   } finally {
     removeEmptyArtifactRun(run);
   }
