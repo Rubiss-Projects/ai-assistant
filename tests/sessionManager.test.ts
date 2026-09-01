@@ -272,6 +272,24 @@ test("changing a Copilot workspace evicts the session bound to the old directory
   assert.equal(disconnectCalls, 1);
 });
 
+test("repeating the same Copilot workspace preserves the live conversation", () => {
+  const storedSessions: Record<string, string> = { "user-1": "live-session" };
+  const manager = createTestManager(storedSessions);
+  const workspace = mkdtempSync(join(tmpdir(), "copilot-workspace-"));
+  const session: SessionLike = {
+    sessionId: "live-session",
+    disconnect: async () => { throw new Error("should not disconnect"); },
+  };
+  manager.sessions.set("user-1", session);
+  manager.sessionWorkingDirectories.set("user-1", workspace);
+
+  manager.setSessionWorkingDir("user-1", workspace);
+
+  assert.equal(manager.sessions.get("user-1"), session);
+  assert.equal(storedSessions["user-1"], "live-session");
+  assert.equal(manager.sessionOperationQueues.has("user-1"), false);
+});
+
 test("changing a Copilot workspace waits for active session work before disconnecting", async () => {
   const manager = createTestManager();
   let releaseWork!: () => void;
