@@ -3,7 +3,8 @@ import path from "path";
 import { BuiltInTools, CopilotClient, ToolSet, approveAll } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
-import { configuredSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPrompt } from "../common/systemPrompt.js";
+import { prepareAgentResponse } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
@@ -188,7 +189,7 @@ export class CopilotProvider {
         // Workspace MCP configuration may contain stdio commands. Loading it in shared mode
         // would execute repository-controlled code before the permission handler can intervene.
         const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
-        const configuredPrompt = configuredSystemPrompt();
+        const configuredPrompt = providerSystemPrompt();
         const sessionConfig = shared
             ? {
                 onPermissionRequest: createCopilotPermissionHandler(workingDir),
@@ -203,9 +204,7 @@ export class CopilotProvider {
                 skillDirectories: [path.join(os.homedir(), ".agents", "skills")],
                 ...(workingDir ? { workingDirectory: workingDir } : {}),
                 ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-                ...(configuredPrompt
-                    ? { systemMessage: { mode: "append", content: configuredPrompt } }
-                    : {}),
+                systemMessage: { mode: "append", content: configuredPrompt },
             };
         const storedSessionId = this.store.get(key);
         const creation = (storedSessionId
@@ -296,7 +295,9 @@ export class CopilotProvider {
             }));
             return this.withLiveSession(userId, async (session) => {
                 try {
-                    return await sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options);
+                    const response = await sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options);
+                    const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
+                    return prepareAgentResponse(response, workingDirectory);
                 }
                 catch (error) {
                     if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {

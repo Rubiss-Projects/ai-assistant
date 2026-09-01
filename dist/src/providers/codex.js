@@ -5,7 +5,8 @@ import path from "path";
 import { Codex } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
-import { configuredSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPrompt } from "../common/systemPrompt.js";
+import { prepareAgentResponse } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, RunTimeoutError, } from "./types.js";
@@ -51,12 +52,12 @@ function shellEnvironment(workingDirectory, childEnvironment) {
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
 export function codexClientOptions(temporaryDirectory) {
-    const systemPrompt = configuredSystemPrompt();
+    const systemPrompt = providerSystemPrompt();
     if (configuredSecurityMode() === "unrestricted") {
         return {
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
             ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
-            ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
+            config: { developer_instructions: systemPrompt },
         };
     }
     if (!temporaryDirectory) {
@@ -333,8 +334,10 @@ export class CodexProvider {
             if (result && this.sessions.get(userId)?.id) {
                 this.store.set(userId, this.sessions.get(userId).id);
             }
-            const response = result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
-            this.appendHistory(userId, { type: "assistant.message", data: { content: response } });
+            const responseText = result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
+            const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
+            const response = prepareAgentResponse(responseText, workingDirectory);
+            this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
             return response;
         });
         this.messageQueues.set(userId, next.catch(() => { }));

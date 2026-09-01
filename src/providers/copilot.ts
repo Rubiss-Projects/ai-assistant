@@ -4,7 +4,8 @@ import { BuiltInTools, CopilotClient, CopilotSession, MCPServerConfig, ToolSet, 
 import type { CopilotClientOptions, PermissionHandler, SessionConfigBase, SessionEvent } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
-import { configuredSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPrompt } from "../common/systemPrompt.js";
+import { prepareAgentResponse } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -19,6 +20,7 @@ import {
   REASONING_EFFORTS,
   UnsupportedError,
   type AgentInfo,
+  type AgentResponse,
   type AuthStatus,
   type CompactResult,
   type HistoryEvent,
@@ -239,7 +241,7 @@ export class CopilotProvider implements Provider {
     // Workspace MCP configuration may contain stdio commands. Loading it in shared mode
     // would execute repository-controlled code before the permission handler can intervene.
     const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
-    const configuredPrompt = configuredSystemPrompt();
+    const configuredPrompt = providerSystemPrompt();
     const sessionConfig: SessionConfigBase = shared
       ? {
           onPermissionRequest: createCopilotPermissionHandler(workingDir!),
@@ -254,9 +256,7 @@ export class CopilotProvider implements Provider {
           skillDirectories: [path.join(os.homedir(), ".agents", "skills")],
           ...(workingDir ? { workingDirectory: workingDir } : {}),
           ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-          ...(configuredPrompt
-            ? { systemMessage: { mode: "append", content: configuredPrompt } }
-            : {}),
+          systemMessage: { mode: "append", content: configuredPrompt },
         };
 
     const storedSessionId = this.store.get(key);
@@ -370,7 +370,7 @@ export class CopilotProvider implements Provider {
     prompt: string,
     imagePaths?: SendAttachment[],
     options?: SendMessageOptions,
-  ): Promise<string> {
+  ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
       const attachments = imagePaths?.map((a) => ({
@@ -380,7 +380,9 @@ export class CopilotProvider implements Provider {
       }));
       return this.withLiveSession(userId, async (session) => {
         try {
-          return await sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options);
+          const response = await sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options);
+          const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
+          return prepareAgentResponse(response, workingDirectory);
         } catch (error) {
           if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
             this.abandonTimedOutSession(userId, session);

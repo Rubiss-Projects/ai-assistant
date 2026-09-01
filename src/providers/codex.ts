@@ -5,7 +5,8 @@ import path from "path";
 import { Codex, Thread, type CodexOptions, type ThreadItem, type ThreadOptions, type UserInput } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
-import { configuredSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPrompt } from "../common/systemPrompt.js";
+import { prepareAgentResponse } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -23,6 +24,7 @@ import {
   REASONING_EFFORTS,
   UnsupportedError,
   type AgentInfo,
+  type AgentResponse,
   type AuthStatus,
   type CompactResult,
   type HistoryEvent,
@@ -93,12 +95,12 @@ function shellEnvironment(
 
 /** Host-owned settings that Discord prompts and project config cannot relax. */
 export function codexClientOptions(temporaryDirectory?: string): CodexOptions {
-  const systemPrompt = configuredSystemPrompt();
+  const systemPrompt = providerSystemPrompt();
   if (configuredSecurityMode() === "unrestricted") {
     return {
       ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
       ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
-      ...(systemPrompt ? { config: { developer_instructions: systemPrompt } } : {}),
+      config: { developer_instructions: systemPrompt },
     };
   }
 
@@ -365,7 +367,7 @@ export class CodexProvider implements Provider {
     prompt: string,
     imagePaths?: SendAttachment[],
     options?: SendMessageOptions,
-  ): Promise<string> {
+  ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
       const images = imagePaths?.filter((attachment) => attachment.kind !== "file") ?? [];
@@ -427,9 +429,11 @@ export class CodexProvider implements Provider {
         this.store.set(userId, this.sessions.get(userId)!.id!);
       }
 
-      const response =
+      const responseText =
         result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
-      this.appendHistory(userId, { type: "assistant.message", data: { content: response } });
+      const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
+      const response = prepareAgentResponse(responseText, workingDirectory);
+      this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;
     });
 

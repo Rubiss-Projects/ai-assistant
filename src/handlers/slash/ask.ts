@@ -2,6 +2,8 @@ import { ChatInputCommandInteraction, Message } from "discord.js";
 import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
+import { discordResponseOptions } from "../../common/discordResponse.js";
+import type { AgentResponse } from "../../providers/types.js";
 
 export async function handleAsk(
   interaction: ChatInputCommandInteraction,
@@ -24,7 +26,7 @@ export async function handleAsk(
       return;
     }
 
-    let response: string;
+    let response: AgentResponse;
     try {
       if (workspace) sessions.setSessionWorkingDir(tempKey, workspace);
       const prepared = await prepareSlashAttachments(
@@ -53,10 +55,10 @@ export async function handleAsk(
       await sessions.resetSession(tempKey);
     }
 
-    const chunks = chunkForDiscord(response);
-    await durableReply.edit(chunks[0]);
+    const chunks = chunkForDiscord(response.content);
+    await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
     for (const chunk of chunks.slice(1)) {
-      await durableReply.reply(chunk);
+      await durableReply.reply(discordResponseOptions(chunk));
     }
   } catch (err) {
     console.error("[/ask] Error:", err);
