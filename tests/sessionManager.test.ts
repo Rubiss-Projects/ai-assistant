@@ -290,6 +290,16 @@ test("repeating the same Copilot workspace preserves the live conversation", () 
   assert.equal(manager.sessionOperationQueues.has("user-1"), false);
 });
 
+test("repeating the default Copilot workspace preserves a persisted conversation after restart", () => {
+  const storedSessions: Record<string, string> = { "user-1": "persisted-session" };
+  const manager = createTestManager(storedSessions);
+
+  manager.setSessionWorkingDir("user-1", process.cwd());
+
+  assert.equal(storedSessions["user-1"], "persisted-session");
+  assert.equal(manager.sessionOperationQueues.has("user-1"), false);
+});
+
 test("changing a Copilot workspace waits for active session work before disconnecting", async () => {
   const manager = createTestManager();
   let releaseWork!: () => void;

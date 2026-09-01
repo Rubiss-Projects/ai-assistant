@@ -9,7 +9,6 @@ const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_ATTACHMENTS = 10;
 const ABSOLUTE_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const DISCORD_MAX_ATTACHMENTS = 10;
-const CLEANUP_RETRY_MULTIPLIERS = [1, 5, 30];
 const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
 export const ARTIFACT_INSTRUCTIONS = [
     "When a turn includes an artifact-output directory and you create a file that the user explicitly asked to download or view, save the file in that directory.",
@@ -45,22 +44,20 @@ function createArtifactRun(workingDirectory) {
     fs.mkdirSync(directory, { mode: 0o700 });
     return { workingDirectory, directory, relativeDirectory };
 }
-function cleanupArtifactRun(run) {
+function removeEmptyArtifactRun(run) {
     if (!workspacePathIsAllowed(run.workingDirectory, run.relativeDirectory))
         return;
     try {
-        fs.rmSync(run.directory, { recursive: true, force: true });
+        // Never recursively delete an agent-writable path: a raced junction could
+        // redirect recursive deletion outside the workspace. Empty-only removal is
+        // safe; completed artifacts intentionally remain in the ignored run folder.
+        fs.rmdirSync(run.directory);
     }
     catch (error) {
-        console.warn("[artifacts] Could not clean up the per-turn artifact directory:", error);
-    }
-}
-function scheduleArtifactCleanup(run) {
-    cleanupArtifactRun(run);
-    const baseDelay = configuredMilliseconds("AI_OUTPUT_CLEANUP_RETRY_MS", 1_000, 1);
-    for (const multiplier of CLEANUP_RETRY_MULTIPLIERS) {
-        const timer = setTimeout(() => cleanupArtifactRun(run), baseDelay * multiplier);
-        timer.unref?.();
+        const code = error.code;
+        if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") {
+            console.warn("[artifacts] Could not remove an empty per-turn artifact directory:", error);
+        }
     }
 }
 export function withArtifactOutputPrompt(prompt, run) {
@@ -169,8 +166,6 @@ export async function captureAgentArtifacts(workingDirectory, operation) {
         return await prepareAgentResponse(await operation(run), run);
     }
     finally {
-        // Repeat cleanup after returning because a provider that could not confirm
-        // cancellation may still have a late writer targeting this unique run path.
-        scheduleArtifactCleanup(run);
+        removeEmptyArtifactRun(run);
     }
 }

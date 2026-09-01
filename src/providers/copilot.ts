@@ -589,7 +589,9 @@ export class CopilotProvider implements Provider {
 
   setSessionWorkingDir(key: string, dir: string): void {
     const canonical = resolveConfiguredWorkspace(dir);
-    const current = this.workingDirOverrides.get(key) ?? this.sessionWorkingDirectories.get(key);
+    const current = this.workingDirOverrides.get(key)
+      ?? this.sessionWorkingDirectories.get(key)
+      ?? (this.store.get(key) ? ensureProviderWorkingDirectory() : undefined);
     const comparable = (value: string): string => process.platform === "win32" ? value.toLowerCase() : value;
     if (current && comparable(current) === comparable(canonical)) {
       this.workingDirOverrides.set(key, canonical);

@@ -189,7 +189,7 @@ no restart required:
 - **Slash commands** for quick actions and session management
 - **User allowlist** — restrict access to specific Discord user IDs
 - **Image attachments** — forwarded to the AI as context (Copilot/Codex/OpenCode)
-- **Downloadable agent artifacts** — requested patches, generated images, reports, and other workspace files are securely attached to the Discord response
+- **Downloadable agent artifacts** — requested patches, generated images, reports, and other workspace files are securely attached to the Discord response and retained in an ignored, isolated per-turn workspace directory
 - **Auto-restart** via systemd (WSL + Linux)
 
 ## Slash Commands

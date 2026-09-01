@@ -36,7 +36,7 @@ function marker(workspace: string, run: ArtifactRun, name: string): string {
   return `[[artifact:${relative(workspace, join(run.directory, name))}]]`;
 }
 
-test("explicit per-turn artifacts become in-memory attachments and are cleaned up", async () => {
+test("explicit per-turn artifacts become in-memory attachments in an isolated retained directory", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   let runDirectory = "";
   const response = await captureAgentArtifacts(workspace, async (run) => {
@@ -49,7 +49,8 @@ test("explicit per-turn artifacts become in-memory attachments and are cleaned u
   assert.equal(response.attachments.length, 1);
   assert.equal(response.attachments[0].displayName, "changes.patch");
   assert.equal(response.attachments[0].data.toString(), "diff --git a/a b/a\n");
-  assert.equal(fs.existsSync(runDirectory), false);
+  assert.equal(fs.existsSync(runDirectory), true);
+  assert.equal(fs.readFileSync(join(runDirectory, "changes.patch"), "utf8"), "diff --git a/a b/a\n");
 });
 
 test("per-turn prompt names the isolated artifact directory", async () => {
@@ -136,28 +137,6 @@ test("hard-linked workspace files cannot be exported as turn artifacts", async (
 
   assert.equal(response.attachments.length, 0);
   assert.match(response.content, /only regular files/);
-});
-
-test("late artifact writers are removed by deferred cleanup", async () => {
-  const previous = process.env.AI_OUTPUT_CLEANUP_RETRY_MS;
-  process.env.AI_OUTPUT_CLEANUP_RETRY_MS = "10";
-  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-cleanup-"));
-  let runDirectory = "";
-  try {
-    await captureAgentArtifacts(workspace, async (run) => {
-      runDirectory = run.directory;
-      setTimeout(() => {
-        fs.mkdirSync(run.directory, { recursive: true });
-        writeFileSync(join(run.directory, "late.txt"), "late");
-      }, 5);
-      return "done";
-    });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal(fs.existsSync(runDirectory), false);
-  } finally {
-    if (previous === undefined) delete process.env.AI_OUTPUT_CLEANUP_RETRY_MS;
-    else process.env.AI_OUTPUT_CLEANUP_RETRY_MS = previous;
-  }
 });
 
 test("a same-size file swap between validation and open is rejected", async () => {
