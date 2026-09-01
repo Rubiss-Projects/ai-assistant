@@ -123,7 +123,7 @@ export class SessionManager {
         const provider = this.providerFor(key);
         const temporaryKey = `internal_${randomUUID()}`;
         try {
-            return await provider.sendMessage(temporaryKey, prompt);
+            return (await provider.sendMessage(temporaryKey, prompt)).content;
         }
         finally {
             await provider.resetSession(temporaryKey).catch((error) => {

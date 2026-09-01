@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { configuredSystemPrompt, withSystemPrompt } from "../src/common/systemPrompt.js";
+import { configuredSystemPrompt, providerSystemPrompt, withSystemPrompt } from "../src/common/systemPrompt.js";
 
 function preserveEnvironment(run: () => void): void {
   const inline = process.env.AI_ASSISTANT_SYSTEM_PROMPT;
@@ -16,11 +16,12 @@ function preserveEnvironment(run: () => void): void {
   }
 }
 
-test("system prompt is optional", () => preserveEnvironment(() => {
+test("operator system prompt is optional while artifact instructions remain enabled", () => preserveEnvironment(() => {
   delete process.env.AI_ASSISTANT_SYSTEM_PROMPT;
   delete process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE;
   assert.equal(configuredSystemPrompt(), undefined);
-  assert.equal(withSystemPrompt("hello"), "hello");
+  assert.match(providerSystemPrompt(), /\[\[artifact:relative\/path\/to\/file\]\]/);
+  assert.match(withSystemPrompt("hello"), /artifact:[\s\S]*hello/);
 }));
 
 test("reads and trims an inline system prompt", () => preserveEnvironment(() => {

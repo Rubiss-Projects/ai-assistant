@@ -1,6 +1,7 @@
 import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
+import { discordResponseOptions } from "../../common/discordResponse.js";
 export async function handleAsk(interaction, sessions, canIncludeContextAuthor = () => true) {
     const prompt = interaction.options.getString("prompt", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -34,10 +35,10 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
             // Always clean up the temp session, even on error
             await sessions.resetSession(tempKey);
         }
-        const chunks = chunkForDiscord(response);
-        await durableReply.edit(chunks[0]);
+        const chunks = chunkForDiscord(response.content);
+        await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
         for (const chunk of chunks.slice(1)) {
-            await durableReply.reply(chunk);
+            await durableReply.reply(discordResponseOptions(chunk));
         }
     }
     catch (err) {

@@ -4,6 +4,7 @@ import { createProvider, isValidProviderName } from "./providers/index.js";
 import { PROVIDERS, isUnsupported, RunTimeoutError, UnsupportedError, type Provider } from "./providers/types.js";
 import type {
   AgentInfo,
+  AgentResponse,
   AuthStatus,
   CompactResult,
   HistoryEvent,
@@ -139,7 +140,7 @@ export class SessionManager {
 
   // ── Chat & session operations (delegated to the active provider for key) ────
 
-  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<string> {
+  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<AgentResponse> {
     return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
   }
 
@@ -148,7 +149,7 @@ export class SessionManager {
     const provider = this.providerFor(key);
     const temporaryKey = `internal_${randomUUID()}`;
     try {
-      return await provider.sendMessage(temporaryKey, prompt);
+      return (await provider.sendMessage(temporaryKey, prompt)).content;
     } finally {
       await provider.resetSession(temporaryKey).catch((error) => {
         console.warn("[SessionManager] Could not clean up internal session:", error);

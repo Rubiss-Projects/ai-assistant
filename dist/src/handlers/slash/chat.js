@@ -3,6 +3,7 @@ import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
+import { discordResponseOptions } from "../../common/discordResponse.js";
 export async function handleChat(interaction, sessions, canIncludeContextAuthor = () => true) {
     const message = interaction.options.getString("message", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -24,10 +25,10 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
             finally {
                 await prepared.cleanup();
             }
-            const chunks = chunkForDiscord(response);
-            await durableReply.edit(chunks[0]);
+            const chunks = chunkForDiscord(response.content);
+            await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
             for (const chunk of chunks.slice(1)) {
-                await durableReply.reply(chunk);
+                await durableReply.reply(discordResponseOptions(chunk));
             }
         }
         catch (err) {
@@ -64,10 +65,10 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                 if (workspace)
                     sessions.setSessionWorkingDir(currentSessionKey, workspace);
                 const response = await sessions.sendMessage(currentSessionKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
-                const chunks = chunkForDiscord(response);
-                await durableReply.edit(chunks[0]);
+                const chunks = chunkForDiscord(response.content);
+                await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
                 for (const chunk of chunks.slice(1)) {
-                    await durableReply.reply(chunk);
+                    await durableReply.reply(discordResponseOptions(chunk));
                 }
                 return;
             }
@@ -82,8 +83,9 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
             if (workspace)
                 sessions.setSessionWorkingDir(thread.id, workspace);
             const response = await sessions.sendMessage(thread.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => { }) });
-            for (const chunk of chunkForDiscord(response)) {
-                await thread.send(chunk);
+            const chunks = chunkForDiscord(response.content);
+            for (let index = 0; index < chunks.length; index++) {
+                await thread.send(discordResponseOptions(chunks[index], index === 0 ? response.attachments : []));
             }
             await replyMsg.edit(`💬 ${thread.toString()}`);
         }

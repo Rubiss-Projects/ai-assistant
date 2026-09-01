@@ -77,6 +77,16 @@ export interface SendMessageOptions {
   onProgress?: (update: { elapsedMs: number; message: string }) => void | Promise<void>;
 }
 
+export interface ResponseAttachment {
+  data: Buffer;
+  displayName: string;
+}
+
+export interface AgentResponse {
+  content: string;
+  attachments: ResponseAttachment[];
+}
+
 export class RunTimeoutError extends Error {
   constructor(
     readonly provider: string,
@@ -102,7 +112,7 @@ export interface Provider {
   /** Human-facing name for /status etc., e.g. "GitHub Copilot". */
   readonly displayName: string;
 
-  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<string>;
+  sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<AgentResponse>;
   getStatus(): Promise<StatusInfo>;
   getHistory(userId: string): Promise<HistoryEvent[] | null>;
   listModels(): Promise<ModelInfo[]>;

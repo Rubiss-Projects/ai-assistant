@@ -2,7 +2,8 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
-import { configuredSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
+import { prepareAgentResponse } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError } from "./types.js";
@@ -96,7 +97,7 @@ export function openCodeBaseRunArguments(source = process.env) {
 }
 export function openCodeRequestPrompt(prompt) {
     return configuredSecurityMode() === "shared"
-        ? `${secureSystemPrompt(configuredSystemPrompt())}\n\n${prompt}`
+        ? `${secureSystemPrompt(providerSystemPrompt())}\n\n${prompt}`
         : withSystemPrompt(prompt);
 }
 /**
@@ -233,8 +234,9 @@ export class OpenCodeProvider {
                 this.sessions.set(userId, newSessionId);
                 this.store.set(userId, newSessionId);
             }
-            const response = finalTextFromEvents(events) || "(no response)";
-            this.appendHistory(userId, { type: "assistant.message", data: { content: response } });
+            const responseText = finalTextFromEvents(events) || "(no response)";
+            const response = prepareAgentResponse(responseText, this.workingDir(userId));
+            this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
             return response;
         });
         this.messageQueues.set(userId, next.catch(() => { }));

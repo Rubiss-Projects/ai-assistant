@@ -2,7 +2,8 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
-import { configuredSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
+import { prepareAgentResponse } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -14,7 +15,7 @@ import {
   SENSITIVE_PATH_ALLOW_GLOBS,
   secureSystemPrompt,
 } from "../common/providerSecurity.js";
-import { RunTimeoutError, UnsupportedError, type AgentInfo, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SendMessageOptions, type SessionMode, type StatusInfo } from "./types.js";
+import { RunTimeoutError, UnsupportedError, type AgentInfo, type AgentResponse, type AuthStatus, type CompactResult, type HistoryEvent, type McpServerStatus, type ModelInfo, type PlanInfo, type Provider, type SendAttachment, type SendMessageOptions, type SessionMode, type StatusInfo } from "./types.js";
 
 /**
  * Resolves the `opencode` executable. Prefers OPENCODE_BIN, then well-known
@@ -126,7 +127,7 @@ export function openCodeBaseRunArguments(
 
 export function openCodeRequestPrompt(prompt: string): string {
   return configuredSecurityMode() === "shared"
-    ? `${secureSystemPrompt(configuredSystemPrompt())}\n\n${prompt}`
+    ? `${secureSystemPrompt(providerSystemPrompt())}\n\n${prompt}`
     : withSystemPrompt(prompt);
 }
 
@@ -254,7 +255,7 @@ export class OpenCodeProvider implements Provider {
     prompt: string,
     imagePaths?: SendAttachment[],
     options?: SendMessageOptions,
-  ): Promise<string> {
+  ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
       const args = openCodeBaseRunArguments();
@@ -287,8 +288,9 @@ export class OpenCodeProvider implements Provider {
         this.store.set(userId, newSessionId);
       }
 
-      const response = finalTextFromEvents(events) || "(no response)";
-      this.appendHistory(userId, { type: "assistant.message", data: { content: response } });
+      const responseText = finalTextFromEvents(events) || "(no response)";
+      const response = prepareAgentResponse(responseText, this.workingDir(userId));
+      this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;
     });
 

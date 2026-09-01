@@ -284,7 +284,7 @@ test("Codex unrestricted mode preserves legacy client configuration", () => {
   else process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE = previousPromptFile;
 
   assert.equal(options.env, undefined);
-  assert.equal(options.config, undefined);
+  assert.match(String(options.config?.developer_instructions), /\[\[artifact:/);
   assert.equal(options.configOverrides, undefined);
   assert.deepEqual(
     codexThreadSecurityOptions({ AI_ASSISTANT_SECURITY_MODE: "unrestricted" }),

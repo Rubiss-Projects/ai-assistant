@@ -111,7 +111,8 @@ test("sendMessage resumes and retries once when cached session is missing from C
 
   const response = await manager.sendMessage("user-1", "hello");
 
-  assert.equal(response, "retry ok");
+  assert.equal(response.content, "retry ok");
+  assert.deepEqual(response.attachments, []);
   assert.equal(staleSendCalls, 1);
   assert.equal(freshSendCalls, 1);
   assert.equal(staleDisconnected, true);
