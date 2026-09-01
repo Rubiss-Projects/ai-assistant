@@ -12,14 +12,33 @@ export async function deliverMentionResponse(sourceMessage, progressReply, respo
     if (progressReply) {
         try {
             await progressReply.edit(chunks[0]);
-            for (const chunk of chunks.slice(1)) {
-                await progressReply.reply(chunk);
-            }
-            return;
         }
         catch (error) {
             console.warn("[mention] Could not replace the progress message; sending a new reply:", error);
+            for (const chunk of chunks) {
+                await sourceMessage.reply(chunk);
+            }
+            return;
         }
+        for (let index = 1; index < chunks.length; index++) {
+            try {
+                await progressReply.reply(chunks[index]);
+            }
+            catch (error) {
+                console.warn("[mention] Could not send an overflow reply; retrying the unsent remainder:", error);
+                for (const unsentChunk of chunks.slice(index)) {
+                    try {
+                        await sourceMessage.reply(unsentChunk);
+                    }
+                    catch (fallbackError) {
+                        console.error("[mention] Could not deliver the remaining response:", fallbackError);
+                        return;
+                    }
+                }
+                return;
+            }
+        }
+        return;
     }
     for (const chunk of chunks) {
         await sourceMessage.reply(chunk);
