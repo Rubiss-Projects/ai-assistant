@@ -2,6 +2,7 @@ import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
+import { userVisibleErrorMessage } from "../../common/userVisibleError.js";
 export async function handleAsk(interaction, sessions, canIncludeContextAuthor = () => true) {
     const prompt = interaction.options.getString("prompt", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -44,7 +45,7 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
     }
     catch (err) {
         console.error("[/ask] Error:", err);
-        const msg = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
+        const msg = userVisibleErrorMessage(err) ?? runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
         if (durableReply) {
             await durableReply.edit(msg).catch(() => { });
         }

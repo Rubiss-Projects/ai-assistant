@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, isUnsupported } from "../src/sessionManager.js";
@@ -117,6 +117,66 @@ test("Codex hard deadline releases the request when abort does not settle", asyn
     else process.env.CODEX_TIMEOUT_MS = previousTimeout;
     if (previousGrace === undefined) delete process.env.AI_CANCELLATION_GRACE_MS;
     else process.env.AI_CANCELLATION_GRACE_MS = previousGrace;
+  }
+});
+
+test("Codex rejects oversized text attachments before invoking a turn", async () => {
+  const previousLimit = process.env.CODEX_MAX_INLINE_ATTACHMENT_BYTES;
+  process.env.CODEX_MAX_INLINE_ATTACHMENT_BYTES = "8";
+  const directory = mkdtempSync(join(tmpdir(), "codex-large-attachment-"));
+  const file = join(directory, "large.svg");
+  writeFileSync(file, "x".repeat(20));
+  try {
+    const codex = new CodexProvider();
+    const internal = codex as unknown as { sessions: Map<string, { id: string; run: () => Promise<never> }> };
+    let invoked = false;
+    internal.sessions.set("large-file", { id: "thread", run: async () => { invoked = true; throw new Error(); } });
+    await assert.rejects(
+      () => codex.sendMessage("large-file", "inspect", [{ path: file, displayName: "large.svg", kind: "file" }]),
+      /large\.svg.*too large.*20 bytes.*limit 8/,
+    );
+    assert.equal(invoked, false);
+  } finally {
+    if (previousLimit === undefined) delete process.env.CODEX_MAX_INLINE_ATTACHMENT_BYTES;
+    else process.env.CODEX_MAX_INLINE_ATTACHMENT_BYTES = previousLimit;
+  }
+});
+
+test("Codex captures completed image-generation paths without an artifact marker", async () => {
+  const previousHome = process.env.CODEX_HOME;
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const codexHome = mkdtempSync(join(tmpdir(), "codex-generated-home-"));
+  const generatedDirectory = join(codexHome, "generated_images", "run-1");
+  mkdirSync(generatedDirectory, { recursive: true });
+  const savedPath = join(generatedDirectory, "result.png");
+  const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  writeFileSync(savedPath, png);
+  process.env.CODEX_HOME = codexHome;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
+  try {
+    const codex = new CodexProvider();
+    const internal = codex as unknown as { sessions: Map<string, unknown> };
+    const workspace = mkdtempSync(join(tmpdir(), "codex-image-workspace-"));
+    codex.setSessionWorkingDir("image-run", workspace);
+    internal.sessions.set("image-run", {
+      id: "thread",
+      runStreamed: async () => ({
+        events: (async function* () {
+          yield { type: "item.completed", item: { type: "imageGeneration", status: "completed", savedPath } };
+          yield { type: "item.completed", item: { type: "agent_message", id: "answer", text: "Done." } };
+          yield { type: "turn.completed", usage: {} };
+        })(),
+      }),
+    });
+    const response = await codex.sendMessage("image-run", "make an image");
+    assert.equal(response.content, "Done.");
+    assert.equal(response.attachments[0].displayName, "generated-image-1.png");
+    assert.deepEqual(response.attachments[0].data, png);
+  } finally {
+    if (previousHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+    if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+    else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
   }
 });
 

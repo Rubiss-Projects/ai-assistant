@@ -21,3 +21,14 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  container-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build production image
+        run: docker build --tag ai-assistant-runtime-test .
+      - name: Verify shared-mode Codex executable visibility
+        run: |
+          docker run --rm --entrypoint /bin/sh ai-assistant-runtime-test -c 'test -x /usr/local/bin/codex && /usr/local/bin/codex --version'
+          docker run --rm --entrypoint node -e AI_ASSISTANT_SECURITY_MODE=shared -e AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces -e CODEX_EXECUTABLE_PATH=/usr/local/bin/codex ai-assistant-runtime-test --input-type=module -e "import { codexClientOptions } from '/app/dist/src/providers/codex.js'; import fs from 'node:fs'; const tmp=fs.mkdtempSync('/tmp/codex-smoke-'); if (codexClientOptions(tmp).codexPathOverride !== '/usr/local/bin/codex') process.exit(1);"

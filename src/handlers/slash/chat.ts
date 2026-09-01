@@ -5,6 +5,7 @@ import { progressMessage } from "../../common/progressMessage.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 import type { AgentResponse } from "../../providers/types.js";
+import { userVisibleErrorMessage } from "../../common/userVisibleError.js";
 
 export async function handleChat(
   interaction: ChatInputCommandInteraction,
@@ -54,7 +55,7 @@ export async function handleChat(
     } catch (err) {
       console.error("[/chat DM] Error:", err);
       const isPathError = err instanceof Error && err.message.startsWith("Workspace path") || err instanceof Error && err.message === "Invalid workspace path.";
-      const msg = runTimeoutMessage(err) ?? (isPathError
+      const msg = userVisibleErrorMessage(err) ?? runTimeoutMessage(err) ?? (isPathError
         ? `❌ Invalid workspace: ${(err as Error).message}`
         : "❌ Something went wrong talking to the AI. Please try again.");
       if (durableReply) {
@@ -136,7 +137,7 @@ export async function handleChat(
   } catch (err) {
     console.error("[/chat] Error:", err);
     const isPathError = err instanceof Error && (err.message.startsWith("Workspace path") || err.message === "Invalid workspace path.");
-    const msg = runTimeoutMessage(err) ?? (isPathError
+    const msg = userVisibleErrorMessage(err) ?? runTimeoutMessage(err) ?? (isPathError
       ? `❌ Invalid workspace: ${(err as Error).message}`
       : "❌ Something went wrong talking to the AI. Please try again.");
     if (durableReply) {

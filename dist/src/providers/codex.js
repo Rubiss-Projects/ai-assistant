@@ -1,4 +1,4 @@
-import fs from "fs";
+import fs, { constants as fsConstants } from "fs";
 import { createRequire } from "node:module";
 import os from "os";
 import path from "path";
@@ -6,13 +6,17 @@ import { Codex } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
-import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
+import { captureAgentArtifacts, rasterSignatureMatches, withArtifactOutputPrompt } from "../common/agentResponse.js";
+import { UserVisibleError } from "../common/userVisibleError.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, RunTimeoutError, } from "./types.js";
-import { readFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 const require = createRequire(import.meta.url);
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+const DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES = 200_000;
+const MAX_CODEX_INLINE_ATTACHMENT_BYTES = 1_000_000;
+const MAX_GENERATED_IMAGE_BYTES = 10 * 1024 * 1024;
 export const CODEX_GITHUB_READ_ONLY_TOOLS = [
     "get_repo",
     "fetch",
@@ -55,6 +59,9 @@ export function codexClientOptions(temporaryDirectory) {
     const systemPrompt = providerSystemPrompt();
     if (configuredSecurityMode() === "unrestricted") {
         return {
+            ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
+                ? { codexPathOverride: process.env.CODEX_EXECUTABLE_PATH.trim() }
+                : {}),
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
             ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
             config: { developer_instructions: systemPrompt },
@@ -72,6 +79,9 @@ export function codexClientOptions(temporaryDirectory) {
     childEnvironment.TMPDIR = temporaryDirectory;
     const tools = Object.fromEntries(CODEX_GITHUB_READ_ONLY_TOOLS.map((tool) => [tool, { enabled: true, approval_mode: "approve" }]));
     return {
+        ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
+            ? { codexPathOverride: process.env.CODEX_EXECUTABLE_PATH.trim() }
+            : {}),
         ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
         ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
         env: childEnvironment,
@@ -128,6 +138,102 @@ export function codexClientOptions(temporaryDirectory) {
         ],
     };
 }
+function configuredInlineAttachmentLimit() {
+    return Math.min(configuredMilliseconds("CODEX_MAX_INLINE_ATTACHMENT_BYTES", DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES, 1), MAX_CODEX_INLINE_ATTACHMENT_BYTES);
+}
+async function readCodexTextAttachment(attachment) {
+    const displayName = attachment.displayName ?? path.basename(attachment.path);
+    const limit = configuredInlineAttachmentLimit();
+    const metadata = await stat(attachment.path);
+    if (metadata.size > limit) {
+        throw new UserVisibleError(`Attachment \`${displayName}\` is too large to send to Codex as text (${metadata.size} bytes; limit ${limit}).`);
+    }
+    const text = await readFile(attachment.path, "utf8");
+    if (text.length > limit) {
+        throw new UserVisibleError(`Attachment \`${displayName}\` is too large to send to Codex as text (${text.length} characters; limit ${limit}).`);
+    }
+    return text;
+}
+function normalizedEventKind(value) {
+    return typeof value === "string" ? value.replace(/[^a-z]/gi, "").toLowerCase() : "";
+}
+export function codexGeneratedImagePaths(event) {
+    const paths = new Set();
+    const visit = (value, imageContext = false, completedContext = false) => {
+        if (!value || typeof value !== "object")
+            return;
+        if (Array.isArray(value)) {
+            for (const item of value)
+                visit(item, imageContext, completedContext);
+            return;
+        }
+        const record = value;
+        const descriptors = [record.type, record.name, record.kind, record.event].map(normalizedEventKind);
+        const isImage = imageContext || descriptors.some((kind) => kind.includes("imagegeneration"));
+        const isCompleted = completedContext
+            || record.status === "completed"
+            || descriptors.includes("itemcompleted");
+        if (isImage && isCompleted && typeof record.savedPath === "string")
+            paths.add(record.savedPath);
+        for (const child of Object.values(record))
+            visit(child, isImage, isCompleted);
+    };
+    visit(event);
+    return [...paths];
+}
+function generatedImageExtension(data) {
+    if (rasterSignatureMatches(data, "image/png"))
+        return ".png";
+    if (rasterSignatureMatches(data, "image/jpeg"))
+        return ".jpg";
+    if (rasterSignatureMatches(data, "image/gif"))
+        return ".gif";
+    if (rasterSignatureMatches(data, "image/webp"))
+        return ".webp";
+    return undefined;
+}
+async function importGeneratedImage(savedPath, run, index) {
+    const codexHome = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
+    const generatedRoot = path.join(codexHome, "generated_images");
+    let canonicalRoot;
+    let canonicalSource;
+    try {
+        canonicalRoot = fs.realpathSync.native(generatedRoot);
+        canonicalSource = fs.realpathSync.native(savedPath);
+    }
+    catch {
+        return undefined;
+    }
+    const relativeSource = path.relative(canonicalRoot, canonicalSource);
+    if (relativeSource === "" || relativeSource === ".." || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
+        return undefined;
+    }
+    const before = fs.lstatSync(canonicalSource);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > MAX_GENERATED_IMAGE_BYTES) {
+        return undefined;
+    }
+    let handle;
+    try {
+        const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+        handle = await fs.promises.open(canonicalSource, fsConstants.O_RDONLY | noFollow);
+        const opened = await handle.stat();
+        if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino
+            || opened.size !== before.size || opened.nlink !== 1)
+            return undefined;
+        const data = await handle.readFile();
+        if (data.byteLength !== opened.size)
+            return undefined;
+        const extension = generatedImageExtension(data);
+        if (!extension)
+            return undefined;
+        const displayName = `generated-image-${index + 1}${extension}`;
+        await writeFile(path.join(run.directory, displayName), data, { flag: "wx", mode: 0o600 });
+        return path.relative(run.workingDirectory, path.join(run.directory, displayName));
+    }
+    finally {
+        await handle?.close().catch(() => { });
+    }
+}
 function configuredCodexModel() {
     return process.env.CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
 }
@@ -146,6 +252,34 @@ function isThreadNotFoundError(err) {
 }
 function isCachedCodexModel(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+async function runCodexCapturingEvents(thread, input, signal) {
+    if (typeof thread.runStreamed !== "function") {
+        const result = await thread.run(input, { signal });
+        return {
+            finalResponse: result.finalResponse,
+            items: result.items,
+            generatedImagePaths: codexGeneratedImagePaths(result.items),
+        };
+    }
+    const streamed = await thread.runStreamed(input, { signal });
+    const items = [];
+    const generatedImagePaths = new Set();
+    let finalResponse = "";
+    for await (const event of streamed.events) {
+        for (const savedPath of codexGeneratedImagePaths(event))
+            generatedImagePaths.add(savedPath);
+        const record = event;
+        if (record.type === "item.completed" && record.item) {
+            items.push(record.item);
+            if (record.item.type === "agent_message")
+                finalResponse = record.item.text;
+        }
+        else if (record.type === "turn.failed") {
+            throw new Error(record.error?.message || "Codex turn failed.");
+        }
+    }
+    return { finalResponse, items, generatedImagePaths: [...generatedImagePaths] };
 }
 /**
  * Session manager backed by the OpenAI Codex SDK. Each Provider method maps to
@@ -282,7 +416,7 @@ export class CodexProvider {
             const images = imagePaths?.filter((attachment) => attachment.kind !== "file") ?? [];
             const files = imagePaths?.filter((attachment) => attachment.kind === "file") ?? [];
             const fileContext = await Promise.all(files.map(async (attachment) => {
-                const text = await readFile(attachment.path, "utf8");
+                const text = await readCodexTextAttachment(attachment);
                 return `[Discord attachment: ${attachment.displayName ?? "file"}]\n${text}\n[/Discord attachment]`;
             }));
             const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
@@ -305,7 +439,7 @@ export class CodexProvider {
                 const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
                 let result;
                 try {
-                    const run = this.withLiveSession(userId, (thread) => thread.run(input, { signal: controller.signal }));
+                    const run = this.withLiveSession(userId, (thread) => runCodexCapturingEvents(thread, input, controller.signal));
                     const deadline = new Promise((_resolve, reject) => {
                         timeout = setTimeout(() => {
                             timedOut = true;
@@ -337,7 +471,14 @@ export class CodexProvider {
                 if (result && this.sessions.get(userId)?.id) {
                     this.store.set(userId, this.sessions.get(userId).id);
                 }
-                return result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
+                const generatedMarkers = [];
+                for (let index = 0; index < result.generatedImagePaths.length; index++) {
+                    const imported = await importGeneratedImage(result.generatedImagePaths[index], artifactRun, index);
+                    if (imported)
+                        generatedMarkers.push(`[[artifact:${imported}]]`);
+                }
+                const finalResponse = result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
+                return [finalResponse, ...generatedMarkers].join("\n\n");
             });
             this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
             return response;
