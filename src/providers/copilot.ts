@@ -5,7 +5,7 @@ import type { CopilotClientOptions, PermissionHandler, SessionConfigBase, Sessio
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
-import { prepareAgentResponse } from "../common/agentResponse.js";
+import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -380,9 +380,17 @@ export class CopilotProvider implements Provider {
       }));
       return this.withLiveSession(userId, async (session) => {
         try {
-          const response = await sendUntilIdle(session, { prompt, ...(attachments?.length ? { attachments } : {}) }, options);
           const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-          return prepareAgentResponse(response, workingDirectory);
+          return await captureAgentArtifacts(workingDirectory, (artifactRun) =>
+            sendUntilIdle(
+              session,
+              {
+                prompt: withArtifactOutputPrompt(prompt, artifactRun),
+                ...(attachments?.length ? { attachments } : {}),
+              },
+              options,
+            )
+          );
         } catch (error) {
           if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
             this.abandonTimedOutSession(userId, session);
@@ -572,6 +580,12 @@ export class CopilotProvider implements Provider {
   setSessionWorkingDir(key: string, dir: string): void {
     const canonical = resolveConfiguredWorkspace(dir);
     this.workingDirOverrides.set(key, canonical);
+    const existing = this.sessions.get(key);
+    this.sessions.delete(key);
+    this.pending.delete(key);
+    if (existing) existing.disconnect().catch((error) => {
+      console.warn(`[CopilotProvider] Could not disconnect session after workspace change for ${key}:`, error);
+    });
   }
 
   getSessionWorkingDir(key: string): string | undefined {

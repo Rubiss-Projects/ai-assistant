@@ -2,7 +2,7 @@ import { ChatInputCommandInteraction, Message } from "discord.js";
 import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
-import { discordResponseOptions } from "../../common/discordResponse.js";
+import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 import type { AgentResponse } from "../../providers/types.js";
 
 export async function handleAsk(
@@ -56,10 +56,11 @@ export async function handleAsk(
     }
 
     const chunks = chunkForDiscord(response.content);
-    await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
+    await durableReply.edit(discordTextOptions(chunks[0]));
     for (const chunk of chunks.slice(1)) {
-      await durableReply.reply(discordResponseOptions(chunk));
+      await durableReply.reply(discordTextOptions(chunk));
     }
+    await deliverDiscordAttachments((options) => durableReply!.reply(options), response.attachments);
   } catch (err) {
     console.error("[/ask] Error:", err);
     const msg = runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";

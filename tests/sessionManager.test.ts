@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CopilotProvider } from "../src/providers/copilot.js";
 
 type AssistantResult = { data: { content: string } };
@@ -35,6 +38,7 @@ type TestableCopilotProvider = {
   sendMessage: CopilotProvider["sendMessage"];
   getHistory: CopilotProvider["getHistory"];
   getCurrentModel: CopilotProvider["getCurrentModel"];
+  setSessionWorkingDir: CopilotProvider["setSessionWorkingDir"];
   sessions: Map<string, SessionLike>;
   store: StoreLike;
   client: ClientLike;
@@ -249,6 +253,21 @@ test("getHistory returns null without resuming a stored session", async () => {
   assert.equal(createCalls, 0);
   assert.equal(resumeCalls, 0);
   assert.equal(storedSessions["user-1"], "stored-session");
+});
+
+test("changing a Copilot workspace evicts the session bound to the old directory", async () => {
+  const manager = createTestManager();
+  let disconnectCalls = 0;
+  manager.sessions.set("user-1", {
+    sessionId: "old-workspace-session",
+    disconnect: async () => { disconnectCalls += 1; },
+  });
+
+  manager.setSessionWorkingDir("user-1", mkdtempSync(join(tmpdir(), "copilot-workspace-")));
+  await Promise.resolve();
+
+  assert.equal(manager.sessions.has("user-1"), false);
+  assert.equal(disconnectCalls, 1);
 });
 
 test("getHistory maps message events and excludes non-history events", async () => {

@@ -3,7 +3,7 @@ import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
-import { discordResponseOptions } from "../../common/discordResponse.js";
+import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 export async function handleChat(interaction, sessions, canIncludeContextAuthor = () => true) {
     const message = interaction.options.getString("message", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -26,10 +26,11 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                 await prepared.cleanup();
             }
             const chunks = chunkForDiscord(response.content);
-            await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
+            await durableReply.edit(discordTextOptions(chunks[0]));
             for (const chunk of chunks.slice(1)) {
-                await durableReply.reply(discordResponseOptions(chunk));
+                await durableReply.reply(discordTextOptions(chunk));
             }
+            await deliverDiscordAttachments((options) => durableReply.reply(options), response.attachments);
         }
         catch (err) {
             console.error("[/chat DM] Error:", err);
@@ -66,10 +67,11 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                     sessions.setSessionWorkingDir(currentSessionKey, workspace);
                 const response = await sessions.sendMessage(currentSessionKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
                 const chunks = chunkForDiscord(response.content);
-                await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
+                await durableReply.edit(discordTextOptions(chunks[0]));
                 for (const chunk of chunks.slice(1)) {
-                    await durableReply.reply(discordResponseOptions(chunk));
+                    await durableReply.reply(discordTextOptions(chunk));
                 }
+                await deliverDiscordAttachments((options) => durableReply.reply(options), response.attachments);
                 return;
             }
             const replyMsg = durableReply;
@@ -84,9 +86,10 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                 sessions.setSessionWorkingDir(thread.id, workspace);
             const response = await sessions.sendMessage(thread.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => { }) });
             const chunks = chunkForDiscord(response.content);
-            for (let index = 0; index < chunks.length; index++) {
-                await thread.send(discordResponseOptions(chunks[index], index === 0 ? response.attachments : []));
+            for (const chunk of chunks) {
+                await thread.send(discordTextOptions(chunk));
             }
+            await deliverDiscordAttachments((options) => thread.send(options), response.attachments);
             await replyMsg.edit(`💬 ${thread.toString()}`);
         }
         finally {

@@ -3,7 +3,7 @@ import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessio
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
-import { discordResponseOptions } from "../../common/discordResponse.js";
+import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 import type { AgentResponse } from "../../providers/types.js";
 
 export async function handleChat(
@@ -46,10 +46,11 @@ export async function handleChat(
       }
 
       const chunks = chunkForDiscord(response.content);
-      await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
+      await durableReply.edit(discordTextOptions(chunks[0]));
       for (const chunk of chunks.slice(1)) {
-        await durableReply.reply(discordResponseOptions(chunk));
+        await durableReply.reply(discordTextOptions(chunk));
       }
+      await deliverDiscordAttachments((options) => durableReply!.reply(options), response.attachments);
     } catch (err) {
       console.error("[/chat DM] Error:", err);
       const isPathError = err instanceof Error && err.message.startsWith("Workspace path") || err instanceof Error && err.message === "Invalid workspace path.";
@@ -97,10 +98,11 @@ export async function handleChat(
           { onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
         );
         const chunks = chunkForDiscord(response.content);
-        await durableReply.edit(discordResponseOptions(chunks[0], response.attachments));
+        await durableReply.edit(discordTextOptions(chunks[0]));
         for (const chunk of chunks.slice(1)) {
-          await durableReply.reply(discordResponseOptions(chunk));
+          await durableReply.reply(discordTextOptions(chunk));
         }
+        await deliverDiscordAttachments((options) => durableReply!.reply(options), response.attachments);
         return;
       }
 
@@ -122,12 +124,10 @@ export async function handleChat(
         { onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => {}) },
       );
       const chunks = chunkForDiscord(response.content);
-      for (let index = 0; index < chunks.length; index++) {
-        await thread.send(discordResponseOptions(
-          chunks[index],
-          index === 0 ? response.attachments : [],
-        ));
+      for (const chunk of chunks) {
+        await thread.send(discordTextOptions(chunk));
       }
+      await deliverDiscordAttachments((options) => thread.send(options), response.attachments);
 
       await replyMsg.edit(`💬 ${thread.toString()}`);
     } finally {

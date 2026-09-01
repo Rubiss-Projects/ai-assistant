@@ -1,19 +1,33 @@
-import fs from "node:fs";
+import { randomUUID } from "node:crypto";
+import fs, { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { configuredMilliseconds } from "./runLifecycle.js";
 import { workspacePathIsAllowed } from "./providerSecurity.js";
 import type { AgentResponse, ResponseAttachment } from "../providers/types.js";
 
+const ARTIFACT_ROOT = "ai-assistant-artifacts";
+const DEFAULT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_ATTACHMENTS = 10;
+const ABSOLUTE_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
+const DISCORD_MAX_ATTACHMENTS = 10;
+const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
+
 export const ARTIFACT_INSTRUCTIONS = [
-  "When you create a file that the user explicitly asked to download or view, include one marker on its own line at the end of your final response:",
-  "[[artifact:relative/path/to/file]]",
-  "Use a path relative to the assigned workspace. Include only completed output artifacts, not every file edited during ordinary coding work.",
-  "For generated images, reports, archives, or requested patch files, save the output in the workspace and include the marker.",
+  "When a turn includes an artifact-output directory and you create a file that the user explicitly asked to download or view, save the file in that directory.",
+  "Include one marker on its own line at the end of your final response using the workspace-relative path: [[artifact:artifact-output/path/to/file]].",
+  "Include only completed output artifacts, not every file edited during ordinary coding work.",
 ].join(" ");
 
-const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
-const DEFAULT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-const DEFAULT_MAX_ATTACHMENTS = 10;
+export interface ArtifactRun {
+  workingDirectory: string;
+  directory: string;
+  relativeDirectory: string;
+}
+
+function boundedConfiguration(key: string, fallback: number, maximum: number): number {
+  return Math.min(configuredMilliseconds(key, fallback, 1), maximum);
+}
 
 function safeDisplayName(candidate: string): string {
   return path.basename(candidate).replace(/[\r\n\0]/g, "_") || "attachment";
@@ -23,79 +37,131 @@ function attachmentWarning(name: string, reason: string): string {
   return `⚠️ Could not attach \`${safeDisplayName(name)}\`: ${reason}`;
 }
 
-function loadAttachment(
-  workingDirectory: string,
+function createArtifactRun(workingDirectory: string): ArtifactRun {
+  const root = path.join(workingDirectory, ARTIFACT_ROOT);
+  if (!workspacePathIsAllowed(workingDirectory, ARTIFACT_ROOT)) {
+    throw new Error("The artifact output directory is not allowed in this workspace.");
+  }
+  if (fs.existsSync(root)) {
+    const rootStats = fs.lstatSync(root);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+      throw new Error(`Artifact output path must be a regular directory: ${root}`);
+    }
+  } else {
+    fs.mkdirSync(root, { mode: 0o700 });
+  }
+
+  const runId = randomUUID();
+  const relativeDirectory = path.join(ARTIFACT_ROOT, runId);
+  const directory = path.join(workingDirectory, relativeDirectory);
+  fs.mkdirSync(directory, { mode: 0o700 });
+  return { workingDirectory, directory, relativeDirectory };
+}
+
+function cleanupArtifactRun(run: ArtifactRun): void {
+  if (!workspacePathIsAllowed(run.workingDirectory, run.relativeDirectory)) return;
+  try {
+    fs.rmSync(run.directory, { recursive: true, force: true });
+  } catch (error) {
+    console.warn("[artifacts] Could not clean up the per-turn artifact directory:", error);
+  }
+}
+
+export function withArtifactOutputPrompt(prompt: string, run: ArtifactRun): string {
+  const portablePath = run.relativeDirectory.split(path.sep).join("/");
+  return `${prompt}\n\n<artifact-output>For this turn, save downloadable outputs only under ${portablePath}/ and mark them with their workspace-relative path.</artifact-output>`;
+}
+
+async function loadAttachment(
+  run: ArtifactRun,
   requestedPath: string,
   maxBytes: number,
-): { attachment?: ResponseAttachment; warning?: string } {
+): Promise<{ attachment?: ResponseAttachment; warning?: string }> {
   const trimmed = requestedPath.trim();
   const displayName = safeDisplayName(trimmed);
-  if (!trimmed || trimmed.includes("\0")) {
-    return { warning: attachmentWarning(displayName, "the path is invalid.") };
+  const absolutePath = path.resolve(run.workingDirectory, trimmed);
+  const relativeToRun = path.relative(run.directory, absolutePath);
+  if (
+    !trimmed ||
+    trimmed.includes("\0") ||
+    relativeToRun === "" ||
+    relativeToRun === ".." ||
+    relativeToRun.startsWith(".." + path.sep) ||
+    path.isAbsolute(relativeToRun)
+  ) {
+    return { warning: attachmentWarning(displayName, "the path is outside this turn's artifact directory.") };
   }
-  if (!workspacePathIsAllowed(workingDirectory, trimmed)) {
+  if (!workspacePathIsAllowed(run.workingDirectory, trimmed)) {
     return { warning: attachmentWarning(displayName, "the path is outside the allowed workspace.") };
   }
 
-  const absolutePath = path.resolve(workingDirectory, trimmed);
-  let stats: fs.Stats;
+  let beforeOpen: fs.Stats;
   try {
-    stats = fs.lstatSync(absolutePath);
+    beforeOpen = fs.lstatSync(absolutePath);
   } catch {
     return { warning: attachmentWarning(displayName, "the file does not exist.") };
   }
-  if (!stats.isFile() || stats.isSymbolicLink()) {
+  if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink()) {
     return { warning: attachmentWarning(displayName, "only regular files can be attached.") };
   }
-  if (stats.size > maxBytes) {
-    return {
-      warning: attachmentWarning(
-        displayName,
-        `it exceeds the configured ${maxBytes}-byte limit.`,
-      ),
-    };
+  if (beforeOpen.size > maxBytes) {
+    return { warning: attachmentWarning(displayName, `it exceeds the configured ${maxBytes}-byte limit.`) };
   }
 
+  let handle: fs.promises.FileHandle | undefined;
   try {
-    const data = fs.readFileSync(absolutePath);
-    const afterRead = fs.lstatSync(absolutePath);
-    if (!afterRead.isFile() || afterRead.isSymbolicLink() || afterRead.size !== data.byteLength) {
+    const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+    handle = await fs.promises.open(absolutePath, fsConstants.O_RDONLY | noFollow);
+    const opened = await handle.stat();
+    if (
+      !opened.isFile() ||
+      opened.dev !== beforeOpen.dev ||
+      opened.ino !== beforeOpen.ino ||
+      opened.size !== beforeOpen.size
+    ) {
+      return { warning: attachmentWarning(displayName, "the file changed while it was being opened.") };
+    }
+    const data = await handle.readFile();
+    if (data.byteLength !== opened.size) {
       return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
     }
     return { attachment: { data, displayName } };
   } catch {
-    return { warning: attachmentWarning(displayName, "the file could not be read.") };
+    return { warning: attachmentWarning(displayName, "the file could not be read safely.") };
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
-/**
- * Convert explicit agent artifact markers into bounded in-memory attachments.
- * Reading bytes here prevents path swaps or workspace cleanup from changing what
- * Discord receives later in the delivery pipeline.
- */
-export function prepareAgentResponse(content: string, workingDirectory: string): AgentResponse {
+async function prepareAgentResponse(content: string, run: ArtifactRun): Promise<AgentResponse> {
   const requestedPaths: string[] = [];
   const text = content.replace(ARTIFACT_MARKER, (_marker, requestedPath: string) => {
     requestedPaths.push(requestedPath);
     return "";
   }).replace(/\n{3,}/g, "\n\n").trim();
 
-  const maxBytes = configuredMilliseconds(
+  const maxTotalBytes = boundedConfiguration(
+    "AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES",
+    DEFAULT_MAX_TOTAL_BYTES,
+    ABSOLUTE_MAX_TOTAL_BYTES,
+  );
+  const maxBytes = boundedConfiguration(
     "AI_OUTPUT_ATTACHMENT_MAX_BYTES",
     DEFAULT_MAX_ATTACHMENT_BYTES,
-    1,
+    maxTotalBytes,
   );
-  const maxAttachments = configuredMilliseconds(
+  const maxAttachments = boundedConfiguration(
     "AI_OUTPUT_ATTACHMENT_MAX_COUNT",
     DEFAULT_MAX_ATTACHMENTS,
-    1,
+    DISCORD_MAX_ATTACHMENTS,
   );
   const attachments: ResponseAttachment[] = [];
   const warnings: string[] = [];
   const seen = new Set<string>();
+  let totalBytes = 0;
 
   for (const requestedPath of requestedPaths) {
-    const resolvedIdentity = path.resolve(workingDirectory, requestedPath.trim());
+    const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
     const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
     if (seen.has(identity)) continue;
     seen.add(identity);
@@ -104,8 +170,16 @@ export function prepareAgentResponse(content: string, workingDirectory: string):
       warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
       continue;
     }
-    const result = loadAttachment(workingDirectory, requestedPath, maxBytes);
-    if (result.attachment) attachments.push(result.attachment);
+    const remainingBytes = maxTotalBytes - totalBytes;
+    if (remainingBytes <= 0) {
+      warnings.push(attachmentWarning(requestedPath, `the ${maxTotalBytes}-byte response limit has been reached.`));
+      continue;
+    }
+    const result = await loadAttachment(run, requestedPath, Math.min(maxBytes, remainingBytes));
+    if (result.attachment) {
+      totalBytes += result.attachment.data.byteLength;
+      attachments.push(result.attachment);
+    }
     if (result.warning) warnings.push(result.warning);
   }
 
@@ -113,4 +187,16 @@ export function prepareAgentResponse(content: string, workingDirectory: string):
     .filter(Boolean)
     .join("\n\n");
   return { content: visibleContent, attachments };
+}
+
+export async function captureAgentArtifacts(
+  workingDirectory: string,
+  operation: (run: ArtifactRun) => Promise<string>,
+): Promise<AgentResponse> {
+  const run = createArtifactRun(workingDirectory);
+  try {
+    return await prepareAgentResponse(await operation(run), run);
+  } finally {
+    cleanupArtifactRun(run);
+  }
 }
