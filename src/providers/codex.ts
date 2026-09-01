@@ -1,4 +1,4 @@
-import fs, { constants as fsConstants } from "fs";
+import fs from "fs";
 import { createRequire } from "node:module";
 import os from "os";
 import path from "path";
@@ -6,7 +6,7 @@ import { Codex, Thread, type CodexOptions, type ThreadItem, type ThreadOptions, 
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
-import { captureAgentArtifacts, rasterSignatureMatches, withArtifactOutputPrompt, type ArtifactRun } from "../common/agentResponse.js";
+import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
@@ -40,13 +40,12 @@ import {
   type SessionMode,
   type StatusInfo,
 } from "./types.js";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 const DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES = 200_000;
 const MAX_CODEX_INLINE_ATTACHMENT_BYTES = 1_000_000;
-const MAX_GENERATED_IMAGE_BYTES = 10 * 1024 * 1024;
 export const CODEX_GITHUB_READ_ONLY_TOOLS = [
   "get_repo",
   "fetch",
@@ -237,53 +236,6 @@ export function codexGeneratedImagePaths(event: unknown): string[] {
   };
   visit(event);
   return [...paths];
-}
-
-function generatedImageExtension(data: Buffer): string | undefined {
-  if (rasterSignatureMatches(data, "image/png")) return ".png";
-  if (rasterSignatureMatches(data, "image/jpeg")) return ".jpg";
-  if (rasterSignatureMatches(data, "image/gif")) return ".gif";
-  if (rasterSignatureMatches(data, "image/webp")) return ".webp";
-  return undefined;
-}
-
-async function importGeneratedImage(savedPath: string, run: ArtifactRun, index: number): Promise<string | undefined> {
-  const codexHome = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
-  const generatedRoot = path.join(codexHome, "generated_images");
-  let canonicalRoot: string;
-  let canonicalSource: string;
-  try {
-    canonicalRoot = fs.realpathSync.native(generatedRoot);
-    canonicalSource = fs.realpathSync.native(savedPath);
-  } catch {
-    return undefined;
-  }
-  const relativeSource = path.relative(canonicalRoot, canonicalSource);
-  if (relativeSource === "" || relativeSource === ".." || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
-    return undefined;
-  }
-  const before = fs.lstatSync(canonicalSource);
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > MAX_GENERATED_IMAGE_BYTES) {
-    return undefined;
-  }
-
-  let handle: fs.promises.FileHandle | undefined;
-  try {
-    const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-    handle = await fs.promises.open(canonicalSource, fsConstants.O_RDONLY | noFollow);
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino
-      || opened.size !== before.size || opened.nlink !== 1) return undefined;
-    const data = await handle.readFile();
-    if (data.byteLength !== opened.size) return undefined;
-    const extension = generatedImageExtension(data);
-    if (!extension) return undefined;
-    const displayName = `generated-image-${index + 1}${extension}`;
-    await writeFile(path.join(run.directory, displayName), data, { flag: "wx", mode: 0o600 });
-    return path.relative(run.workingDirectory, path.join(run.directory, displayName));
-  } finally {
-    await handle?.close().catch(() => {});
-  }
 }
 
 function configuredCodexModel(): string {
@@ -574,13 +526,19 @@ export class CodexProvider implements Provider {
         if (result && this.sessions.get(userId)?.id) {
           this.store.set(userId, this.sessions.get(userId)!.id!);
         }
-        const generatedMarkers: string[] = [];
-        for (let index = 0; index < result.generatedImagePaths.length; index++) {
-          const imported = await importGeneratedImage(result.generatedImagePaths[index], artifactRun, index);
-          if (imported) generatedMarkers.push(`[[artifact:${imported}]]`);
-        }
         const finalResponse = result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
-        return [finalResponse, ...generatedMarkers].join("\n\n");
+        const generatedRoot = path.join(
+          path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")),
+          "generated_images",
+        );
+        return {
+          content: finalResponse,
+          artifacts: result.generatedImagePaths.map((savedPath, index) => ({
+            path: savedPath,
+            trustedRoot: generatedRoot,
+            displayName: `generated-image-${index + 1}${path.extname(savedPath)}`,
+          })),
+        };
       });
       this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;

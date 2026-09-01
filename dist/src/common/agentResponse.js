@@ -169,6 +169,62 @@ async function loadAttachment(run, requestedPath, maxBytes) {
         await handle?.close().catch(() => { });
     }
 }
+async function importProviderArtifact(run, artifact, index) {
+    const requestedName = artifact.displayName ?? (path.basename(artifact.path) || `provider-artifact-${index + 1}`);
+    let canonicalRoot;
+    let canonicalSource;
+    try {
+        canonicalRoot = fs.realpathSync.native(artifact.trustedRoot);
+        canonicalSource = fs.realpathSync.native(artifact.path);
+    }
+    catch {
+        return { warning: attachmentWarning(requestedName, "the provider output does not exist.") };
+    }
+    const relativeSource = path.relative(canonicalRoot, canonicalSource);
+    if (relativeSource === "" || relativeSource === ".." || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
+        return { warning: attachmentWarning(requestedName, "the provider output is outside its trusted directory.") };
+    }
+    let beforeOpen;
+    try {
+        beforeOpen = fs.lstatSync(canonicalSource);
+    }
+    catch {
+        return { warning: attachmentWarning(requestedName, "the provider output does not exist.") };
+    }
+    const maxBytes = boundedConfiguration("AI_OUTPUT_ATTACHMENT_MAX_BYTES", DEFAULT_MAX_ATTACHMENT_BYTES, ABSOLUTE_MAX_TOTAL_BYTES);
+    if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink() || beforeOpen.nlink !== 1) {
+        return { warning: attachmentWarning(requestedName, "the provider output is not a regular file.") };
+    }
+    if (beforeOpen.size > maxBytes) {
+        return { warning: attachmentWarning(requestedName, `it exceeds the configured ${maxBytes}-byte limit.`) };
+    }
+    let handle;
+    try {
+        const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+        handle = await fs.promises.open(canonicalSource, fsConstants.O_RDONLY | noFollow);
+        const opened = await handle.stat();
+        if (!opened.isFile() || opened.dev !== beforeOpen.dev || opened.ino !== beforeOpen.ino
+            || opened.size !== beforeOpen.size || opened.nlink !== 1) {
+            return { warning: attachmentWarning(requestedName, "the provider output changed while it was being opened.") };
+        }
+        const data = await handle.readFile();
+        if (data.byteLength !== opened.size) {
+            return { warning: attachmentWarning(requestedName, "the provider output changed while it was being read.") };
+        }
+        const normalized = normalizePreviewableImage(data, safeDisplayName(requestedName));
+        const baseName = safeDisplayName(normalized.displayName);
+        const destinationName = fs.existsSync(path.join(run.directory, baseName)) ? `${index + 1}-${baseName}` : baseName;
+        const destination = path.join(run.directory, destinationName);
+        await fs.promises.writeFile(destination, normalized.data, { flag: "wx", mode: 0o600 });
+        return { marker: path.relative(run.workingDirectory, destination) };
+    }
+    catch {
+        return { warning: attachmentWarning(requestedName, "the provider output could not be imported safely.") };
+    }
+    finally {
+        await handle?.close().catch(() => { });
+    }
+}
 async function prepareAgentResponse(content, run) {
     const requestedPaths = [];
     const text = content.replace(ARTIFACT_MARKER, (_marker, requestedPath) => {
@@ -218,7 +274,19 @@ async function prepareAgentResponse(content, run) {
 export async function captureAgentArtifacts(workingDirectory, operation) {
     const run = createArtifactRun(workingDirectory);
     try {
-        return await prepareAgentResponse(await operation(run), run);
+        const output = await operation(run);
+        if (typeof output === "string")
+            return await prepareAgentResponse(output, run);
+        const markers = [];
+        const warnings = [];
+        for (let index = 0; index < (output.artifacts?.length ?? 0); index++) {
+            const imported = await importProviderArtifact(run, output.artifacts[index], index);
+            if (imported.marker)
+                markers.push(`[[artifact:${imported.marker}]]`);
+            if (imported.warning)
+                warnings.push(imported.warning);
+        }
+        return await prepareAgentResponse([output.content, ...markers, ...warnings].filter(Boolean).join("\n\n"), run);
     }
     finally {
         removeEmptyArtifactRun(run);

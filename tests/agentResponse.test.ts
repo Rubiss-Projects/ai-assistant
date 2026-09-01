@@ -97,6 +97,39 @@ test("attachment success claims are corrected when no artifact was produced", as
   assert.match(response.content, /No attachment was produced/);
 });
 
+test("provider-native artifacts use the shared secure attachment pipeline", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const generated = join(providerRoot, "generated.png");
+  const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  writeFileSync(generated, png);
+
+  const response = await captureAgentArtifacts(workspace, async () => ({
+    content: "Generated image.",
+    artifacts: [{ path: generated, trustedRoot: providerRoot }],
+  }));
+
+  assert.equal(response.content, "Generated image.");
+  assert.equal(response.attachments.length, 1);
+  assert.equal(response.attachments[0].displayName, "generated.png");
+  assert.deepEqual(response.attachments[0].data, png);
+});
+
+test("provider-native artifacts cannot escape their declared trusted root", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const outside = join(tmpdir(), `outside-provider-${Date.now()}.png`);
+  writeFileSync(outside, Buffer.from("89504e470d0a1a0a00000000", "hex"));
+
+  const response = await captureAgentArtifacts(workspace, async () => ({
+    content: "Generated image.",
+    artifacts: [{ path: outside, trustedRoot: providerRoot }],
+  }));
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /outside its trusted directory/);
+});
+
 test("pre-existing workspace files and duplicate markers are not raw export authority", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   writeFileSync(join(workspace, "source.txt"), "private workspace data");
