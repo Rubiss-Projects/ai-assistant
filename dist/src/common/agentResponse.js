@@ -189,10 +189,22 @@ function composeGifFrame(canvas, frame, width, height) {
         }
     }
 }
-function clearGifFrame(canvas, frame, width) {
+function gifBackground(parsed, firstFrame) {
+    const index = parsed.lsd.backgroundColorIndex;
+    const [red, green, blue] = parsed.gct[index] ?? [0, 0, 0];
+    const transparent = firstFrame.transparentIndex === index;
+    return [red, green, blue, transparent ? 0 : 255];
+}
+function fillGifCanvas(canvas, color) {
+    for (let offset = 0; offset < canvas.length; offset += 4)
+        canvas.set(color, offset);
+}
+function clearGifFrame(canvas, frame, width, background) {
     const { left, top, width: frameWidth, height: frameHeight } = frame.dims;
     for (let y = 0; y < frameHeight; y++) {
-        canvas.fill(0, ((top + y) * width + left) * 4, ((top + y) * width + left + frameWidth) * 4);
+        for (let x = 0; x < frameWidth; x++) {
+            canvas.set(background, ((top + y) * width + left + x) * 4);
+        }
     }
 }
 /** Fully decode and re-encode GIFs so Discord never receives header-only or browser-incompatible output. */
@@ -230,6 +242,8 @@ export function normalizeGifForDiscord(data, displayName, maxBytes) {
     const { GIFEncoder, quantize, applyPalette } = gifenc;
     const encoder = GIFEncoder();
     const canvas = new Uint8ClampedArray(width * height * 4);
+    const background = gifBackground(parsed, frames[0]);
+    fillGifCanvas(canvas, background);
     const repeat = gifRepeatCount(parsed);
     for (const frame of frames) {
         const restore = frame.disposalType === 3 ? canvas.slice() : undefined;
@@ -249,7 +263,7 @@ export function normalizeGifForDiscord(data, displayName, maxBytes) {
             transparentIndex,
         });
         if (frame.disposalType === 2)
-            clearGifFrame(canvas, frame, width);
+            clearGifFrame(canvas, frame, width, background);
         else if (restore)
             canvas.set(restore);
     }
