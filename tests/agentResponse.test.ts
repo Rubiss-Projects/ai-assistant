@@ -4,6 +4,7 @@ import fs, { linkSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { decompressFrames, parseGIF } from "gifuct-js";
+import gifenc from "gifenc";
 import {
   captureAgentArtifacts,
   normalizeGifForDiscord,
@@ -131,6 +132,34 @@ test("GIF bytes are normalized even when the artifact filename is mislabeled", a
   assert.equal(response.attachments.length, 1);
   assert.equal(response.attachments[0].displayName, "animation.gif");
   assert.notDeepEqual(response.attachments[0].data, original);
+});
+
+test("fully opaque GIFs retain all 256 available color slots", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const palette = Array.from({ length: 256 }, (_value, index) => [
+    (index & 0x1f) << 3,
+    ((index >> 5) & 0x07) << 5,
+    0,
+  ]);
+  const encoder = gifenc.GIFEncoder();
+  encoder.writeFrame(Uint8Array.from({ length: 256 }, (_value, index) => index), 16, 16, { palette });
+  encoder.finish();
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "opaque-256.gif"), encoder.bytes());
+    return marker(workspace, run, "opaque-256.gif");
+  });
+
+  assert.equal(response.attachments.length, 1);
+  const frame = decompressFrames(
+    parseGIF(new Uint8Array(response.attachments[0].data).buffer),
+    true,
+  )[0];
+  const colors = new Set<string>();
+  for (let offset = 0; offset < frame.patch.length; offset += 4) {
+    colors.add(Array.from(frame.patch.subarray(offset, offset + 3)).join(","));
+  }
+  assert.equal(colors.size, 256);
 });
 
 test("malformed GIF signatures are rejected under non-GIF filenames", async () => {
@@ -407,6 +436,21 @@ test("provider-native artifacts use the shared secure attachment pipeline", asyn
   assert.deepEqual(response.attachments[0].data, png);
 });
 
+test("provider-native artifacts take priority over invalid model markers", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const generated = join(providerRoot, "generated.png");
+  writeFileSync(generated, Buffer.from("89504e470d0a1a0a00000000", "hex"));
+
+  const response = await captureAgentArtifacts(workspace, async (run) => ({
+    content: Array.from({ length: 10 }, (_value, index) => marker(workspace, run, `missing-${index}.png`)).join("\n"),
+    artifacts: [{ path: generated, trustedRoot: providerRoot }],
+  }));
+
+  assert.deepEqual(response.attachments.map((attachment) => attachment.displayName), ["generated.png"]);
+  assert.match(response.content, /only 10 attachments/);
+});
+
 test("provider-native artifacts cannot escape their declared trusted root", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
@@ -438,7 +482,7 @@ test("a model artifact and provider-native copy with identical content are attac
   });
 
   assert.equal(response.attachments.length, 1);
-  assert.equal(response.attachments[0].displayName, "copied.png");
+  assert.equal(response.attachments[0].displayName, "generated-image-1.png");
 });
 
 test("pre-existing workspace files and duplicate markers are not raw export authority", async () => {
