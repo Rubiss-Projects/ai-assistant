@@ -361,9 +361,15 @@ function normalizeOutputAttachment(
   gifWorkBudget: GifWorkBudget,
 ): ResponseAttachment {
   const normalized = normalizePreviewableImage(data, displayName);
-  return path.extname(normalized.displayName).toLowerCase() === ".gif"
-    ? normalizeGifForDiscord(normalized.data, normalized.displayName, maxBytes, gifWorkBudget)
-    : normalized;
+  const extension = path.extname(normalized.displayName);
+  const hasGifExtension = extension.toLowerCase() === ".gif";
+  const hasGifSignature = rasterSignatureMatches(normalized.data, "image/gif");
+  if (!hasGifExtension && !hasGifSignature) return normalized;
+
+  const normalizedName = hasGifSignature && !hasGifExtension
+    ? `${path.basename(normalized.displayName, extension)}.gif`
+    : normalized.displayName;
+  return normalizeGifForDiscord(normalized.data, normalizedName, maxBytes, gifWorkBudget);
 }
 
 function createArtifactRun(workingDirectory: string): ArtifactRun {
