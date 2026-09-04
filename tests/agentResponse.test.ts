@@ -187,6 +187,57 @@ test("GIFs with only local color tables remain previewable", async () => {
   ).length, 1);
 });
 
+test("GIF complexity is rejected before traversing oversized frame LZW data", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const oversized = Buffer.from(
+    "R0lGODlhAQABAPAAAAAAAP///yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAQABAAAIBAABBAQAOw==",
+    "base64",
+  );
+  oversized[6] = oversized[8] = 0x00;
+  oversized[7] = oversized[9] = 0x20;
+  const imageOffset = oversized.indexOf(0x2c);
+  oversized[imageOffset + 5] = oversized[imageOffset + 7] = 0x00;
+  oversized[imageOffset + 6] = oversized[imageOffset + 8] = 0x20;
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "oversized.gif"), oversized);
+    return marker(workspace, run, "oversized.gif");
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /oversized\.gif.*complexity limit/);
+});
+
+test("first-frame local transparency does not erase an opaque global background", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const source = Buffer.from(
+    "R0lGODlhAQABAPAAAAAAAP///yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAQABAAAIBAABBAQAOw==",
+    "base64",
+  );
+  source.set([255, 0, 0, 0, 0, 255], 13);
+  const graphicControlOffset = source.indexOf(Buffer.from([0x21, 0xf9, 0x04]));
+  source[graphicControlOffset + 3] |= 0x01;
+  const imageOffset = source.indexOf(0x2c);
+  source[imageOffset + 9] = 0x80;
+  const withLocalPalette = Buffer.concat([
+    source.subarray(0, imageOffset + 10),
+    Buffer.from([0, 255, 0, 0, 0, 0]),
+    source.subarray(imageOffset + 10),
+  ]);
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "local-transparency.gif"), withLocalPalette);
+    return marker(workspace, run, "local-transparency.gif");
+  });
+
+  assert.equal(response.attachments.length, 1);
+  const normalized = decompressFrames(
+    parseGIF(new Uint8Array(response.attachments[0].data).buffer),
+    true,
+  );
+  assert.deepEqual(Array.from(normalized[0].patch.subarray(0, 4)), [255, 0, 0, 255]);
+});
+
 test("attachment success claims are corrected when no artifact was produced", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const response = await captureAgentArtifacts(workspace, async () => "Done — it is attached above.");
