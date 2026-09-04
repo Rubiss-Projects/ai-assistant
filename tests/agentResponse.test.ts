@@ -220,6 +220,37 @@ test("GIF disposal method 2 restores the opaque logical background", async () =>
   assert.deepEqual(Array.from(frames[2].patch.subarray(0, 4)), [255, 0, 0, 255]);
 });
 
+test("GIF disposal method 2 uses the disposed frame's transparency", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const source = Buffer.from(
+    "R0lGODlhAgABAPEAAP8AAAAA/wD/AAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQECgAAACwAAAAAAgABAAAIBQADBAgIACH5BAgKAAAALAAAAAACAAEAgf8AAAAA/wD/AAAAAAgFAAMECAgAIfkEBQoAAgAsAAAAAAIAAQCB/wAAAAD/AP8AAAAACAUABQgICAA7",
+    "base64",
+  );
+  // Make frames two and three use the global palette, then mark frame two's
+  // logical background index as transparent before its disposal-to-background.
+  source[73] |= 0x01;
+  source[87] = 0;
+  source[125] = 0;
+  const withoutThirdLocalPalette = Buffer.concat([source.subarray(0, 126), source.subarray(138)]);
+  const globalFrames = Buffer.concat([
+    withoutThirdLocalPalette.subarray(0, 88),
+    withoutThirdLocalPalette.subarray(100),
+  ]);
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "transparent-disposal.gif"), globalFrames);
+    return marker(workspace, run, "transparent-disposal.gif");
+  });
+
+  assert.equal(response.attachments.length, 1);
+  const frames = decompressFrames(
+    parseGIF(new Uint8Array(response.attachments[0].data).buffer),
+    true,
+  );
+  assert.equal(frames.length, 3);
+  assert.equal(frames[2].patch[3], 0);
+});
+
 test("GIFs with only local color tables remain previewable", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const globalGif = Buffer.from(
