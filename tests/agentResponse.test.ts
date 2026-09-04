@@ -139,6 +139,24 @@ test("GIFs with truncated LZW image data are rejected before Discord upload", as
   assert.match(response.content, /broken-lzw\.gif.*invalid LZW stream/);
 });
 
+test("GIF disposal method 2 restores the opaque logical background", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const original = Buffer.from(
+    "R0lGODlhAgABAPEAAP8AAAAA/wD/AAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQECgAAACwAAAAAAgABAAAIBQADBAgIACH5BAgKAAAALAAAAAACAAEAgf8AAAAA/wD/AAAAAAgFAAMECAgAIfkEBQoAAgAsAAAAAAIAAQCB/wAAAAD/AP8AAAAACAUABQgICAA7",
+    "base64",
+  );
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "disposal.gif"), original);
+    return marker(workspace, run, "disposal.gif");
+  });
+
+  assert.equal(response.attachments.length, 1);
+  const parsed = parseGIF(new Uint8Array(response.attachments[0].data).buffer);
+  const frames = decompressFrames(parsed, true);
+  assert.equal(frames.length, 3);
+  assert.deepEqual(Array.from(frames[2].patch.subarray(0, 4)), [255, 0, 0, 255]);
+});
+
 test("attachment success claims are corrected when no artifact was produced", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const response = await captureAgentArtifacts(workspace, async () => "Done — it is attached above.");
