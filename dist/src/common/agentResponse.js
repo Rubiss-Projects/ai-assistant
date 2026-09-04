@@ -81,7 +81,8 @@ export function normalizePreviewableImage(data, displayName) {
     return { data: raster, displayName: `${path.basename(displayName, path.extname(displayName))}${extension}` };
 }
 function gifRepeatCount(parsed) {
-    const application = parsed.frames.find((frame) => "application" in frame && frame.application.id.startsWith("NETSCAPE"));
+    const loopExtensions = new Set(["NETSCAPE2.0", "ANIMEXTS1.0"]);
+    const application = parsed.frames.find((frame) => "application" in frame && loopExtensions.has(frame.application.id));
     if (!application || !("application" in application) || application.application.blocks.length < 3)
         return -1;
     return application.application.blocks[1] | (application.application.blocks[2] << 8);

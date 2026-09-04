@@ -97,6 +97,7 @@ test("GIF artifacts are fully decoded and re-encoded before delivery", async () 
     "R0lGODlhAgABAPAAAP8AAAAA/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQABBAgIACH5BAAUAAAALAAAAAACAAEAgP8AAAAA/wgFAAMACAgAOw==",
     "base64",
   );
+  Buffer.from("ANIMEXTS1.0").copy(original, original.indexOf(Buffer.from("NETSCAPE2.0")));
   const response = await captureAgentArtifacts(workspace, async (run) => {
     writeFileSync(join(run.directory, "animation.gif"), original);
     return marker(workspace, run, "animation.gif");
@@ -110,6 +111,9 @@ test("GIF artifacts are fully decoded and re-encoded before delivery", async () 
   const frames = decompressFrames(normalized, true);
   assert.equal(frames.length, 2);
   assert.deepEqual(frames.map((frame) => frame.delay), [100, 200]);
+  const loopExtension = normalized.frames.find((frame) => "application" in frame);
+  assert.ok(loopExtension && "application" in loopExtension);
+  assert.deepEqual(Array.from(loopExtension.application.blocks.slice(0, 3)), [1, 0, 0]);
 });
 
 test("malformed GIF artifacts are rejected instead of reported as successful uploads", async () => {
