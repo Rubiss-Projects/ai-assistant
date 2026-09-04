@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs, { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { configuredMilliseconds } from "./runLifecycle.js";
@@ -238,6 +238,7 @@ async function prepareAgentResponse(content, run) {
     const attachments = [];
     const warnings = [];
     const seen = new Set();
+    const seenContent = new Set();
     let totalBytes = 0;
     for (const requestedPath of requestedPaths) {
         const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
@@ -245,17 +246,21 @@ async function prepareAgentResponse(content, run) {
         if (seen.has(identity))
             continue;
         seen.add(identity);
-        if (attachments.length >= maxAttachments) {
-            warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
-            continue;
-        }
-        const remainingBytes = maxTotalBytes - totalBytes;
-        if (remainingBytes <= 0) {
-            warnings.push(attachmentWarning(requestedPath, `the ${maxTotalBytes}-byte response limit has been reached.`));
-            continue;
-        }
-        const result = await loadAttachment(run, requestedPath, Math.min(maxBytes, remainingBytes));
+        const result = await loadAttachment(run, requestedPath, maxBytes);
         if (result.attachment) {
+            const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
+            if (seenContent.has(contentIdentity))
+                continue;
+            seenContent.add(contentIdentity);
+            if (attachments.length >= maxAttachments) {
+                warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
+                continue;
+            }
+            const remainingBytes = maxTotalBytes - totalBytes;
+            if (result.attachment.data.byteLength > remainingBytes) {
+                warnings.push(attachmentWarning(requestedPath, `it exceeds the remaining ${remainingBytes}-byte limit.`));
+                continue;
+            }
             totalBytes += result.attachment.data.byteLength;
             attachments.push(result.attachment);
         }

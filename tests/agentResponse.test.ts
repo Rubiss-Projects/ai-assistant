@@ -130,6 +130,25 @@ test("provider-native artifacts cannot escape their declared trusted root", asyn
   assert.match(response.content, /outside its trusted directory/);
 });
 
+test("a model artifact and provider-native copy with identical content are attached once", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const image = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  const providerImage = join(providerRoot, "generated.png");
+  writeFileSync(providerImage, image);
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "copied.png"), image);
+    return {
+      content: `Done.\n\n${marker(workspace, run, "copied.png")}`,
+      artifacts: [{ path: providerImage, trustedRoot: providerRoot, displayName: "generated-image-1.png" }],
+    };
+  });
+
+  assert.equal(response.attachments.length, 1);
+  assert.equal(response.attachments[0].displayName, "copied.png");
+});
+
 test("pre-existing workspace files and duplicate markers are not raw export authority", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   writeFileSync(join(workspace, "source.txt"), "private workspace data");
