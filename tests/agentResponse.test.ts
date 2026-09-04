@@ -434,13 +434,14 @@ test("attachment count is bounded to the Discord maximum", async () => {
     const response = await captureAgentArtifacts(workspace, async (run) => {
       const markers: string[] = [];
       for (let index = 0; index < 11; index++) {
-        const name = `${index}.txt`;
-        writeFileSync(join(run.directory, name), String(index));
+        const name = index === 10 ? "excess-broken.gif" : `${index}.txt`;
+        writeFileSync(join(run.directory, name), index === 10 ? "GIF89a-not-an-image" : String(index));
         markers.push(marker(workspace, run, name));
       }
       return markers.join("\n");
     });
     assert.equal(response.attachments.length, 10);
     assert.match(response.content, /only 10 attachments/);
+    assert.doesNotMatch(response.content, /could not be decoded/);
   });
 });
