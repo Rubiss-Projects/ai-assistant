@@ -303,6 +303,25 @@ test("GIF complexity is rejected before traversing oversized frame LZW data", as
   assert.match(response.content, /oversized\.gif.*complexity limit/);
 });
 
+test("GIF frame count is rejected before the full parser materializes every frame", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const header = Buffer.from("47494638396101000100800000000000ffffff", "hex");
+  const onePixelFrame = Buffer.from("2c0000000001000100000202440100", "hex");
+  const tooManyFrames = Buffer.concat([
+    header,
+    ...new Array(201).fill(onePixelFrame),
+    Buffer.from([0x3b]),
+  ]);
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "too-many-frames.gif"), tooManyFrames);
+    return marker(workspace, run, "too-many-frames.gif");
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /too-many-frames\.gif.*complexity limit/);
+});
+
 test("first-frame local transparency does not erase an opaque global background", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const source = Buffer.from(

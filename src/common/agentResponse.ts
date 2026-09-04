@@ -216,6 +216,71 @@ function gifLzwDecodesExactly(minCodeSize: number, data: number[], pixelCount: n
   }
 }
 
+function skipGifSubBlocks(data: Buffer, start: number): number {
+  let offset = start;
+  while (offset < data.length) {
+    const size = data[offset++];
+    if (size === 0) return offset;
+    if (offset + size > data.length) throw new Error("GIF contains a truncated data block.");
+    offset += size;
+  }
+  throw new Error("GIF contains an unterminated data block.");
+}
+
+/** Enforce structural limits without materializing gifuct-js's complete frame tree. */
+function preflightGifStructure(data: Buffer): void {
+  if (data.length < 13 || !rasterSignatureMatches(data, "image/gif")) {
+    throw new Error("GIF header is invalid.");
+  }
+  const width = data.readUInt16LE(6);
+  const height = data.readUInt16LE(8);
+  if (width < 1 || height < 1 || width > 8_192 || height > 8_192) {
+    throw new Error("GIF dimensions are invalid.");
+  }
+
+  const packed = data[10];
+  let offset = 13 + ((packed & 0x80) === 0 ? 0 : 3 * (1 << ((packed & 0x07) + 1)));
+  if (offset > data.length) throw new Error("GIF global color table is truncated.");
+  let frameCount = 0;
+  let decodedPixels = 0;
+
+  while (offset < data.length) {
+    const marker = data[offset];
+    if (marker === 0x3b) {
+      if (frameCount < 1) throw new Error("GIF does not contain an image frame.");
+      return;
+    }
+    if (marker === 0x21) {
+      if (offset + 2 > data.length) throw new Error("GIF extension is truncated.");
+      offset = skipGifSubBlocks(data, offset + 2);
+      continue;
+    }
+    if (marker !== 0x2c || offset + 10 > data.length) {
+      throw new Error("GIF contains an invalid block marker.");
+    }
+
+    const left = data.readUInt16LE(offset + 1);
+    const top = data.readUInt16LE(offset + 3);
+    const frameWidth = data.readUInt16LE(offset + 5);
+    const frameHeight = data.readUInt16LE(offset + 7);
+    if (frameWidth < 1 || frameHeight < 1 || left + frameWidth > width || top + frameHeight > height) {
+      throw new Error("GIF frame dimensions are invalid.");
+    }
+    frameCount += 1;
+    decodedPixels += frameWidth * frameHeight;
+    if (frameCount > MAX_GIF_FRAMES || decodedPixels > MAX_GIF_TOTAL_PIXELS
+      || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
+      throw new Error("GIF exceeds the safe animation complexity limit.");
+    }
+
+    const imagePacked = data[offset + 9];
+    offset += 10 + ((imagePacked & 0x80) === 0 ? 0 : 3 * (1 << ((imagePacked & 0x07) + 1)));
+    if (offset >= data.length) throw new Error("GIF image data is truncated.");
+    offset = skipGifSubBlocks(data, offset + 1);
+  }
+  throw new Error("GIF trailer is missing.");
+}
+
 function composeGifFrame(canvas: Uint8ClampedArray, frame: ParsedFrame, width: number, height: number): void {
   const { left, top, width: frameWidth, height: frameHeight } = frame.dims;
   if (left < 0 || top < 0 || frameWidth < 1 || frameHeight < 1
@@ -270,6 +335,7 @@ export function normalizeGifForDiscord(
   maxBytes: number,
   workBudget: GifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS },
 ): ResponseAttachment {
+  preflightGifStructure(data);
   const parsed = parseGIF(new Uint8Array(data).buffer);
   const { width, height } = parsed.lsd;
   if (parsed.header.signature !== "GIF" || !["87a", "89a"].includes(parsed.header.version)
