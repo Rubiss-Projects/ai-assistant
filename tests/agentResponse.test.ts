@@ -157,6 +157,36 @@ test("GIF disposal method 2 restores the opaque logical background", async () =>
   assert.deepEqual(Array.from(frames[2].patch.subarray(0, 4)), [255, 0, 0, 255]);
 });
 
+test("GIFs with only local color tables remain previewable", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const globalGif = Buffer.from(
+    "R0lGODlhAQABAPAAAAAAAP///yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAQABAAAIBAABBAQAOw==",
+    "base64",
+  );
+  const palette = globalGif.subarray(13, 19);
+  const withoutGlobalPalette = Buffer.concat([globalGif.subarray(0, 13), globalGif.subarray(19)]);
+  withoutGlobalPalette[10] &= 0x7f;
+  const imageOffset = withoutGlobalPalette.indexOf(0x2c);
+  withoutGlobalPalette[imageOffset + 9] = 0x80;
+  const localGif = Buffer.concat([
+    withoutGlobalPalette.subarray(0, imageOffset + 10),
+    palette,
+    withoutGlobalPalette.subarray(imageOffset + 10),
+  ]);
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "local-palette.gif"), localGif);
+    return marker(workspace, run, "local-palette.gif");
+  });
+
+  assert.equal(response.attachments.length, 1);
+  assert.equal(response.attachments[0].displayName, "local-palette.gif");
+  assert.equal(decompressFrames(
+    parseGIF(new Uint8Array(response.attachments[0].data).buffer),
+    true,
+  ).length, 1);
+});
+
 test("attachment success claims are corrected when no artifact was produced", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const response = await captureAgentArtifacts(workspace, async () => "Done — it is attached above.");
