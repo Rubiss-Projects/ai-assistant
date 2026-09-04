@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ResponseAttachment } from "../providers/types.js";
 
 export function discordTextOptions(content: string) {
@@ -9,7 +10,11 @@ export async function deliverDiscordAttachments(
   send: (options: { content: string; files: Array<{ attachment: Buffer; name: string }> }) => Promise<unknown>,
   attachments: ResponseAttachment[],
 ): Promise<void> {
+  const deliveredContent = new Set<string>();
   for (const attachment of attachments) {
+    const contentIdentity = createHash("sha256").update(attachment.data).digest("hex");
+    if (deliveredContent.has(contentIdentity)) continue;
+    deliveredContent.add(contentIdentity);
     try {
       await send({
         content: `📎 \`${attachment.displayName}\``,

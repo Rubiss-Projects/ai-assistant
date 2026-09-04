@@ -140,3 +140,26 @@ test("mention response preserves text and reports an attachment upload failure",
   assert.deepEqual(edits, [{ content: "Final answer", files: [] }]);
   assert.match(replies[0].content, /Could not upload.*changes\.patch/);
 });
+
+test("mention response never uploads byte-identical attachments twice", async () => {
+  const replies: DiscordOptions[] = [];
+  const data = Buffer.from("same image");
+
+  await deliverMentionResponse(
+    { reply: async () => ({}) } as never,
+    {
+      edit: async () => ({}),
+      reply: async (options: DiscordOptions) => { replies.push(options); return {}; },
+    } as never,
+    {
+      content: "Done.",
+      attachments: [
+        { data, displayName: "copied.png" },
+        { data: Buffer.from(data), displayName: "generated-image-1.png" },
+      ],
+    },
+  );
+
+  assert.equal(replies.length, 1);
+  assert.equal((replies[0].files[0] as { name: string }).name, "copied.png");
+});

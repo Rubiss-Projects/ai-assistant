@@ -1,9 +1,15 @@
+import { createHash } from "node:crypto";
 export function discordTextOptions(content) {
     return { content, files: [] };
 }
 /** Send artifacts separately so a rejected upload can never suppress the text response. */
 export async function deliverDiscordAttachments(send, attachments) {
+    const deliveredContent = new Set();
     for (const attachment of attachments) {
+        const contentIdentity = createHash("sha256").update(attachment.data).digest("hex");
+        if (deliveredContent.has(contentIdentity))
+            continue;
+        deliveredContent.add(contentIdentity);
         try {
             await send({
                 content: `📎 \`${attachment.displayName}\``,
