@@ -112,6 +112,10 @@ export interface GifWorkBudget {
   remainingPixels: number;
 }
 
+interface AttachmentReadBudget {
+  remainingBytes: number;
+}
+
 function gifRepeatCount(parsed: ParsedGif): number {
   const loopExtensions = new Set(["NETSCAPE2.0", "ANIMEXTS1.0"]);
   const application = parsed.frames.find(
@@ -408,6 +412,7 @@ async function loadAttachment(
   requestedPath: string,
   maxBytes: number,
   gifWorkBudget: GifWorkBudget,
+  readBudget: AttachmentReadBudget,
 ): Promise<{ attachment?: ResponseAttachment; warning?: string }> {
   const trimmed = requestedPath.trim();
   const displayName = safeDisplayName(trimmed);
@@ -455,6 +460,15 @@ async function loadAttachment(
     ) {
       return { warning: attachmentWarning(displayName, "the file changed while it was being opened.") };
     }
+    if (opened.size > readBudget.remainingBytes) {
+      return { warning: attachmentWarning(
+        displayName,
+        `it exceeds the remaining ${readBudget.remainingBytes}-byte limit.`,
+      ) };
+    }
+    // Reserve bytes before reading or parsing. Failed decodes still consume the
+    // response-wide allowance, bounding work on attacker-controlled artifacts.
+    readBudget.remainingBytes -= opened.size;
     const data = await handle.readFile();
     if (data.byteLength !== opened.size) {
       return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
@@ -567,6 +581,7 @@ async function prepareAgentResponse(content: string, run: ArtifactRun): Promise<
   let totalBytes = 0;
   let processedCandidates = 0;
   const gifWorkBudget: GifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
+  const readBudget: AttachmentReadBudget = { remainingBytes: maxTotalBytes };
 
   for (const requestedPath of requestedPaths) {
     const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
@@ -579,7 +594,7 @@ async function prepareAgentResponse(content: string, run: ArtifactRun): Promise<
     }
     processedCandidates += 1;
 
-    const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget);
+    const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readBudget);
     if (result.attachment) {
       const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
       if (seenContent.has(contentIdentity)) continue;
