@@ -248,6 +248,7 @@ test("GIF disposal method 2 uses the disposed frame's transparency", async () =>
     true,
   );
   assert.equal(frames.length, 3);
+  assert.equal(frames[0].transparentIndex, 0);
   assert.equal(frames[1].disposalType, 2);
   assert.equal(frames[2].patch[3], 0);
 });
