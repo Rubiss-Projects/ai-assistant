@@ -190,6 +190,8 @@ function composeGifFrame(canvas, frame, width, height) {
     }
 }
 function gifBackground(parsed, firstFrame) {
+    if (!parsed.lsd.gct.exists || !parsed.gct)
+        return [0, 0, 0, 0];
     const index = parsed.lsd.backgroundColorIndex;
     const [red, green, blue] = parsed.gct[index] ?? [0, 0, 0];
     const transparent = firstFrame.transparentIndex === index;
