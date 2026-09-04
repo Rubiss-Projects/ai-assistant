@@ -12,6 +12,7 @@ const DEFAULT_MAX_ATTACHMENTS = 10;
 const ABSOLUTE_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const DISCORD_MAX_ATTACHMENTS = 10;
 const MAX_GIF_FRAMES = 200;
+const MAX_GIF_BLOCKS = 1_000;
 const MAX_GIF_TOTAL_PIXELS = 20_000_000;
 const MAX_GIF_RESPONSE_WORK_PIXELS = MAX_GIF_TOTAL_PIXELS * 2;
 const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
@@ -211,6 +212,7 @@ function preflightGifStructure(data) {
     if (offset > data.length)
         throw new Error("GIF global color table is truncated.");
     let frameCount = 0;
+    let blockCount = 0;
     let decodedPixels = 0;
     while (offset < data.length) {
         const marker = data[offset];
@@ -218,6 +220,10 @@ function preflightGifStructure(data) {
             if (frameCount < 1)
                 throw new Error("GIF does not contain an image frame.");
             return;
+        }
+        blockCount += 1;
+        if (blockCount > MAX_GIF_BLOCKS) {
+            throw new Error("GIF exceeds the safe structural complexity limit.");
         }
         if (marker === 0x21) {
             if (offset + 2 > data.length)
