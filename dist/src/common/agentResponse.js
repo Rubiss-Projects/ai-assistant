@@ -464,22 +464,24 @@ async function prepareAgentResponse(content, run) {
     const seen = new Set();
     const seenContent = new Set();
     let totalBytes = 0;
+    let processedCandidates = 0;
     for (const requestedPath of requestedPaths) {
         const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
         const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
         if (seen.has(identity))
             continue;
         seen.add(identity);
+        if (processedCandidates >= maxAttachments) {
+            warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
+            continue;
+        }
+        processedCandidates += 1;
         const result = await loadAttachment(run, requestedPath, maxBytes);
         if (result.attachment) {
             const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
             if (seenContent.has(contentIdentity))
                 continue;
             seenContent.add(contentIdentity);
-            if (attachments.length >= maxAttachments) {
-                warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
-                continue;
-            }
             const remainingBytes = maxTotalBytes - totalBytes;
             if (result.attachment.data.byteLength > remainingBytes) {
                 warnings.push(attachmentWarning(requestedPath, `it exceeds the remaining ${remainingBytes}-byte limit.`));
