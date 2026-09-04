@@ -105,6 +105,8 @@ function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
     let bits = 0;
     let byteIndex = 0;
     let produced = 0;
+    let codesRead = 0;
+    const maxCodes = pixelCount * 2 + 1_024;
     const readCode = () => {
         while (bits < codeSize) {
             if (byteIndex >= data.length)
@@ -120,6 +122,9 @@ function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
     while (true) {
         let code = readCode();
         if (code === undefined)
+            return false;
+        codesRead += 1;
+        if (codesRead > maxCodes)
             return false;
         if (code === clearCode) {
             available = clearCode + 2;

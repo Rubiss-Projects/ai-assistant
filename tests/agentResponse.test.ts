@@ -238,6 +238,35 @@ test("first-frame local transparency does not erase an opaque global background"
   assert.deepEqual(Array.from(normalized[0].patch.subarray(0, 4)), [255, 0, 0, 255]);
 });
 
+test("GIF LZW clear-code spam is rejected with bounded work", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const codes = [...new Array(2_000).fill(4), 0, 5];
+  const packed = Buffer.alloc(Math.ceil(codes.length * 3 / 8));
+  codes.forEach((code, index) => {
+    const bit = index * 3;
+    packed[Math.floor(bit / 8)] |= code << (bit % 8);
+    if (bit % 8 > 5) packed[Math.floor(bit / 8) + 1] |= code >> (8 - (bit % 8));
+  });
+  const blocks: Buffer[] = [];
+  for (let offset = 0; offset < packed.length; offset += 255) {
+    const block = packed.subarray(offset, offset + 255);
+    blocks.push(Buffer.from([block.length]), block);
+  }
+  const spam = Buffer.concat([
+    Buffer.from("47494638396101000100800000000000ffffff2c00000000010001000002", "hex"),
+    ...blocks,
+    Buffer.from([0x00, 0x3b]),
+  ]);
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "clear-spam.gif"), spam);
+    return marker(workspace, run, "clear-spam.gif");
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /clear-spam\.gif.*invalid LZW stream/);
+});
+
 test("attachment success claims are corrected when no artifact was produced", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const response = await captureAgentArtifacts(workspace, async () => "Done — it is attached above.");
