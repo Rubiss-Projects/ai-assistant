@@ -189,12 +189,12 @@ function composeGifFrame(canvas, frame, width, height) {
         }
     }
 }
-function gifBackground(parsed, firstFrame) {
+function gifBackground(parsed, firstFrame, firstFrameUsesLocalColorTable) {
     if (!parsed.lsd.gct.exists || !parsed.gct)
         return [0, 0, 0, 0];
     const index = parsed.lsd.backgroundColorIndex;
     const [red, green, blue] = parsed.gct[index] ?? [0, 0, 0];
-    const transparent = firstFrame.transparentIndex === index;
+    const transparent = !firstFrameUsesLocalColorTable && firstFrame.transparentIndex === index;
     return [red, green, blue, transparent ? 0 : 255];
 }
 function fillGifCanvas(canvas, color) {
@@ -219,6 +219,7 @@ export function normalizeGifForDiscord(data, displayName, maxBytes) {
     }
     let frameCount = 0;
     let decodedPixels = 0;
+    let firstFrameUsesLocalColorTable = false;
     for (const frame of parsed.frames) {
         if (!("image" in frame))
             continue;
@@ -227,24 +228,27 @@ export function normalizeGifForDiscord(data, displayName, maxBytes) {
             || descriptor.left + descriptor.width > width || descriptor.top + descriptor.height > height) {
             throw new Error("GIF frame dimensions are invalid.");
         }
+        frameCount += 1;
+        decodedPixels += descriptor.width * descriptor.height;
+        if (frameCount === 1)
+            firstFrameUsesLocalColorTable = descriptor.lct.exists;
+        if (frameCount > MAX_GIF_FRAMES || decodedPixels > MAX_GIF_TOTAL_PIXELS
+            || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
+            throw new Error("GIF exceeds the safe animation complexity limit.");
+        }
         if (!gifLzwDecodesExactly(frame.image.data.minCodeSize, frame.image.data.blocks, descriptor.width * descriptor.height)) {
             throw new Error("GIF frame has an invalid LZW stream.");
         }
-        frameCount += 1;
-        decodedPixels += descriptor.width * descriptor.height;
     }
-    const composedPixels = width * height * frameCount;
-    if (frameCount < 1 || frameCount > MAX_GIF_FRAMES
-        || decodedPixels > MAX_GIF_TOTAL_PIXELS || composedPixels > MAX_GIF_TOTAL_PIXELS) {
-        throw new Error("GIF exceeds the safe animation complexity limit.");
-    }
+    if (frameCount < 1)
+        throw new Error("GIF does not contain an image frame.");
     const frames = decompressFrames(parsed, true);
     if (frames.length !== frameCount)
         throw new Error("GIF frame decoding was incomplete.");
     const { GIFEncoder, quantize, applyPalette } = gifenc;
     const encoder = GIFEncoder();
     const canvas = new Uint8ClampedArray(width * height * 4);
-    const background = gifBackground(parsed, frames[0]);
+    const background = gifBackground(parsed, frames[0], firstFrameUsesLocalColorTable);
     fillGifCanvas(canvas, background);
     const repeat = gifRepeatCount(parsed);
     for (const frame of frames) {
