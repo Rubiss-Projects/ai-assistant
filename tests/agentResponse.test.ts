@@ -117,6 +117,33 @@ test("GIF artifacts are fully decoded and re-encoded before delivery", async () 
   assert.deepEqual(Array.from(loopExtension.application.blocks.slice(0, 3)), [1, 0, 0]);
 });
 
+test("GIF bytes are normalized even when the artifact filename is mislabeled", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const original = Buffer.from(
+    "R0lGODlhAgABAPAAAP8AAAAA/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQABBAgIACH5BAAUAAAALAAAAAACAAEAgP8AAAAA/wgFAAMACAgAOw==",
+    "base64",
+  );
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "animation.png"), original);
+    return marker(workspace, run, "animation.png");
+  });
+
+  assert.equal(response.attachments.length, 1);
+  assert.equal(response.attachments[0].displayName, "animation.gif");
+  assert.notDeepEqual(response.attachments[0].data, original);
+});
+
+test("malformed GIF signatures are rejected under non-GIF filenames", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "broken.png"), Buffer.from("GIF89a-not-an-image"));
+    return marker(workspace, run, "broken.png");
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /broken\.png.*could not be read safely/);
+});
+
 test("GIF normalization work is bounded across a whole response", () => {
   const original = Buffer.from(
     "R0lGODlhAgABAPAAAP8AAAAA/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQABBAgIACH5BAAUAAAALAAAAAACAAEAgP8AAAAA/wgFAAMACAgAOw==",
