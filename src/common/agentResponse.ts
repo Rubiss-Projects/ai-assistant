@@ -390,6 +390,10 @@ export function normalizeGifForDiscord(
   const encoder = GIFEncoder();
   const canvas = new Uint8ClampedArray(width * height * 4);
   const background = gifBackground(parsed, frames[0], frameUsesLocalColorTable[0]);
+  const reserveTransparentBackground = background[3] === 0 || frames.some(
+    (frame, frameIndex) => frame.disposalType === 2
+      && gifBackground(parsed, frame, frameUsesLocalColorTable[frameIndex])[3] === 0,
+  );
   fillGifCanvas(canvas, background);
   const repeat = gifRepeatCount(parsed);
   for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
@@ -397,13 +401,19 @@ export function normalizeGifForDiscord(
     const restore = frame.disposalType === 3 ? canvas.slice() : undefined;
     composeGifFrame(canvas, frame, width, height);
     const rendered = canvas.slice();
-    const format = "rgba4444";
-    const palette = quantize(rendered, 255, { format, oneBitAlpha: true });
-    const existingTransparentIndex = palette.findIndex((color: number[]) => color[3] === 0);
-    if (existingTransparentIndex >= 0) palette.splice(existingTransparentIndex, 1);
-    // gifenc writes palette index 0 as the logical-screen background. Reserve
-    // that index as transparent for every frame so disposal method 2 truly clears.
-    palette.unshift([0, 0, 0, 0]);
+    const format = reserveTransparentBackground ? "rgba4444" : "rgb565";
+    const palette = quantize(rendered, reserveTransparentBackground ? 255 : 256, {
+      format,
+      oneBitAlpha: reserveTransparentBackground,
+    });
+    if (reserveTransparentBackground) {
+      const existingTransparentIndex = palette.findIndex((color: number[]) => color[3] === 0);
+      if (existingTransparentIndex >= 0) palette.splice(existingTransparentIndex, 1);
+      // gifenc writes palette index 0 as the logical-screen background. Reserve
+      // it only when source disposal can expose transparency, retaining all 256
+      // color slots for fully opaque animations.
+      palette.unshift([0, 0, 0, 0]);
+    }
     const indexed = applyPalette(rendered, palette, format);
     encoder.writeFrame(indexed, width, height, {
       palette,
@@ -412,8 +422,8 @@ export function normalizeGifForDiscord(
       // Every encoded frame is a full-canvas snapshot. Clearing it before the
       // next frame makes transparent pixels erase prior opaque output in players.
       dispose: 2,
-      transparent: true,
-      transparentIndex: 0,
+      transparent: reserveTransparentBackground,
+      transparentIndex: reserveTransparentBackground ? 0 : -1,
     });
     if (frame.disposalType === 2) {
       clearGifFrame(canvas, frame, width, gifBackground(parsed, frame, frameUsesLocalColorTable[frameIndex]));
@@ -717,7 +727,9 @@ export async function captureAgentArtifacts(
       if (imported.marker) markers.push(`[[artifact:${imported.marker}]]`);
       if (imported.warning) warnings.push(imported.warning);
     }
-    return await prepareAgentResponse([output.content, ...markers, ...warnings].filter(Boolean).join("\n\n"), run);
+    // Provider-native outputs are application-authoritative and must not lose
+    // their attachment slots to invalid model-authored markers.
+    return await prepareAgentResponse([...markers, output.content, ...warnings].filter(Boolean).join("\n\n"), run);
   } finally {
     removeEmptyArtifactRun(run);
   }
