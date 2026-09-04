@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs, { constants as fsConstants } from "node:fs";
 import path from "node:path";
+import { decompressFrames, parseGIF, type ParsedFrame, type ParsedGif } from "gifuct-js";
+import gifenc from "gifenc";
 import { configuredMilliseconds } from "./runLifecycle.js";
 import { workspacePathIsAllowed } from "./providerSecurity.js";
 import type { AgentResponse, ResponseAttachment } from "../providers/types.js";
@@ -11,11 +13,14 @@ const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_ATTACHMENTS = 10;
 const ABSOLUTE_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const DISCORD_MAX_ATTACHMENTS = 10;
+const MAX_GIF_FRAMES = 200;
+const MAX_GIF_TOTAL_PIXELS = 20_000_000;
 const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
 
 export const ARTIFACT_INSTRUCTIONS = [
   "When a turn includes an artifact-output directory and you create a file that the user explicitly asked to download or view, save the file in that directory.",
   "Save images intended for inline viewing as PNG, JPEG, GIF, or WebP rather than SVG, because Discord does not preview SVG attachments.",
+  "Animated GIFs must use a standards-compliant encoder and every frame must decode successfully before delivery.",
   "This Discord client cannot see images displayed only inside a provider interface: even if an image-generation tool says its output is already displayed, copy the raster image into the artifact-output directory and emit its artifact marker.",
   "Include one marker on its own line at the end of your final response using the workspace-relative path: [[artifact:artifact-output/path/to/file]].",
   "Include only completed output artifacts, not every file edited during ordinary coding work.",
@@ -100,6 +105,197 @@ export function normalizePreviewableImage(data: Buffer, displayName: string): Re
   if (!rasterSignatureMatches(raster, mimeType)) return { data, displayName };
   const extension = RASTER_EXTENSIONS[mimeType];
   return { data: raster, displayName: `${path.basename(displayName, path.extname(displayName))}${extension}` };
+}
+
+function gifRepeatCount(parsed: ParsedGif): number {
+  const application = parsed.frames.find(
+    (frame) => "application" in frame && frame.application.id.startsWith("NETSCAPE"),
+  );
+  if (!application || !("application" in application) || application.application.blocks.length < 3) return -1;
+  return application.application.blocks[1] | (application.application.blocks[2] << 8);
+}
+
+function gifLzwDecodesExactly(minCodeSize: number, data: number[], pixelCount: number): boolean {
+  if (minCodeSize < 2 || minCodeSize > 8 || pixelCount < 1) return false;
+  const dictionarySize = 4_096;
+  const prefix = new Int32Array(dictionarySize);
+  const suffix = new Int32Array(dictionarySize);
+  const clearCode = 1 << minCodeSize;
+  const endCode = clearCode + 1;
+  for (let code = 0; code < clearCode; code++) suffix[code] = code;
+
+  let available = clearCode + 2;
+  let codeSize = minCodeSize + 1;
+  let codeMask = (1 << codeSize) - 1;
+  let oldCode = -1;
+  let first = 0;
+  let datum = 0;
+  let bits = 0;
+  let byteIndex = 0;
+  let produced = 0;
+
+  const readCode = (): number | undefined => {
+    while (bits < codeSize) {
+      if (byteIndex >= data.length) return undefined;
+      datum |= data[byteIndex++] << bits;
+      bits += 8;
+    }
+    const code = datum & codeMask;
+    datum >>>= codeSize;
+    bits -= codeSize;
+    return code;
+  };
+
+  while (true) {
+    let code = readCode();
+    if (code === undefined) return false;
+    if (code === clearCode) {
+      available = clearCode + 2;
+      codeSize = minCodeSize + 1;
+      codeMask = (1 << codeSize) - 1;
+      oldCode = -1;
+      continue;
+    }
+    if (code === endCode) return produced === pixelCount;
+    if (code > available) return false;
+
+    if (oldCode === -1) {
+      if (code >= clearCode) return false;
+      produced += 1;
+      first = code;
+      oldCode = code;
+      continue;
+    }
+
+    const inputCode = code;
+    let emitted = 0;
+    if (code === available) {
+      emitted += 1;
+      code = oldCode;
+    }
+    let depth = 0;
+    while (code > clearCode) {
+      if (code >= available || depth++ >= dictionarySize) return false;
+      emitted += 1;
+      code = prefix[code];
+    }
+    if (code >= clearCode) return false;
+    first = suffix[code] & 0xff;
+    emitted += 1;
+    produced += emitted;
+    if (produced > pixelCount) return false;
+
+    if (available < dictionarySize) {
+      prefix[available] = oldCode;
+      suffix[available] = first;
+      available += 1;
+      if ((available & codeMask) === 0 && available < dictionarySize) {
+        codeSize += 1;
+        codeMask = (1 << codeSize) - 1;
+      }
+    }
+    oldCode = inputCode;
+  }
+}
+
+function composeGifFrame(canvas: Uint8ClampedArray, frame: ParsedFrame, width: number, height: number): void {
+  const { left, top, width: frameWidth, height: frameHeight } = frame.dims;
+  if (left < 0 || top < 0 || frameWidth < 1 || frameHeight < 1
+    || left + frameWidth > width || top + frameHeight > height
+    || frame.patch.length !== frameWidth * frameHeight * 4) {
+    throw new Error("GIF frame dimensions are invalid.");
+  }
+  for (let y = 0; y < frameHeight; y++) {
+    for (let x = 0; x < frameWidth; x++) {
+      const source = (y * frameWidth + x) * 4;
+      if (frame.patch[source + 3] === 0) continue;
+      const destination = ((top + y) * width + left + x) * 4;
+      canvas.set(frame.patch.subarray(source, source + 4), destination);
+    }
+  }
+}
+
+function clearGifFrame(canvas: Uint8ClampedArray, frame: ParsedFrame, width: number): void {
+  const { left, top, width: frameWidth, height: frameHeight } = frame.dims;
+  for (let y = 0; y < frameHeight; y++) {
+    canvas.fill(0, ((top + y) * width + left) * 4, ((top + y) * width + left + frameWidth) * 4);
+  }
+}
+
+/** Fully decode and re-encode GIFs so Discord never receives header-only or browser-incompatible output. */
+export function normalizeGifForDiscord(data: Buffer, displayName: string, maxBytes: number): ResponseAttachment {
+  const parsed = parseGIF(new Uint8Array(data).buffer);
+  const { width, height } = parsed.lsd;
+  if (parsed.header.signature !== "GIF" || !["87a", "89a"].includes(parsed.header.version)
+    || width < 1 || height < 1 || width > 8_192 || height > 8_192) {
+    throw new Error("GIF header or dimensions are invalid.");
+  }
+
+  let frameCount = 0;
+  let decodedPixels = 0;
+  for (const frame of parsed.frames) {
+    if (!("image" in frame)) continue;
+    const descriptor = frame.image.descriptor;
+    if (descriptor.left < 0 || descriptor.top < 0 || descriptor.width < 1 || descriptor.height < 1
+      || descriptor.left + descriptor.width > width || descriptor.top + descriptor.height > height) {
+      throw new Error("GIF frame dimensions are invalid.");
+    }
+    if (!gifLzwDecodesExactly(
+      frame.image.data.minCodeSize,
+      frame.image.data.blocks,
+      descriptor.width * descriptor.height,
+    )) {
+      throw new Error("GIF frame has an invalid LZW stream.");
+    }
+    frameCount += 1;
+    decodedPixels += descriptor.width * descriptor.height;
+  }
+  const composedPixels = width * height * frameCount;
+  if (frameCount < 1 || frameCount > MAX_GIF_FRAMES
+    || decodedPixels > MAX_GIF_TOTAL_PIXELS || composedPixels > MAX_GIF_TOTAL_PIXELS) {
+    throw new Error("GIF exceeds the safe animation complexity limit.");
+  }
+
+  const frames = decompressFrames(parsed, true);
+  if (frames.length !== frameCount) throw new Error("GIF frame decoding was incomplete.");
+
+  const { GIFEncoder, quantize, applyPalette } = gifenc;
+  const encoder = GIFEncoder();
+  const canvas = new Uint8ClampedArray(width * height * 4);
+  const repeat = gifRepeatCount(parsed);
+  for (const frame of frames) {
+    const restore = frame.disposalType === 3 ? canvas.slice() : undefined;
+    composeGifFrame(canvas, frame, width, height);
+    const rendered = canvas.slice();
+    const hasTransparency = rendered.some((_value, index) => index % 4 === 3 && rendered[index] < 128);
+    const format = hasTransparency ? "rgba4444" : "rgb565";
+    const palette = quantize(rendered, 256, { format, oneBitAlpha: hasTransparency });
+    const indexed = applyPalette(rendered, palette, format);
+    const transparentIndex = hasTransparency ? palette.findIndex((color: number[]) => color[3] === 0) : -1;
+    encoder.writeFrame(indexed, width, height, {
+      palette,
+      delay: frame.delay,
+      repeat,
+      dispose: 1,
+      transparent: transparentIndex >= 0,
+      transparentIndex,
+    });
+    if (frame.disposalType === 2) clearGifFrame(canvas, frame, width);
+    else if (restore) canvas.set(restore);
+  }
+  encoder.finish();
+  const normalized = Buffer.from(encoder.bytes());
+  if (normalized.byteLength > maxBytes) {
+    throw new Error(`normalized GIF exceeds the configured ${maxBytes}-byte limit.`);
+  }
+  return { data: normalized, displayName };
+}
+
+function normalizeOutputAttachment(data: Buffer, displayName: string, maxBytes: number): ResponseAttachment {
+  const normalized = normalizePreviewableImage(data, displayName);
+  return path.extname(normalized.displayName).toLowerCase() === ".gif"
+    ? normalizeGifForDiscord(normalized.data, normalized.displayName, maxBytes)
+    : normalized;
 }
 
 function createArtifactRun(workingDirectory: string): ArtifactRun {
@@ -198,8 +394,11 @@ async function loadAttachment(
     if (data.byteLength !== opened.size) {
       return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
     }
-    return { attachment: normalizePreviewableImage(data, displayName) };
-  } catch {
+    return { attachment: normalizeOutputAttachment(data, displayName, maxBytes) };
+  } catch (error) {
+    if (path.extname(displayName).toLowerCase() === ".gif") {
+      return { warning: attachmentWarning(displayName, `the GIF could not be decoded safely (${String(error)}).`) };
+    }
     return { warning: attachmentWarning(displayName, "the file could not be read safely.") };
   } finally {
     await handle?.close().catch(() => {});
@@ -256,13 +455,18 @@ async function importProviderArtifact(
     if (data.byteLength !== opened.size) {
       return { warning: attachmentWarning(requestedName, "the provider output changed while it was being read.") };
     }
+    // The imported marker is loaded through normalizeOutputAttachment below;
+    // only unwrap SVG shells here so GIFs are decoded and re-encoded exactly once.
     const normalized = normalizePreviewableImage(data, safeDisplayName(requestedName));
     const baseName = safeDisplayName(normalized.displayName);
     const destinationName = fs.existsSync(path.join(run.directory, baseName)) ? `${index + 1}-${baseName}` : baseName;
     const destination = path.join(run.directory, destinationName);
     await fs.promises.writeFile(destination, normalized.data, { flag: "wx", mode: 0o600 });
     return { marker: path.relative(run.workingDirectory, destination) };
-  } catch {
+  } catch (error) {
+    if (path.extname(requestedName).toLowerCase() === ".gif") {
+      return { warning: attachmentWarning(requestedName, `the provider GIF could not be decoded safely (${String(error)}).`) };
+    }
     return { warning: attachmentWarning(requestedName, "the provider output could not be imported safely.") };
   } finally {
     await handle?.close().catch(() => {});
