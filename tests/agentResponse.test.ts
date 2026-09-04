@@ -3,6 +3,7 @@ import test from "node:test";
 import fs, { linkSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { decompressFrames, parseGIF } from "gifuct-js";
 import {
   captureAgentArtifacts,
   withArtifactOutputPrompt,
@@ -88,6 +89,54 @@ test("real vector SVG artifacts remain downloadable without lossy normalization"
 
   assert.equal(response.attachments[0].displayName, "vector.svg");
   assert.equal(response.attachments[0].data.toString(), svg);
+});
+
+test("GIF artifacts are fully decoded and re-encoded before delivery", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const original = Buffer.from(
+    "R0lGODlhAgABAPAAAP8AAAAA/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQABBAgIACH5BAAUAAAALAAAAAACAAEAgP8AAAAA/wgFAAMACAgAOw==",
+    "base64",
+  );
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "animation.gif"), original);
+    return marker(workspace, run, "animation.gif");
+  });
+
+  assert.equal(response.attachments.length, 1);
+  assert.equal(response.attachments[0].displayName, "animation.gif");
+  assert.equal(response.attachments[0].data.subarray(0, 6).toString("ascii"), "GIF89a");
+  assert.notDeepEqual(response.attachments[0].data, original);
+  const normalized = parseGIF(new Uint8Array(response.attachments[0].data).buffer);
+  const frames = decompressFrames(normalized, true);
+  assert.equal(frames.length, 2);
+  assert.deepEqual(frames.map((frame) => frame.delay), [100, 200]);
+});
+
+test("malformed GIF artifacts are rejected instead of reported as successful uploads", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "broken.gif"), Buffer.from("GIF89a-not-an-image"));
+    return `Attached the GIF.\n\n${marker(workspace, run, "broken.gif")}`;
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /broken\.gif.*could not be decoded safely/);
+  assert.match(response.content, /No attachment was produced/);
+});
+
+test("GIFs with truncated LZW image data are rejected before Discord upload", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const broken = Buffer.from(
+    "R0lGODlhAQABAPAAAAAAAP///yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAQABAAAIAQAAOw==",
+    "base64",
+  );
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "broken-lzw.gif"), broken);
+    return marker(workspace, run, "broken-lzw.gif");
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /broken-lzw\.gif.*invalid LZW stream/);
 });
 
 test("attachment success claims are corrected when no artifact was produced", async () => {
