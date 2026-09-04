@@ -279,7 +279,7 @@ export function normalizeGifForDiscord(
 
   let frameCount = 0;
   let decodedPixels = 0;
-  let firstFrameUsesLocalColorTable = false;
+  const frameUsesLocalColorTable: boolean[] = [];
   for (const frame of parsed.frames) {
     if (!("image" in frame)) continue;
     const descriptor = frame.image.descriptor;
@@ -289,7 +289,7 @@ export function normalizeGifForDiscord(
     }
     frameCount += 1;
     decodedPixels += descriptor.width * descriptor.height;
-    if (frameCount === 1) firstFrameUsesLocalColorTable = descriptor.lct.exists;
+    frameUsesLocalColorTable.push(descriptor.lct.exists);
     if (frameCount > MAX_GIF_FRAMES || decodedPixels > MAX_GIF_TOTAL_PIXELS
       || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
       throw new Error("GIF exceeds the safe animation complexity limit.");
@@ -323,10 +323,11 @@ export function normalizeGifForDiscord(
   const { GIFEncoder, quantize, applyPalette } = gifenc;
   const encoder = GIFEncoder();
   const canvas = new Uint8ClampedArray(width * height * 4);
-  const background = gifBackground(parsed, frames[0], firstFrameUsesLocalColorTable);
+  const background = gifBackground(parsed, frames[0], frameUsesLocalColorTable[0]);
   fillGifCanvas(canvas, background);
   const repeat = gifRepeatCount(parsed);
-  for (const frame of frames) {
+  for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+    const frame = frames[frameIndex];
     const restore = frame.disposalType === 3 ? canvas.slice() : undefined;
     composeGifFrame(canvas, frame, width, height);
     const rendered = canvas.slice();
@@ -343,7 +344,9 @@ export function normalizeGifForDiscord(
       transparent: transparentIndex >= 0,
       transparentIndex,
     });
-    if (frame.disposalType === 2) clearGifFrame(canvas, frame, width, background);
+    if (frame.disposalType === 2) {
+      clearGifFrame(canvas, frame, width, gifBackground(parsed, frame, frameUsesLocalColorTable[frameIndex]));
+    }
     else if (restore) canvas.set(restore);
   }
   encoder.finish();
