@@ -340,7 +340,9 @@ export function normalizeGifForDiscord(
       palette,
       delay: frame.delay,
       repeat,
-      dispose: 1,
+      // Every encoded frame is a full-canvas snapshot. Clearing it before the
+      // next frame makes transparent pixels erase prior opaque output in players.
+      dispose: 2,
       transparent: transparentIndex >= 0,
       transparentIndex,
     });
