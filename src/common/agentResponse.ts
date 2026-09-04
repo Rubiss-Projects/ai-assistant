@@ -15,6 +15,7 @@ const ABSOLUTE_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const DISCORD_MAX_ATTACHMENTS = 10;
 const MAX_GIF_FRAMES = 200;
 const MAX_GIF_TOTAL_PIXELS = 20_000_000;
+const MAX_GIF_RESPONSE_WORK_PIXELS = MAX_GIF_TOTAL_PIXELS * 2;
 const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
 
 export const ARTIFACT_INSTRUCTIONS = [
@@ -105,6 +106,10 @@ export function normalizePreviewableImage(data: Buffer, displayName: string): Re
   if (!rasterSignatureMatches(raster, mimeType)) return { data, displayName };
   const extension = RASTER_EXTENSIONS[mimeType];
   return { data: raster, displayName: `${path.basename(displayName, path.extname(displayName))}${extension}` };
+}
+
+export interface GifWorkBudget {
+  remainingPixels: number;
 }
 
 function gifRepeatCount(parsed: ParsedGif): number {
@@ -251,7 +256,12 @@ function clearGifFrame(
 }
 
 /** Fully decode and re-encode GIFs so Discord never receives header-only or browser-incompatible output. */
-export function normalizeGifForDiscord(data: Buffer, displayName: string, maxBytes: number): ResponseAttachment {
+export function normalizeGifForDiscord(
+  data: Buffer,
+  displayName: string,
+  maxBytes: number,
+  workBudget: GifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS },
+): ResponseAttachment {
   const parsed = parseGIF(new Uint8Array(data).buffer);
   const { width, height } = parsed.lsd;
   if (parsed.header.signature !== "GIF" || !["87a", "89a"].includes(parsed.header.version)
@@ -276,6 +286,20 @@ export function normalizeGifForDiscord(data: Buffer, displayName: string, maxByt
       || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
       throw new Error("GIF exceeds the safe animation complexity limit.");
     }
+  }
+  if (frameCount < 1) throw new Error("GIF does not contain an image frame.");
+
+  // Reserve the maximum decode/composition work before traversing LZW streams.
+  // A single response shares this budget across all distinct artifact markers.
+  const workPixels = decodedPixels + width * height * frameCount;
+  if (workPixels > workBudget.remainingPixels) {
+    throw new Error("GIF exceeds the safe response-wide animation work limit.");
+  }
+  workBudget.remainingPixels -= workPixels;
+
+  for (const frame of parsed.frames) {
+    if (!("image" in frame)) continue;
+    const descriptor = frame.image.descriptor;
     if (!gifLzwDecodesExactly(
       frame.image.data.minCodeSize,
       frame.image.data.blocks,
@@ -284,7 +308,6 @@ export function normalizeGifForDiscord(data: Buffer, displayName: string, maxByt
       throw new Error("GIF frame has an invalid LZW stream.");
     }
   }
-  if (frameCount < 1) throw new Error("GIF does not contain an image frame.");
 
   const frames = decompressFrames(parsed, true);
   if (frames.length !== frameCount) throw new Error("GIF frame decoding was incomplete.");
@@ -323,10 +346,15 @@ export function normalizeGifForDiscord(data: Buffer, displayName: string, maxByt
   return { data: normalized, displayName };
 }
 
-function normalizeOutputAttachment(data: Buffer, displayName: string, maxBytes: number): ResponseAttachment {
+function normalizeOutputAttachment(
+  data: Buffer,
+  displayName: string,
+  maxBytes: number,
+  gifWorkBudget: GifWorkBudget,
+): ResponseAttachment {
   const normalized = normalizePreviewableImage(data, displayName);
   return path.extname(normalized.displayName).toLowerCase() === ".gif"
-    ? normalizeGifForDiscord(normalized.data, normalized.displayName, maxBytes)
+    ? normalizeGifForDiscord(normalized.data, normalized.displayName, maxBytes, gifWorkBudget)
     : normalized;
 }
 
@@ -375,6 +403,7 @@ async function loadAttachment(
   run: ArtifactRun,
   requestedPath: string,
   maxBytes: number,
+  gifWorkBudget: GifWorkBudget,
 ): Promise<{ attachment?: ResponseAttachment; warning?: string }> {
   const trimmed = requestedPath.trim();
   const displayName = safeDisplayName(trimmed);
@@ -426,7 +455,7 @@ async function loadAttachment(
     if (data.byteLength !== opened.size) {
       return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
     }
-    return { attachment: normalizeOutputAttachment(data, displayName, maxBytes) };
+    return { attachment: normalizeOutputAttachment(data, displayName, maxBytes, gifWorkBudget) };
   } catch (error) {
     if (path.extname(displayName).toLowerCase() === ".gif") {
       return { warning: attachmentWarning(displayName, `the GIF could not be decoded safely (${String(error)}).`) };
@@ -533,6 +562,7 @@ async function prepareAgentResponse(content: string, run: ArtifactRun): Promise<
   const seenContent = new Set<string>();
   let totalBytes = 0;
   let processedCandidates = 0;
+  const gifWorkBudget: GifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
 
   for (const requestedPath of requestedPaths) {
     const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
@@ -545,7 +575,7 @@ async function prepareAgentResponse(content: string, run: ArtifactRun): Promise<
     }
     processedCandidates += 1;
 
-    const result = await loadAttachment(run, requestedPath, maxBytes);
+    const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget);
     if (result.attachment) {
       const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
       if (seenContent.has(contentIdentity)) continue;

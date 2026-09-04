@@ -6,6 +6,7 @@ import { join, relative } from "node:path";
 import { decompressFrames, parseGIF } from "gifuct-js";
 import {
   captureAgentArtifacts,
+  normalizeGifForDiscord,
   withArtifactOutputPrompt,
   type ArtifactRun,
 } from "../src/common/agentResponse.js";
@@ -114,6 +115,21 @@ test("GIF artifacts are fully decoded and re-encoded before delivery", async () 
   const loopExtension = normalized.frames.find((frame) => "application" in frame);
   assert.ok(loopExtension && "application" in loopExtension);
   assert.deepEqual(Array.from(loopExtension.application.blocks.slice(0, 3)), [1, 0, 0]);
+});
+
+test("GIF normalization work is bounded across a whole response", () => {
+  const original = Buffer.from(
+    "R0lGODlhAgABAPAAAP8AAAAA/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQABBAgIACH5BAAUAAAALAAAAAACAAEAgP8AAAAA/wgFAAMACAgAOw==",
+    "base64",
+  );
+  const budget = { remainingPixels: 8 };
+
+  normalizeGifForDiscord(original, "first.gif", 1_000_000, budget);
+  assert.equal(budget.remainingPixels, 0);
+  assert.throws(
+    () => normalizeGifForDiscord(original, "second.gif", 1_000_000, budget),
+    /response-wide animation work limit/,
+  );
 });
 
 test("malformed GIF artifacts are rejected instead of reported as successful uploads", async () => {

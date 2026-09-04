@@ -13,6 +13,7 @@ const ABSOLUTE_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const DISCORD_MAX_ATTACHMENTS = 10;
 const MAX_GIF_FRAMES = 200;
 const MAX_GIF_TOTAL_PIXELS = 20_000_000;
+const MAX_GIF_RESPONSE_WORK_PIXELS = MAX_GIF_TOTAL_PIXELS * 2;
 const ARTIFACT_MARKER = /^\s*\[\[artifact:(.+?)\]\]\s*$/gim;
 export const ARTIFACT_INSTRUCTIONS = [
     "When a turn includes an artifact-output directory and you create a file that the user explicitly asked to download or view, save the file in that directory.",
@@ -216,7 +217,7 @@ function clearGifFrame(canvas, frame, width, background) {
     }
 }
 /** Fully decode and re-encode GIFs so Discord never receives header-only or browser-incompatible output. */
-export function normalizeGifForDiscord(data, displayName, maxBytes) {
+export function normalizeGifForDiscord(data, displayName, maxBytes, workBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS }) {
     const parsed = parseGIF(new Uint8Array(data).buffer);
     const { width, height } = parsed.lsd;
     if (parsed.header.signature !== "GIF" || !["87a", "89a"].includes(parsed.header.version)
@@ -242,12 +243,24 @@ export function normalizeGifForDiscord(data, displayName, maxBytes) {
             || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
             throw new Error("GIF exceeds the safe animation complexity limit.");
         }
+    }
+    if (frameCount < 1)
+        throw new Error("GIF does not contain an image frame.");
+    // Reserve the maximum decode/composition work before traversing LZW streams.
+    // A single response shares this budget across all distinct artifact markers.
+    const workPixels = decodedPixels + width * height * frameCount;
+    if (workPixels > workBudget.remainingPixels) {
+        throw new Error("GIF exceeds the safe response-wide animation work limit.");
+    }
+    workBudget.remainingPixels -= workPixels;
+    for (const frame of parsed.frames) {
+        if (!("image" in frame))
+            continue;
+        const descriptor = frame.image.descriptor;
         if (!gifLzwDecodesExactly(frame.image.data.minCodeSize, frame.image.data.blocks, descriptor.width * descriptor.height)) {
             throw new Error("GIF frame has an invalid LZW stream.");
         }
     }
-    if (frameCount < 1)
-        throw new Error("GIF does not contain an image frame.");
     const frames = decompressFrames(parsed, true);
     if (frames.length !== frameCount)
         throw new Error("GIF frame decoding was incomplete.");
@@ -286,10 +299,10 @@ export function normalizeGifForDiscord(data, displayName, maxBytes) {
     }
     return { data: normalized, displayName };
 }
-function normalizeOutputAttachment(data, displayName, maxBytes) {
+function normalizeOutputAttachment(data, displayName, maxBytes, gifWorkBudget) {
     const normalized = normalizePreviewableImage(data, displayName);
     return path.extname(normalized.displayName).toLowerCase() === ".gif"
-        ? normalizeGifForDiscord(normalized.data, normalized.displayName, maxBytes)
+        ? normalizeGifForDiscord(normalized.data, normalized.displayName, maxBytes, gifWorkBudget)
         : normalized;
 }
 function createArtifactRun(workingDirectory) {
@@ -332,7 +345,7 @@ export function withArtifactOutputPrompt(prompt, run) {
     const portablePath = run.relativeDirectory.split(path.sep).join("/");
     return `${prompt}\n\n<artifact-output>For this turn, save downloadable outputs only under ${portablePath}/ and mark them with their workspace-relative path.</artifact-output>`;
 }
-async function loadAttachment(run, requestedPath, maxBytes) {
+async function loadAttachment(run, requestedPath, maxBytes, gifWorkBudget) {
     const trimmed = requestedPath.trim();
     const displayName = safeDisplayName(trimmed);
     const absolutePath = path.resolve(run.workingDirectory, trimmed);
@@ -378,7 +391,7 @@ async function loadAttachment(run, requestedPath, maxBytes) {
         if (data.byteLength !== opened.size) {
             return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
         }
-        return { attachment: normalizeOutputAttachment(data, displayName, maxBytes) };
+        return { attachment: normalizeOutputAttachment(data, displayName, maxBytes, gifWorkBudget) };
     }
     catch (error) {
         if (path.extname(displayName).toLowerCase() === ".gif") {
@@ -466,6 +479,7 @@ async function prepareAgentResponse(content, run) {
     const seenContent = new Set();
     let totalBytes = 0;
     let processedCandidates = 0;
+    const gifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
     for (const requestedPath of requestedPaths) {
         const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
         const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
@@ -477,7 +491,7 @@ async function prepareAgentResponse(content, run) {
             continue;
         }
         processedCandidates += 1;
-        const result = await loadAttachment(run, requestedPath, maxBytes);
+        const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget);
         if (result.attachment) {
             const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
             if (seenContent.has(contentIdentity))
