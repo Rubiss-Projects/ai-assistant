@@ -144,6 +144,22 @@ test("malformed GIF artifacts are rejected instead of reported as successful upl
   assert.match(response.content, /No attachment was produced/);
 });
 
+test("failed GIF parses consume the response-wide input byte budget", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  await withAttachmentLimits({ bytes: "100", totalBytes: "20" }, async () => {
+    const response = await captureAgentArtifacts(workspace, async (run) => {
+      const malformed = Buffer.from("GIF89a-not-an-image");
+      writeFileSync(join(run.directory, "first.gif"), malformed);
+      writeFileSync(join(run.directory, "second.gif"), malformed);
+      return [marker(workspace, run, "first.gif"), marker(workspace, run, "second.gif")].join("\n");
+    });
+
+    assert.equal(response.attachments.length, 0);
+    assert.match(response.content, /first\.gif.*could not be decoded safely/);
+    assert.match(response.content, /second\.gif.*remaining 1-byte limit/);
+  });
+});
+
 test("GIFs with truncated LZW image data are rejected before Discord upload", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const broken = Buffer.from(

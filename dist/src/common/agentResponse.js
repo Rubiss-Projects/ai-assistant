@@ -350,7 +350,7 @@ export function withArtifactOutputPrompt(prompt, run) {
     const portablePath = run.relativeDirectory.split(path.sep).join("/");
     return `${prompt}\n\n<artifact-output>For this turn, save downloadable outputs only under ${portablePath}/ and mark them with their workspace-relative path.</artifact-output>`;
 }
-async function loadAttachment(run, requestedPath, maxBytes, gifWorkBudget) {
+async function loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readBudget) {
     const trimmed = requestedPath.trim();
     const displayName = safeDisplayName(trimmed);
     const absolutePath = path.resolve(run.workingDirectory, trimmed);
@@ -392,6 +392,12 @@ async function loadAttachment(run, requestedPath, maxBytes, gifWorkBudget) {
             opened.nlink !== beforeOpen.nlink) {
             return { warning: attachmentWarning(displayName, "the file changed while it was being opened.") };
         }
+        if (opened.size > readBudget.remainingBytes) {
+            return { warning: attachmentWarning(displayName, `it exceeds the remaining ${readBudget.remainingBytes}-byte limit.`) };
+        }
+        // Reserve bytes before reading or parsing. Failed decodes still consume the
+        // response-wide allowance, bounding work on attacker-controlled artifacts.
+        readBudget.remainingBytes -= opened.size;
         const data = await handle.readFile();
         if (data.byteLength !== opened.size) {
             return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
@@ -485,6 +491,7 @@ async function prepareAgentResponse(content, run) {
     let totalBytes = 0;
     let processedCandidates = 0;
     const gifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
+    const readBudget = { remainingBytes: maxTotalBytes };
     for (const requestedPath of requestedPaths) {
         const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
         const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
@@ -496,7 +503,7 @@ async function prepareAgentResponse(content, run) {
             continue;
         }
         processedCandidates += 1;
-        const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget);
+        const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readBudget);
         if (result.attachment) {
             const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
             if (seenContent.has(contentIdentity))
