@@ -352,6 +352,27 @@ test("GIF frame count is rejected before the full parser materializes every fram
   assert.match(response.content, /too-many-frames\.gif.*complexity limit/);
 });
 
+test("GIF extension count is rejected before the full parser materializes every block", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const header = Buffer.from("47494638396101000100800000000000ffffff", "hex");
+  const emptyComment = Buffer.from([0x21, 0xfe, 0x00]);
+  const onePixelFrame = Buffer.from("2c0000000001000100000202440100", "hex");
+  const tooManyExtensions = Buffer.concat([
+    header,
+    ...new Array(1_001).fill(emptyComment),
+    onePixelFrame,
+    Buffer.from([0x3b]),
+  ]);
+
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "too-many-extensions.gif"), tooManyExtensions);
+    return marker(workspace, run, "too-many-extensions.gif");
+  });
+
+  assert.equal(response.attachments.length, 0);
+  assert.match(response.content, /too-many-extensions\.gif.*structural complexity limit/);
+});
+
 test("first-frame local transparency does not erase an opaque global background", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const source = Buffer.from(
