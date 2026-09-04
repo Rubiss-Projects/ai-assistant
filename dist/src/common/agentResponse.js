@@ -345,11 +345,15 @@ export function normalizeGifForDiscord(data, displayName, maxBytes, workBudget =
         const restore = frame.disposalType === 3 ? canvas.slice() : undefined;
         composeGifFrame(canvas, frame, width, height);
         const rendered = canvas.slice();
-        const hasTransparency = rendered.some((_value, index) => index % 4 === 3 && rendered[index] < 128);
-        const format = hasTransparency ? "rgba4444" : "rgb565";
-        const palette = quantize(rendered, 256, { format, oneBitAlpha: hasTransparency });
+        const format = "rgba4444";
+        const palette = quantize(rendered, 255, { format, oneBitAlpha: true });
+        const existingTransparentIndex = palette.findIndex((color) => color[3] === 0);
+        if (existingTransparentIndex >= 0)
+            palette.splice(existingTransparentIndex, 1);
+        // gifenc writes palette index 0 as the logical-screen background. Reserve
+        // that index as transparent for every frame so disposal method 2 truly clears.
+        palette.unshift([0, 0, 0, 0]);
         const indexed = applyPalette(rendered, palette, format);
-        const transparentIndex = hasTransparency ? palette.findIndex((color) => color[3] === 0) : -1;
         encoder.writeFrame(indexed, width, height, {
             palette,
             delay: frame.delay,
@@ -357,8 +361,8 @@ export function normalizeGifForDiscord(data, displayName, maxBytes, workBudget =
             // Every encoded frame is a full-canvas snapshot. Clearing it before the
             // next frame makes transparent pixels erase prior opaque output in players.
             dispose: 2,
-            transparent: transparentIndex >= 0,
-            transparentIndex,
+            transparent: true,
+            transparentIndex: 0,
         });
         if (frame.disposalType === 2) {
             clearGifFrame(canvas, frame, width, gifBackground(parsed, frame, frameUsesLocalColorTable[frameIndex]));
