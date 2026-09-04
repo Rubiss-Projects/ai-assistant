@@ -83,7 +83,12 @@ export function normalizePreviewableImage(data, displayName) {
 }
 function gifRepeatCount(parsed) {
     const loopExtensions = new Set(["NETSCAPE2.0", "ANIMEXTS1.0"]);
-    const application = parsed.frames.find((frame) => "application" in frame && loopExtensions.has(frame.application.id));
+    const application = parsed.frames.find((frame) => {
+        if (!("application" in frame))
+            return false;
+        const metadata = frame.application;
+        return loopExtensions.has(`${metadata.id}${metadata.authCode ?? ""}`);
+    });
     if (!application || !("application" in application) || application.application.blocks.length < 3)
         return -1;
     return application.application.blocks[1] | (application.application.blocks[2] << 8);
