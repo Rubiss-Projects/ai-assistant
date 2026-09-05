@@ -630,8 +630,13 @@ async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
                 break;
             }
             const imported = await importProviderArtifact(run, artifact, index);
-            if (imported.marker)
+            if (imported.marker) {
+                // A successful import exclusively creates a new file. An earlier
+                // missing-file marker may have reserved its path before it existed.
+                const importedIdentity = path.resolve(run.workingDirectory, imported.marker);
+                seen.delete(process.platform === "win32" ? importedIdentity.toLowerCase() : importedIdentity);
                 await processPaths([imported.marker], recoveryCandidateLimit);
+            }
             if (imported.warning) {
                 processedCandidates += 1;
                 warnings.push(imported.warning);

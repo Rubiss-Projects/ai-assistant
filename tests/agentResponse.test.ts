@@ -544,6 +544,22 @@ test("recovery has one reserved candidate after rejected markers exhaust the nor
   }
 });
 
+test("recovery can create a file named by an earlier missing explicit marker", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const generated = join(providerRoot, "source.png");
+  const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  writeFileSync(generated, png);
+  await withAttachmentLimits({ count: "1" }, async () => {
+    const response = await captureAgentArtifacts(workspace, async (run) => ({
+      content: marker(workspace, run, "generated-image-1.png"),
+      fallbackArtifacts: [{ path: generated, trustedRoot: providerRoot, displayName: "generated-image-1.png" }],
+    }));
+    assert.deepEqual(response.attachments.map((file) => file.displayName), ["generated-image-1.png"]);
+    assert.deepEqual(response.attachments[0].data, png);
+  });
+});
+
 test("the reserved recovery candidate does not increase the attachment count", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
