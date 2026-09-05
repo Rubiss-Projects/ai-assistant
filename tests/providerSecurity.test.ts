@@ -277,7 +277,8 @@ test("Codex can explicitly enable Sites without enabling other connected apps", 
   ));
   const filesystem = codexFilesystemPermissionOverride(true);
   assert.ok(filesystem.includes('".openai/**"="write"'));
-  assert.ok(filesystem.includes('".git/**"="write"'));
+  assert.ok(!filesystem.includes('".git/**"="write"'));
+  assert.ok(!filesystem.includes('".git"="write"'));
   assert.ok(filesystem.includes('"**/.codex/**"="deny"'));
   assert.ok(filesystem.includes('"**/.ssh/**"="deny"'));
   assert.ok(!codexFilesystemPermissionOverride(false).includes('".git/**"="write"'));
