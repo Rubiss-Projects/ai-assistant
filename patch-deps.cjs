@@ -41,7 +41,10 @@ const defsDir = path.resolve(
 );
 
 try {
-  if (!fs.existsSync(defsDir)) {
+  // SDK 1.0.13+ embeds the native server in platform-specific SDK packages and
+  // no longer installs @github/copilot. The healing path only applies to the
+  // older package layout.
+  if (fs.existsSync(copilotPkg) && !fs.existsSync(defsDir)) {
     const { execSync } = require("child_process");
     const version = JSON.parse(fs.readFileSync(copilotPkg, "utf8")).version;
     console.log(
