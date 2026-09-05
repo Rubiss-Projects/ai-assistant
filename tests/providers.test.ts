@@ -180,6 +180,50 @@ test("Codex captures completed image-generation paths without an artifact marker
   }
 });
 
+test("Codex delivers the selected final artifact instead of discovered intermediate images", async () => {
+  const previousHome = process.env.CODEX_HOME;
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const codexHome = mkdtempSync(join(tmpdir(), "codex-generated-home-"));
+  const generatedDirectory = join(codexHome, "generated_images", "thread-final");
+  mkdirSync(generatedDirectory, { recursive: true });
+  process.env.CODEX_HOME = codexHome;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
+  try {
+    const codex = new CodexProvider();
+    const internal = codex as unknown as { sessions: Map<string, unknown> };
+    const workspace = mkdtempSync(join(tmpdir(), "codex-image-workspace-"));
+    codex.setSessionWorkingDir("selected-output", workspace);
+    internal.sessions.set("selected-output", {
+      id: "thread-final",
+      runStreamed: async (input: string) => {
+        const directory = input.match(/outputs only under (.+?)\/ and/)![1];
+        writeFileSync(join(workspace, directory, "final.png"), "final edited image");
+        const savedPath = join(generatedDirectory, "intermediate.png");
+        writeFileSync(savedPath, "intermediate image");
+        writeFileSync(join(generatedDirectory, "another.png"), "another intermediate");
+        return {
+          events: (async function* () {
+            yield { type: "item.completed", item: { type: "imageGeneration", status: "completed", savedPath } };
+            yield { type: "item.completed", item: {
+              type: "agent_message", id: "answer", text: `Done.\n[[artifact:${directory}/final.png]]`,
+            } };
+            yield { type: "turn.completed", usage: {} };
+          })(),
+        };
+      },
+    });
+    const response = await codex.sendMessage("selected-output", "make an image");
+    assert.equal(response.content, "Done.");
+    assert.deepEqual(response.attachments.map((file) => file.displayName), ["final.png"]);
+    assert.equal(response.attachments[0].data.toString(), "final edited image");
+  } finally {
+    if (previousHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+    if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+    else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+  }
+});
+
 test("Codex finds new thread-scoped generated images omitted from the SDK stream", async () => {
   const previousHome = process.env.CODEX_HOME;
   const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
