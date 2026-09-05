@@ -506,9 +506,11 @@ test("fallback recovery retains the explicit pass read budget and never reopens 
   writeFileSync(generated, Buffer.alloc(30));
   const originalOpen = fs.promises.open;
   let brokenOpens = 0;
+  let providerOpens = 0;
   try {
     fs.promises.open = (async (filePath: fs.PathLike, flags: string | number) => {
       if (String(filePath).endsWith("broken.gif")) brokenOpens += 1;
+      if (String(filePath) === generated) providerOpens += 1;
       return originalOpen(filePath, flags);
     }) as typeof fs.promises.open;
     await withAttachmentLimits({ totalBytes: "100" }, async () => {
@@ -520,8 +522,40 @@ test("fallback recovery retains the explicit pass read budget and never reopens 
         };
       });
       assert.equal(brokenOpens, 1);
+      assert.equal(providerOpens, 0);
       assert.equal(response.attachments.length, 0);
       assert.match(response.content, /generated.png.*remaining 20-byte limit/);
+    });
+  } finally {
+    fs.promises.open = originalOpen;
+  }
+});
+
+test("fallback bytes are read once and oversized later imports are not retained", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const fallbackArtifacts = [1, 2, 3].map((index) => {
+    const file = join(providerRoot, `${index}.png`);
+    writeFileSync(file, Buffer.alloc(80, index));
+    return { path: file, trustedRoot: providerRoot };
+  });
+  const openedPaths: string[] = [];
+  const originalOpen = fs.promises.open;
+  let runDirectory = "";
+  try {
+    fs.promises.open = (async (filePath: fs.PathLike, flags: string | number) => {
+      openedPaths.push(String(filePath));
+      return originalOpen(filePath, flags);
+    }) as typeof fs.promises.open;
+    await withAttachmentLimits({ totalBytes: "100" }, async () => {
+      const response = await captureAgentArtifacts(workspace, async (run) => {
+        runDirectory = run.directory;
+        return { content: "Done.", fallbackArtifacts };
+      });
+      assert.deepEqual(response.attachments.map((file) => file.displayName), ["1.png"]);
+      assert.deepEqual(openedPaths, [fallbackArtifacts[0].path]);
+      assert.deepEqual(fs.readdirSync(runDirectory), ["1.png"]);
+      assert.match(response.content, /2.png.*remaining 20-byte limit/);
     });
   } finally {
     fs.promises.open = originalOpen;
