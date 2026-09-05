@@ -16,6 +16,9 @@ const require = createRequire(import.meta.url);
 const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 const DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES = 200_000;
 const MAX_CODEX_INLINE_ATTACHMENT_BYTES = 1_000_000;
+// Codex app policy keys are catalog connector IDs, not tool namespace/display names.
+export const CODEX_SITES_CONNECTOR_ID = "connector_20205bf7d4e99a89d7154bb849718324";
+export const CODEX_SITES_GIT_HOST = "git.chatgpt-team.site";
 export const CODEX_GITHUB_READ_ONLY_TOOLS = [
     "get_repo",
     "fetch",
@@ -28,10 +31,14 @@ export function createCodexSessionTemporaryDirectory() {
     fs.chmodSync(directory, 0o700);
     return directory;
 }
-export function codexFilesystemPermissionOverride() {
+export function codexFilesystemPermissionOverride(sitesEnabled = false) {
     const sensitiveRules = [
         ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
         ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => `${JSON.stringify(glob)}="write"`),
+        ...(sitesEnabled
+            ? [".openai", ".openai/**", ".git", ".git/**"]
+                .map((glob) => `${JSON.stringify(glob)}="write"`)
+            : []),
         // Directory denials come last so no nested filename exception can override them.
         ...SENSITIVE_DIRECTORY_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
     ].join(",");
@@ -90,7 +97,7 @@ export function codexClientOptions(temporaryDirectory) {
             default_permissions: CODEX_PERMISSION_PROFILE,
             features: {
                 apps: true,
-                network_proxy: false,
+                network_proxy: sitesEnabled,
                 hooks: false,
                 plugins: sitesEnabled,
                 remote_plugin: false,
@@ -119,7 +126,7 @@ export function codexClientOptions(temporaryDirectory) {
                 },
                 ...(sitesEnabled
                     ? {
-                        sites: {
+                        [CODEX_SITES_CONNECTOR_ID]: {
                             enabled: true,
                             default_tools_enabled: true,
                             default_tools_approval_mode: "approve",
@@ -132,8 +139,10 @@ export function codexClientOptions(temporaryDirectory) {
         },
         configOverrides: [
             "mcp_servers={}",
-            codexFilesystemPermissionOverride(),
-            `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=false}`,
+            codexFilesystemPermissionOverride(sitesEnabled),
+            sitesEnabled
+                ? `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,domains={"${CODEX_SITES_GIT_HOST}"="allow"}}`
+                : `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=false}`,
         ],
     };
 }

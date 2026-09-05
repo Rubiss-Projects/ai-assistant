@@ -23,6 +23,8 @@ import {
 } from "../src/providers/copilot.js";
 import {
   CODEX_GITHUB_READ_ONLY_TOOLS,
+  CODEX_SITES_CONNECTOR_ID,
+  CODEX_SITES_GIT_HOST,
   codexClientOptions,
   codexFilesystemPermissionOverride,
   codexThreadSecurityOptions,
@@ -210,6 +212,7 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   assert.equal((config.features as Record<string, boolean>).hooks, false);
   assert.equal((config.features as Record<string, boolean>).network_proxy, false);
   assert.equal(apps._default.enabled, false);
+  assert.equal(apps[CODEX_SITES_CONNECTOR_ID], undefined);
   assert.equal(apps.github.enabled, true);
   assert.equal(apps.github.default_tools_enabled, false);
   assert.equal(apps.github.destructive_enabled, false);
@@ -262,10 +265,22 @@ test("Codex can explicitly enable Sites without enabling other connected apps", 
   assert.equal((config.features as Record<string, boolean>).plugins, true);
   assert.equal((config.features as Record<string, boolean>).remote_plugin, false);
   assert.equal(apps._default.enabled, false);
-  assert.equal(apps.sites.enabled, true);
-  assert.equal(apps.sites.default_tools_enabled, true);
-  assert.equal(apps.sites.destructive_enabled, false);
+  assert.equal(CODEX_SITES_CONNECTOR_ID, "connector_20205bf7d4e99a89d7154bb849718324");
+  assert.equal(apps.sites, undefined);
+  assert.equal(apps[CODEX_SITES_CONNECTOR_ID].enabled, true);
+  assert.equal(apps[CODEX_SITES_CONNECTOR_ID].default_tools_enabled, true);
+  assert.equal(apps[CODEX_SITES_CONNECTOR_ID].destructive_enabled, false);
   assert.equal(apps.github.destructive_enabled, false);
+  assert.equal(config.features.network_proxy, true);
+  assert.ok(options.configOverrides?.includes(
+    `permissions.discord-bot.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,domains={"${CODEX_SITES_GIT_HOST}"="allow"}}`,
+  ));
+  const filesystem = codexFilesystemPermissionOverride(true);
+  assert.ok(filesystem.includes('".openai/**"="write"'));
+  assert.ok(filesystem.includes('".git/**"="write"'));
+  assert.ok(filesystem.includes('"**/.codex/**"="deny"'));
+  assert.ok(filesystem.includes('"**/.ssh/**"="deny"'));
+  assert.ok(!codexFilesystemPermissionOverride(false).includes('".git/**"="write"'));
 });
 
 test("Codex unrestricted mode preserves legacy client configuration", () => {
