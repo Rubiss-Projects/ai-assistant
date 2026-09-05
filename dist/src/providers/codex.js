@@ -36,7 +36,7 @@ export function codexFilesystemPermissionOverride(sitesEnabled = false) {
         ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
         ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => `${JSON.stringify(glob)}="write"`),
         ...(sitesEnabled
-            ? [".openai", ".openai/**", ".git", ".git/**"]
+            ? [".openai", ".openai/**"]
                 .map((glob) => `${JSON.stringify(glob)}="write"`)
             : []),
         // Directory denials come last so no nested filename exception can override them.
