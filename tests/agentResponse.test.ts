@@ -528,6 +528,37 @@ test("fallback recovery retains the explicit pass read budget and never reopens 
   }
 });
 
+test("recovery has one reserved candidate after rejected markers exhaust the normal allowance", async () => {
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const generated = join(providerRoot, "generated.png");
+  writeFileSync(generated, Buffer.from("89504e470d0a1a0a00000000", "hex"));
+  for (const count of [1, 10]) {
+    const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+    await withAttachmentLimits({ count: String(count) }, async () => {
+      const response = await captureAgentArtifacts(workspace, async (run) => ({
+        content: Array.from({ length: count }, (_, index) => marker(workspace, run, `missing-${index}.png`)).join("\n"),
+        fallbackArtifacts: [{ path: generated, trustedRoot: providerRoot }],
+      }));
+      assert.deepEqual(response.attachments.map((file) => file.displayName), ["generated.png"]);
+    });
+  }
+});
+
+test("the reserved recovery candidate does not increase the attachment count", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const fallbackArtifacts = [1, 2].map((index) => {
+    const file = join(providerRoot, `${index}.png`);
+    writeFileSync(file, Buffer.from([index]));
+    return { path: file, trustedRoot: providerRoot };
+  });
+  await withAttachmentLimits({ count: "1" }, async () => {
+    const response = await captureAgentArtifacts(workspace, async () => ({ content: "Done.", fallbackArtifacts }));
+    assert.deepEqual(response.attachments.map((file) => file.displayName), ["1.png"]);
+    assert.match(response.content, /only 1 attachments/);
+  });
+});
+
 test("provider-native artifacts take priority over invalid model markers", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));

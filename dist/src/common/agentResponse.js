@@ -585,14 +585,14 @@ async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
     let processedCandidates = 0;
     const gifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
     const readBudget = { remainingBytes: maxTotalBytes };
-    const processPaths = async (paths) => {
+    const processPaths = async (paths, candidateLimit = maxAttachments) => {
         for (const requestedPath of paths) {
             const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
             const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
             if (seen.has(identity))
                 continue;
             seen.add(identity);
-            if (processedCandidates >= maxAttachments) {
+            if (processedCandidates >= candidateLimit || attachments.length >= maxAttachments) {
                 warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
                 continue;
             }
@@ -619,15 +619,19 @@ async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
     // Discovery can include intermediate images. Only recover them when no
     // selected final output is deliverable, retaining all response-wide budgets.
     if (attachments.length === 0) {
+        // One bounded recovery candidate remains available even when rejected model
+        // markers exhaust the normal candidate allowance (including a count of 1).
+        // This does not increase upload count, read bytes, or GIF decoding budgets.
+        const recoveryCandidateLimit = maxAttachments + 1;
         for (let index = 0; index < fallbackArtifacts.length; index++) {
             const artifact = fallbackArtifacts[index];
-            if (processedCandidates >= maxAttachments) {
+            if (processedCandidates >= recoveryCandidateLimit || attachments.length >= maxAttachments) {
                 warnings.push(attachmentWarning(artifact.displayName ?? artifact.path, `only ${maxAttachments} attachments are allowed per response.`));
                 break;
             }
             const imported = await importProviderArtifact(run, artifact, index);
             if (imported.marker)
-                await processPaths([imported.marker]);
+                await processPaths([imported.marker], recoveryCandidateLimit);
             if (imported.warning) {
                 processedCandidates += 1;
                 warnings.push(imported.warning);
