@@ -457,6 +457,48 @@ test("provider-native artifacts use the shared secure attachment pipeline", asyn
   assert.deepEqual(response.attachments[0].data, png);
 });
 
+test("explicit final animation excludes discovered intermediate images from the byte budget", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const fallbackArtifacts = Array.from({ length: 4 }, (_, index) => {
+    const file = join(providerRoot, `intermediate-${index}.png`);
+    writeFileSync(file, Buffer.alloc(900, index));
+    return { path: file, trustedRoot: providerRoot };
+  });
+  const encoder = gifenc.GIFEncoder();
+  encoder.writeFrame(new Uint8Array(4), 2, 2, { palette: [[0, 0, 0], [255, 255, 255]] });
+  encoder.finish();
+  await withAttachmentLimits({ totalBytes: "1000" }, async () => {
+    const response = await captureAgentArtifacts(workspace, async (run) => {
+      writeFileSync(join(run.directory, "final.gif"), encoder.bytes());
+      writeFileSync(join(run.directory, "notes.txt"), "Requested companion file.");
+      return {
+        content: `Done.\n${marker(workspace, run, "final.gif")}\n${marker(workspace, run, "notes.txt")}`,
+        fallbackArtifacts,
+      };
+    });
+    assert.deepEqual(response.attachments.map((file) => file.displayName), ["final.gif", "notes.txt"]);
+    assert.equal(response.content, "Done.");
+    assert.equal(decompressFrames(parseGIF(response.attachments[0].data), true).length, 1);
+  });
+});
+
+test("discovered images recover a response whose explicit GIF is invalid", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const generated = join(providerRoot, "generated.png");
+  writeFileSync(generated, Buffer.from("89504e470d0a1a0a00000000", "hex"));
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    writeFileSync(join(run.directory, "broken.gif"), "GIF89a-not-an-image");
+    return {
+      content: marker(workspace, run, "broken.gif"),
+      fallbackArtifacts: [{ path: generated, trustedRoot: providerRoot }],
+    };
+  });
+  assert.deepEqual(response.attachments.map((file) => file.displayName), ["generated.png"]);
+  assert.match(response.content, /broken.gif.*could not be decoded/);
+});
+
 test("provider-native artifacts take priority over invalid model markers", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));

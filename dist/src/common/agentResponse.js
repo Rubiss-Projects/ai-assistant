@@ -629,20 +629,30 @@ export async function captureAgentArtifacts(workingDirectory, operation) {
         const output = await operation(run);
         if (typeof output === "string")
             return await prepareAgentResponse(output, run);
-        const markers = [];
-        const warnings = [];
-        for (let index = 0; index < (output.artifacts?.length ?? 0); index++) {
-            const imported = await importProviderArtifact(run, output.artifacts[index], index);
-            if (imported.marker)
-                markers.push(`[[artifact:${imported.marker}]]`);
-            if (imported.warning)
-                warnings.push(imported.warning);
+        // Generated images may be intermediate inputs to a final GIF or edited
+        // image. Do not let discovery upload them or consume the final file's budget.
+        if (output.fallbackArtifacts?.length) {
+            const explicit = await prepareProviderResponse(output.content, output.artifacts ?? [], run);
+            if (explicit.attachments.length)
+                return explicit;
         }
-        // Provider-native outputs are application-authoritative and must not lose
-        // their attachment slots to invalid model-authored markers.
-        return await prepareAgentResponse([...markers, output.content, ...warnings].filter(Boolean).join("\n\n"), run);
+        const artifacts = [...(output.artifacts ?? []), ...(output.fallbackArtifacts ?? [])];
+        return await prepareProviderResponse(output.content, artifacts, run);
     }
     finally {
         removeEmptyArtifactRun(run);
     }
+}
+async function prepareProviderResponse(content, artifacts, run) {
+    const markers = [];
+    const warnings = [];
+    for (let index = 0; index < artifacts.length; index++) {
+        const imported = await importProviderArtifact(run, artifacts[index], index);
+        if (imported.marker)
+            markers.push(`[[artifact:${imported.marker}]]`);
+        if (imported.warning)
+            warnings.push(imported.warning);
+    }
+    // Recovery outputs must not lose their slots to invalid model markers.
+    return prepareAgentResponse([...markers, content, ...warnings].filter(Boolean).join("\n\n"), run);
 }

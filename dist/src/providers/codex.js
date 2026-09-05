@@ -477,7 +477,7 @@ export class CodexProvider {
                 const generatedRoot = codexGeneratedImagesRoot();
                 return {
                     content: finalResponse,
-                    artifacts: result.generatedImagePaths.map((savedPath, index) => ({
+                    fallbackArtifacts: result.generatedImagePaths.map((savedPath, index) => ({
                         path: savedPath,
                         trustedRoot: generatedRoot,
                         displayName: `generated-image-${index + 1}${path.extname(savedPath)}`,
