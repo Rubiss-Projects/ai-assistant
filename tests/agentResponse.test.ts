@@ -499,6 +499,35 @@ test("discovered images recover a response whose explicit GIF is invalid", async
   assert.match(response.content, /broken.gif.*could not be decoded/);
 });
 
+test("fallback recovery retains the explicit pass read budget and never reopens failed files", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const generated = join(providerRoot, "generated.png");
+  writeFileSync(generated, Buffer.alloc(30));
+  const originalOpen = fs.promises.open;
+  let brokenOpens = 0;
+  try {
+    fs.promises.open = (async (filePath: fs.PathLike, flags: string | number) => {
+      if (String(filePath).endsWith("broken.gif")) brokenOpens += 1;
+      return originalOpen(filePath, flags);
+    }) as typeof fs.promises.open;
+    await withAttachmentLimits({ totalBytes: "100" }, async () => {
+      const response = await captureAgentArtifacts(workspace, async (run) => {
+        writeFileSync(join(run.directory, "broken.gif"), Buffer.concat([Buffer.from("GIF89a"), Buffer.alloc(74)]));
+        return {
+          content: marker(workspace, run, "broken.gif"),
+          fallbackArtifacts: [{ path: generated, trustedRoot: providerRoot }],
+        };
+      });
+      assert.equal(brokenOpens, 1);
+      assert.equal(response.attachments.length, 0);
+      assert.match(response.content, /generated.png.*remaining 20-byte limit/);
+    });
+  } finally {
+    fs.promises.open = originalOpen;
+  }
+});
+
 test("provider-native artifacts take priority over invalid model markers", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
   const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));

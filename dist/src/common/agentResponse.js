@@ -568,7 +568,7 @@ async function importProviderArtifact(run, artifact, index) {
         await handle?.close().catch(() => { });
     }
 }
-async function prepareAgentResponse(content, run) {
+async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
     const requestedPaths = [];
     const text = content.replace(ARTIFACT_MARKER, (_marker, requestedPath) => {
         requestedPaths.push(requestedPath);
@@ -585,33 +585,54 @@ async function prepareAgentResponse(content, run) {
     let processedCandidates = 0;
     const gifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
     const readBudget = { remainingBytes: maxTotalBytes };
-    for (const requestedPath of requestedPaths) {
-        const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
-        const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
-        if (seen.has(identity))
-            continue;
-        seen.add(identity);
-        if (processedCandidates >= maxAttachments) {
-            warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
-            continue;
-        }
-        processedCandidates += 1;
-        const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readBudget);
-        if (result.attachment) {
-            const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
-            if (seenContent.has(contentIdentity))
+    const processPaths = async (paths) => {
+        for (const requestedPath of paths) {
+            const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
+            const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
+            if (seen.has(identity))
                 continue;
-            seenContent.add(contentIdentity);
-            const remainingBytes = maxTotalBytes - totalBytes;
-            if (result.attachment.data.byteLength > remainingBytes) {
-                warnings.push(attachmentWarning(requestedPath, `it exceeds the remaining ${remainingBytes}-byte limit.`));
+            seen.add(identity);
+            if (processedCandidates >= maxAttachments) {
+                warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
                 continue;
             }
-            totalBytes += result.attachment.data.byteLength;
-            attachments.push(result.attachment);
+            processedCandidates += 1;
+            const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readBudget);
+            if (result.attachment) {
+                const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
+                if (seenContent.has(contentIdentity))
+                    continue;
+                seenContent.add(contentIdentity);
+                const remainingBytes = maxTotalBytes - totalBytes;
+                if (result.attachment.data.byteLength > remainingBytes) {
+                    warnings.push(attachmentWarning(requestedPath, `it exceeds the remaining ${remainingBytes}-byte limit.`));
+                    continue;
+                }
+                totalBytes += result.attachment.data.byteLength;
+                attachments.push(result.attachment);
+            }
+            if (result.warning)
+                warnings.push(result.warning);
         }
-        if (result.warning)
-            warnings.push(result.warning);
+    };
+    await processPaths(requestedPaths);
+    // Discovery can include intermediate images. Only recover them when no
+    // selected final output is deliverable, retaining all response-wide budgets.
+    if (attachments.length === 0) {
+        for (let index = 0; index < fallbackArtifacts.length; index++) {
+            const artifact = fallbackArtifacts[index];
+            if (processedCandidates >= maxAttachments) {
+                warnings.push(attachmentWarning(artifact.displayName ?? artifact.path, `only ${maxAttachments} attachments are allowed per response.`));
+                break;
+            }
+            const imported = await importProviderArtifact(run, artifact, index);
+            if (imported.marker)
+                await processPaths([imported.marker]);
+            if (imported.warning) {
+                processedCandidates += 1;
+                warnings.push(imported.warning);
+            }
+        }
     }
     const visibleContent = [text || (attachments.length ? "📎 Attached file(s)." : "(no response)"), ...warnings]
         .filter(Boolean)
@@ -629,21 +650,13 @@ export async function captureAgentArtifacts(workingDirectory, operation) {
         const output = await operation(run);
         if (typeof output === "string")
             return await prepareAgentResponse(output, run);
-        // Generated images may be intermediate inputs to a final GIF or edited
-        // image. Do not let discovery upload them or consume the final file's budget.
-        if (output.fallbackArtifacts?.length) {
-            const explicit = await prepareProviderResponse(output.content, output.artifacts ?? [], run);
-            if (explicit.attachments.length)
-                return explicit;
-        }
-        const artifacts = [...(output.artifacts ?? []), ...(output.fallbackArtifacts ?? [])];
-        return await prepareProviderResponse(output.content, artifacts, run);
+        return await prepareProviderResponse(output.content, output.artifacts ?? [], run, output.fallbackArtifacts);
     }
     finally {
         removeEmptyArtifactRun(run);
     }
 }
-async function prepareProviderResponse(content, artifacts, run) {
+async function prepareProviderResponse(content, artifacts, run, fallbackArtifacts = []) {
     const markers = [];
     const warnings = [];
     for (let index = 0; index < artifacts.length; index++) {
@@ -653,6 +666,6 @@ async function prepareProviderResponse(content, artifacts, run) {
         if (imported.warning)
             warnings.push(imported.warning);
     }
-    // Recovery outputs must not lose their slots to invalid model markers.
-    return prepareAgentResponse([...markers, content, ...warnings].filter(Boolean).join("\n\n"), run);
+    // Authoritative provider outputs precede model markers; discovery is fallback only.
+    return prepareAgentResponse([...markers, content, ...warnings].filter(Boolean).join("\n\n"), run, fallbackArtifacts);
 }
