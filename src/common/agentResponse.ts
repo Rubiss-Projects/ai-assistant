@@ -586,7 +586,12 @@ async function importProviderArtifact(
   run: ArtifactRun,
   artifact: ProviderArtifact,
   index: number,
-  recovery?: { readBudget: AttachmentReadBudget; gifWorkBudget: GifWorkBudget; maxBytes: number },
+  recovery?: {
+    readBudget: AttachmentReadBudget;
+    outputBudget: AttachmentReadBudget;
+    gifWorkBudget: GifWorkBudget;
+    maxBytes: number;
+  },
 ): Promise<{ marker?: string; attachment?: ResponseAttachment; warning?: string }> {
   const requestedName = artifact.displayName ?? (path.basename(artifact.path) || `provider-artifact-${index + 1}`);
   let canonicalRoot: string;
@@ -642,6 +647,14 @@ async function importProviderArtifact(
     const normalized = recovery
       ? normalizeOutputAttachment(data, safeDisplayName(requestedName), maxBytes, recovery.gifWorkBudget)
       : normalizePreviewableImage(data, safeDisplayName(requestedName));
+    if (recovery) {
+      if (normalized.data.length > recovery.outputBudget.remainingBytes) {
+        return { warning: attachmentWarning(requestedName, `it exceeds the remaining ${recovery.outputBudget.remainingBytes}-byte output limit.`) };
+      }
+      // Charge all retained imports, including copies later deduplicated for
+      // delivery. Expanded GIFs must fit before anything is written to disk.
+      recovery.outputBudget.remainingBytes -= normalized.data.length;
+    }
     const baseName = safeDisplayName(normalized.displayName);
     const destinationName = fs.existsSync(path.join(run.directory, baseName)) ? `${index + 1}-${baseName}` : baseName;
     const destination = path.join(run.directory, destinationName);
@@ -732,6 +745,7 @@ async function prepareAgentResponse(
   // Discovery can include intermediate images. Only recover them when no
   // selected final output is deliverable, retaining all response-wide budgets.
   if (attachments.length === 0) {
+    const outputBudget: AttachmentReadBudget = { remainingBytes: maxTotalBytes };
     // One bounded recovery candidate remains available even when rejected model
     // markers exhaust the normal candidate allowance (including a count of 1).
     // This does not increase upload count, read bytes, or GIF decoding budgets.
@@ -743,7 +757,7 @@ async function prepareAgentResponse(
         break;
       }
       processedCandidates += 1;
-      const imported = await importProviderArtifact(run, artifact, index, { readBudget, gifWorkBudget, maxBytes });
+      const imported = await importProviderArtifact(run, artifact, index, { readBudget, outputBudget, gifWorkBudget, maxBytes });
       acceptResult(imported);
     }
   }

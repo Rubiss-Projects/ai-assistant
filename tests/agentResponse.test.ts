@@ -562,6 +562,38 @@ test("fallback bytes are read once and oversized later imports are not retained"
   }
 });
 
+test("expanded fallback GIFs are bounded before persistence even when delivery deduplicates them", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "agent-artifact-"));
+  const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
+  const original = Buffer.from(
+    "R0lGODlhAgABAPAAAP8AAAAA/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQABBAgIACH5BAAUAAAALAAAAAACAAEAgP8AAAAA/wgFAAMACAgAOw==",
+    "base64",
+  );
+  // Tiny partial frames expand into full 64x64 frames during normalization.
+  original.writeUInt16LE(64, 6);
+  original.writeUInt16LE(64, 8);
+  const normalizedSize = normalizeGifForDiscord(original, "animation.gif", 100_000).data.length;
+  const totalBytes = normalizedSize * 2;
+  assert.ok(original.length * 3 < totalBytes);
+  const fallbackArtifacts = [1, 2, 3].map((index) => {
+    const file = join(providerRoot, `${index}.gif`);
+    writeFileSync(file, original);
+    return { path: file, trustedRoot: providerRoot };
+  });
+  let runDirectory = "";
+  await withAttachmentLimits({ totalBytes: String(totalBytes) }, async () => {
+    const response = await captureAgentArtifacts(workspace, async (run) => {
+      runDirectory = run.directory;
+      return { content: "Done.", fallbackArtifacts };
+    });
+    assert.equal(response.attachments.length, 1);
+    assert.deepEqual(fs.readdirSync(runDirectory).sort(), ["1.gif", "2.gif"]);
+    const retainedBytes = fs.readdirSync(runDirectory).reduce((sum, name) => sum + fs.statSync(join(runDirectory, name)).size, 0);
+    assert.equal(retainedBytes, totalBytes);
+    assert.match(response.content, /3.gif.*remaining 0-byte output limit/);
+  });
+});
+
 test("recovery has one reserved candidate after rejected markers exhaust the normal allowance", async () => {
   const providerRoot = mkdtempSync(join(tmpdir(), "provider-output-"));
   const generated = join(providerRoot, "generated.png");
