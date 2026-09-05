@@ -586,7 +586,8 @@ async function importProviderArtifact(
   run: ArtifactRun,
   artifact: ProviderArtifact,
   index: number,
-): Promise<{ marker?: string; warning?: string }> {
+  recovery?: { readBudget: AttachmentReadBudget; gifWorkBudget: GifWorkBudget; maxBytes: number },
+): Promise<{ marker?: string; attachment?: ResponseAttachment; warning?: string }> {
   const requestedName = artifact.displayName ?? (path.basename(artifact.path) || `provider-artifact-${index + 1}`);
   let canonicalRoot: string;
   let canonicalSource: string;
@@ -607,7 +608,7 @@ async function importProviderArtifact(
   } catch {
     return { warning: attachmentWarning(requestedName, "the provider output does not exist.") };
   }
-  const maxBytes = boundedConfiguration(
+  const maxBytes = recovery?.maxBytes ?? boundedConfiguration(
     "AI_OUTPUT_ATTACHMENT_MAX_BYTES",
     DEFAULT_MAX_ATTACHMENT_BYTES,
     ABSOLUTE_MAX_TOTAL_BYTES,
@@ -617,6 +618,9 @@ async function importProviderArtifact(
   }
   if (beforeOpen.size > maxBytes) {
     return { warning: attachmentWarning(requestedName, `it exceeds the configured ${maxBytes}-byte limit.`) };
+  }
+  if (recovery && beforeOpen.size > recovery.readBudget.remainingBytes) {
+    return { warning: attachmentWarning(requestedName, `it exceeds the remaining ${recovery.readBudget.remainingBytes}-byte limit.`) };
   }
 
   let handle: fs.promises.FileHandle | undefined;
@@ -628,18 +632,24 @@ async function importProviderArtifact(
       || opened.size !== beforeOpen.size || opened.nlink !== 1) {
       return { warning: attachmentWarning(requestedName, "the provider output changed while it was being opened.") };
     }
+    if (recovery) recovery.readBudget.remainingBytes -= opened.size;
     const data = await handle.readFile();
     if (data.byteLength !== opened.size) {
       return { warning: attachmentWarning(requestedName, "the provider output changed while it was being read.") };
     }
-    // The imported marker is loaded through normalizeOutputAttachment below;
-    // only unwrap SVG shells here so GIFs are decoded and re-encoded exactly once.
-    const normalized = normalizePreviewableImage(data, safeDisplayName(requestedName));
+    // Recovery uses these bytes directly, avoiding a second disk read or decode.
+    // Authoritative imports are still normalized when their marker is loaded.
+    const normalized = recovery
+      ? normalizeOutputAttachment(data, safeDisplayName(requestedName), maxBytes, recovery.gifWorkBudget)
+      : normalizePreviewableImage(data, safeDisplayName(requestedName));
     const baseName = safeDisplayName(normalized.displayName);
     const destinationName = fs.existsSync(path.join(run.directory, baseName)) ? `${index + 1}-${baseName}` : baseName;
     const destination = path.join(run.directory, destinationName);
     await fs.promises.writeFile(destination, normalized.data, { flag: "wx", mode: 0o600 });
-    return { marker: path.relative(run.workingDirectory, destination) };
+    return {
+      marker: path.relative(run.workingDirectory, destination),
+      attachment: recovery ? { data: normalized.data, displayName: destinationName } : undefined,
+    };
   } catch (error) {
     if (path.extname(requestedName).toLowerCase() === ".gif") {
       return { warning: attachmentWarning(requestedName, `the provider GIF could not be decoded safely (${String(error)}).`) };
@@ -685,32 +695,36 @@ async function prepareAgentResponse(
   const gifWorkBudget: GifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
   const readBudget: AttachmentReadBudget = { remainingBytes: maxTotalBytes };
 
-  const processPaths = async (paths: string[], candidateLimit = maxAttachments): Promise<void> => {
+  const acceptResult = (result: { attachment?: ResponseAttachment; warning?: string }): void => {
+    if (result.attachment) {
+      const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
+      if (seenContent.has(contentIdentity)) return;
+      seenContent.add(contentIdentity);
+      const remainingBytes = maxTotalBytes - totalBytes;
+      if (result.attachment.data.byteLength > remainingBytes) {
+        warnings.push(attachmentWarning(result.attachment.displayName, `it exceeds the remaining ${remainingBytes}-byte limit.`));
+        return;
+      }
+      totalBytes += result.attachment.data.byteLength;
+      attachments.push(result.attachment);
+    }
+    if (result.warning) warnings.push(result.warning);
+  };
+
+  const processPaths = async (paths: string[]): Promise<void> => {
     for (const requestedPath of paths) {
       const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
       const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
       if (seen.has(identity)) continue;
       seen.add(identity);
-      if (processedCandidates >= candidateLimit || attachments.length >= maxAttachments) {
+      if (processedCandidates >= maxAttachments || attachments.length >= maxAttachments) {
         warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
         continue;
       }
       processedCandidates += 1;
 
       const result = await loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readBudget);
-      if (result.attachment) {
-        const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
-        if (seenContent.has(contentIdentity)) continue;
-        seenContent.add(contentIdentity);
-        const remainingBytes = maxTotalBytes - totalBytes;
-        if (result.attachment.data.byteLength > remainingBytes) {
-          warnings.push(attachmentWarning(requestedPath, `it exceeds the remaining ${remainingBytes}-byte limit.`));
-          continue;
-        }
-        totalBytes += result.attachment.data.byteLength;
-        attachments.push(result.attachment);
-      }
-      if (result.warning) warnings.push(result.warning);
+      acceptResult(result);
     }
   };
   await processPaths(requestedPaths);
@@ -728,18 +742,9 @@ async function prepareAgentResponse(
         warnings.push(attachmentWarning(artifact.displayName ?? artifact.path, `only ${maxAttachments} attachments are allowed per response.`));
         break;
       }
-      const imported = await importProviderArtifact(run, artifact, index);
-      if (imported.marker) {
-        // A successful import exclusively creates a new file. An earlier
-        // missing-file marker may have reserved its path before it existed.
-        const importedIdentity = path.resolve(run.workingDirectory, imported.marker);
-        seen.delete(process.platform === "win32" ? importedIdentity.toLowerCase() : importedIdentity);
-        await processPaths([imported.marker], recoveryCandidateLimit);
-      }
-      if (imported.warning) {
-        processedCandidates += 1;
-        warnings.push(imported.warning);
-      }
+      processedCandidates += 1;
+      const imported = await importProviderArtifact(run, artifact, index, { readBudget, gifWorkBudget, maxBytes });
+      acceptResult(imported);
     }
   }
 
