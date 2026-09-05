@@ -21,7 +21,7 @@ FROM node:20-bookworm-slim AS runtime
 
 ARG VERSION=dev
 ARG REVISION=unknown
-ARG OPENCODE_VERSION=1.18.25
+ARG OPENCODE_VERSION=1.18.29
 LABEL org.opencontainers.image.title="AI Assistant" \
       org.opencontainers.image.description="Sandboxed Discord AI assistant" \
       org.opencontainers.image.source="https://github.com/Rubiss-Projects/ai-assistant" \
