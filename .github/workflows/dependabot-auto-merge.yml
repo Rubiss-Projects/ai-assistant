@@ -9,13 +9,24 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'Rubiss-Projects/ai-assistant'
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'Rubiss-Projects/ai-assistant' && github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - name: Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98
-        with:
-          github-token: '${{ secrets.GITHUB_TOKEN }}'
+      - name: Check merge credential for workflow changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTOMERGE_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          WORKFLOWS=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" \
+            | jq -s 'add | any(.[]; .filename | startswith(".github/workflows/"))')
+          echo "workflows=$WORKFLOWS" >> "$GITHUB_OUTPUT"
+          if [[ "$WORKFLOWS" == "true" && -z "$AUTOMERGE_TOKEN" ]]; then
+            echo "::error::Workflow updates require the Dependabot secret DEPENDABOT_AUTOMERGE_TOKEN with Contents, Pull requests, and Workflows write permissions. See .github/README.md."
+            exit 1
+          fi
 
       - name: Approve PR
         run: gh pr review --approve "$PR_URL"
@@ -24,7 +35,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge (rebase)
-        run: gh pr merge --auto --rebase "$PR_URL"
+        run: gh pr merge --auto --rebase --match-head-commit "$PR_HEAD_SHA" "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # GITHUB_TOKEN has no workflows permission, even with contents: write.
+          GH_TOKEN: ${{ steps.changes.outputs.workflows == 'true' && secrets.DEPENDABOT_AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
