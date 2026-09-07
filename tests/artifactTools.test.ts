@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { mkdtemp, writeFile, readFile, rm, symlink, link } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, rm, symlink, link } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -192,5 +192,59 @@ test("registration accepts a delivery extension for unnamed downloads and preser
   await writeFile(wrapper, `<svg><image href="data:image/png;base64,${raster.toString("base64")}"/></svg>`);
   const image = await runtime.call("attach_file", { run_id: runtime.id, path: wrapper, filename: "picture.svg" }) as { filename: string };
   assert.equal(image.filename, "picture.png");
+  await runtime.close();
+});
+
+test("run completion deletes staged/downloaded inputs but retains registered output copies", async (t) => {
+  const workspace = await fixture(t);
+  const original = path.join(workspace, "upload.txt");
+  await writeFile(original, "original upload");
+  const transients: string[] = [];
+  let outputDirectory = "";
+  const response = await captureAgentArtifacts(workspace, async (run) => {
+    outputDirectory = run.directory;
+    const runtime = new ArtifactTools(run, undefined, async () => ({ data: Buffer.from("download"), filename: "download.txt", contentType: "text/plain" }));
+    transients.push((await runtime.stageInputs([{ path: original, kind: "file" }]))[0].path);
+    const fetched = await runtime.call("fetch_artifact", { run_id: runtime.id, url: "https://example.com/file" }) as { path: string };
+    transients.push(fetched.path);
+    await runtime.call("attach_file", { run_id: runtime.id, path: fetched.path, filename: "result.txt" });
+    return "Done";
+  });
+  for (const file of transients) await assert.rejects(readFile(file), { code: "ENOENT" });
+  assert.equal((await readFile(original)).toString(), "original upload");
+  assert.equal(response.attachments[0].data.toString(), "download");
+  const retained = await readdir(outputDirectory);
+  assert.equal(retained.length, 1);
+  assert.equal((await readFile(path.join(outputDirectory, retained[0]))).toString(), "download");
+});
+
+test("failed and cancelled runs clean inputs, and legacy markers are read before cleanup", async (t) => {
+  const workspace = await fixture(t);
+  for (const fail of [false, true]) {
+    let transient = "";
+    const response = captureAgentArtifacts(workspace, async (run) => {
+      const runtime = new ArtifactTools(run, undefined, async () => ({ data: Buffer.from("legacy download"), filename: "download.txt", contentType: "text/plain" }));
+      transient = (await runtime.call("fetch_artifact", { run_id: runtime.id, url: "https://example.com/file" }) as { path: string }).path;
+      await runtime.cancel();
+      if (fail) throw new Error("provider cancelled");
+      return `Done\n[[artifact:${transient}]]`;
+    });
+    if (fail) await assert.rejects(response, /provider cancelled/);
+    else assert.equal((await response).attachments[0].data.toString(), "legacy download");
+    await assert.rejects(readFile(transient), { code: "ENOENT" });
+  }
+});
+
+test("a fetched SVG wrapper keeps its normalized PNG extension when registered", async (t) => {
+  const workspace = await fixture(t);
+  const raster = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  const svg = Buffer.from(`<svg><image href="data:image/png;base64,${raster.toString("base64")}"/></svg>`);
+  const runtime = new ArtifactTools(createArtifactRun(workspace), undefined,
+    async () => ({ data: svg, filename: "wrapped.svg", contentType: "image/svg+xml" }));
+  const fetched = await runtime.call("fetch_artifact", { run_id: runtime.id, url: "https://example.com/wrapped.svg" }) as { path: string; filename: string };
+  assert.equal(fetched.filename, "wrapped.png");
+  const result = await runtime.call("attach_file", { run_id: runtime.id, path: fetched.path, filename: "picture.svg" }) as { filename: string };
+  assert.equal(result.filename, "picture.png");
+  assert.deepEqual(runtime.run.registeredAttachments![0].data, raster);
   await runtime.close();
 });

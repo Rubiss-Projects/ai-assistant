@@ -35,6 +35,7 @@ export interface ArtifactRun {
   directory: string;
   relativeDirectory: string;
   registeredAttachments?: ResponseAttachment[];
+  cleanup?: () => Promise<void>;
 }
 
 export interface ProviderArtifact {
@@ -823,6 +824,7 @@ export async function captureAgentArtifacts(
 
     return await prepareProviderResponse(output.content, output.artifacts ?? [], run, output.fallbackArtifacts);
   } finally {
+    await run.cleanup?.();
     removeEmptyArtifactRun(run);
   }
 }
