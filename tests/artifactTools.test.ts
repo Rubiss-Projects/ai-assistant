@@ -178,3 +178,19 @@ test("text mode accepts raster signatures with generic MIME types and rejects bi
   await assert.rejects(runtime.call("fetch_artifact", { run_id: runtime.id, url: "https://example.com/binary" }), /raster images only/);
   await runtime.close();
 });
+
+test("registration accepts a delivery extension for unnamed downloads and preserves raster normalization", async (t) => {
+  const workspace = await fixture(t);
+  const run = createArtifactRun(workspace);
+  const runtime = new ArtifactTools(run);
+  const unnamed = path.join(run.directory, "download");
+  await writeFile(unnamed, "report");
+  const named = await runtime.call("attach_file", { run_id: runtime.id, path: unnamed, filename: "report.txt" }) as { filename: string };
+  assert.equal(named.filename, "report.txt");
+  const raster = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  const wrapper = path.join(run.directory, "image.svg");
+  await writeFile(wrapper, `<svg><image href="data:image/png;base64,${raster.toString("base64")}"/></svg>`);
+  const image = await runtime.call("attach_file", { run_id: runtime.id, path: wrapper, filename: "picture.svg" }) as { filename: string };
+  assert.equal(image.filename, "picture.png");
+  await runtime.close();
+});

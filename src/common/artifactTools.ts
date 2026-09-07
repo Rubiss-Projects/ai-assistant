@@ -106,9 +106,10 @@ export class ArtifactTools {
     if (this.run.registeredAttachments.length >= limits.count) throw new Error(`Only ${limits.count} attachments fit in a response.`);
     if (this.run.registeredAttachments.reduce((total, item) => total + item.data.length, 0) + attachment.data.length > limits.bytes) throw new Error(`Response attachments exceed ${limits.bytes} bytes.`);
     const safeName = artifactFilename(filename ?? this.filenames.get(source.file) ?? attachment.displayName);
-    // Preserve normalization's extension (e.g. a raster wrapped in SVG becomes PNG).
+    // Preserve an extension changed by normalization (e.g. SVG → PNG), but let
+    // callers name extensionless/generic downloads for their intended delivery.
     const extension = path.extname(attachment.displayName);
-    attachment.displayName = path.extname(safeName).toLowerCase() === extension.toLowerCase() ? safeName : `${path.parse(safeName).name}${extension}`;
+    attachment.displayName = path.extname(source.file).toLowerCase() === extension.toLowerCase() ? safeName : `${path.parse(safeName).name}${extension}`;
     const saved = await this.save(attachment.data, attachment.displayName, "application/octet-stream");
     this.controller.signal.throwIfAborted();
     this.run.registeredAttachments.push(attachment);
