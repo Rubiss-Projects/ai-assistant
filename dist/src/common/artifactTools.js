@@ -23,6 +23,8 @@ export class ArtifactTools {
     registered = new Map();
     validationBudget = artifactValidationBudget();
     filenames = new Map();
+    normalizedExtensions = new Map();
+    transientFiles = new Set();
     retained = 0;
     providerSourceRoot;
     constructor(run, options, download = fetchPublicArtifact) {
@@ -30,8 +32,23 @@ export class ArtifactTools {
         this.options = options;
         this.download = download;
         this.id = path.basename(run.directory);
+        run.cleanup = () => this.close();
     }
-    async close() { this.controller.abort(); await this.queue.catch(() => { }); }
+    async cancel() { this.controller.abort(); await this.queue.catch(() => { }); }
+    async close() {
+        await this.cancel();
+        for (const file of this.transientFiles) {
+            // Never recursively delete an agent-writable directory. Check the complete
+            // path and unlink only files created by this run's staging operations.
+            if (!workspacePathIsAllowed(this.run.workingDirectory, file))
+                continue;
+            await fs.unlink(file).catch((error) => {
+                if (error.code !== "ENOENT")
+                    console.warn("[artifacts] Could not remove a transient input:", error);
+            });
+        }
+        this.transientFiles.clear();
+    }
     call(name, args) {
         const operation = this.queue.catch(() => { }).then(async () => {
             this.controller.signal.throwIfAborted();
@@ -74,7 +91,7 @@ export class ArtifactTools {
         }
         return staged;
     }
-    async save(data, name, contentType) {
+    async save(data, name, contentType, retain = false) {
         this.controller.signal.throwIfAborted();
         if (++this.retained > 20 || this.downloadedBytes + data.length > inputByteLimit() * 2)
             throw new Error("This response's input storage budget is exhausted.");
@@ -83,7 +100,12 @@ export class ArtifactTools {
         const normalized = normalizePreviewableImage(data, artifactFilename(name));
         const filePath = path.join(this.run.directory, `${randomUUID()}-${normalized.displayName}`);
         await fs.writeFile(filePath, normalized.data, { flag: "wx", mode: 0o600 });
+        if (!retain)
+            this.transientFiles.add(filePath);
         this.filenames.set(filePath, normalized.displayName);
+        if (path.extname(normalized.displayName).toLowerCase() !== path.extname(name).toLowerCase()) {
+            this.normalizedExtensions.set(filePath, path.extname(normalized.displayName));
+        }
         this.downloadedBytes += normalized.data.length;
         return { artifact_id: path.basename(filePath), path: filePath, filename: normalized.displayName, bytes: normalized.data.length, content_type: contentType };
     }
@@ -124,8 +146,10 @@ export class ArtifactTools {
         // Preserve an extension changed by normalization (e.g. SVG → PNG), but let
         // callers name extensionless/generic downloads for their intended delivery.
         const extension = path.extname(attachment.displayName);
-        attachment.displayName = path.extname(source.file).toLowerCase() === extension.toLowerCase() ? safeName : `${path.parse(safeName).name}${extension}`;
-        const saved = await this.save(attachment.data, attachment.displayName, "application/octet-stream");
+        const normalizedExtension = this.normalizedExtensions.get(source.file)
+            ?? (path.extname(source.file).toLowerCase() !== extension.toLowerCase() ? extension : undefined);
+        attachment.displayName = normalizedExtension ? `${path.parse(safeName).name}${normalizedExtension}` : safeName;
+        const saved = await this.save(attachment.data, attachment.displayName, "application/octet-stream", true);
         this.controller.signal.throwIfAborted();
         this.run.registeredAttachments.push(attachment);
         const result = { artifact_id: saved.artifact_id, filename: attachment.displayName, bytes: attachment.data.length, status: "ready" };

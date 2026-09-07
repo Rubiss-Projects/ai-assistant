@@ -62,7 +62,9 @@ class ArtifactConnection {
     await this.ready;
     this.runs.set(runtime.id, runtime);
     try { return await action(); }
-    finally { this.runs.delete(runtime.id); await runtime.close(); }
+    // Revoke tools now. captureAgentArtifacts cleans transient files after it
+    // has read legacy markers too, so compatibility delivery can still use them.
+    finally { this.runs.delete(runtime.id); await runtime.cancel(); }
   }
 
   async close(): Promise<void> {

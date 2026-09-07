@@ -707,6 +707,7 @@ export async function captureAgentArtifacts(workingDirectory, operation) {
         return await prepareProviderResponse(output.content, output.artifacts ?? [], run, output.fallbackArtifacts);
     }
     finally {
+        await run.cleanup?.();
         removeEmptyArtifactRun(run);
     }
 }

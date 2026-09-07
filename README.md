@@ -358,8 +358,9 @@ after an `attach_file` attempt, even if it failed. Legacy `[[artifact:...]]`
 markers and provider image discovery remain a compatibility fallback for turns
 that never call `attach_file`. Registered files survive in the ignored
 `ai-assistant-artifacts/<run_id>/` workspace directory, and their in-memory
-delivery bytes cannot change after registration. Input workspace copies are also
-retained there; operators should periodically clean up old turn directories.
+delivery bytes cannot change after registration. Staged uploads, URL downloads,
+and tool intermediates are removed after response preparation, including failed
+and cancelled runs. Operators can periodically remove old retained output directories.
 `ready` means staged, not uploaded: the bot owns delivery and reports Discord
 upload failures separately from the text response.
 
