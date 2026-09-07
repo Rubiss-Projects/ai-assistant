@@ -91,7 +91,7 @@ export class ArtifactTools {
         }
         return staged;
     }
-    async save(data, name, contentType, retain = false) {
+    async save(data, name, contentType) {
         this.controller.signal.throwIfAborted();
         if (++this.retained > 20 || this.downloadedBytes + data.length > inputByteLimit() * 2)
             throw new Error("This response's input storage budget is exhausted.");
@@ -100,8 +100,7 @@ export class ArtifactTools {
         const normalized = normalizePreviewableImage(data, artifactFilename(name));
         const filePath = path.join(this.run.directory, `${randomUUID()}-${normalized.displayName}`);
         await fs.writeFile(filePath, normalized.data, { flag: "wx", mode: 0o600 });
-        if (!retain)
-            this.transientFiles.add(filePath);
+        this.transientFiles.add(filePath);
         this.filenames.set(filePath, normalized.displayName);
         if (path.extname(normalized.displayName).toLowerCase() !== path.extname(name).toLowerCase()) {
             this.normalizedExtensions.set(filePath, path.extname(normalized.displayName));
@@ -149,9 +148,10 @@ export class ArtifactTools {
         const normalizedExtension = this.normalizedExtensions.get(source.file)
             ?? (path.extname(source.file).toLowerCase() !== extension.toLowerCase() ? extension : undefined);
         attachment.displayName = normalizedExtension ? `${path.parse(safeName).name}${normalizedExtension}` : safeName;
-        const saved = await this.save(attachment.data, attachment.displayName, "application/octet-stream", true);
+        const saved = await this.save(attachment.data, attachment.displayName, "application/octet-stream");
         this.controller.signal.throwIfAborted();
         this.run.registeredAttachments.push(attachment);
+        this.transientFiles.delete(saved.path);
         const result = { artifact_id: saved.artifact_id, filename: attachment.displayName, bytes: attachment.data.length, status: "ready" };
         this.registered.set(identity, result);
         return result;

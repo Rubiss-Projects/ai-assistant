@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import fs from "node:fs/promises";
 import { mkdtemp, writeFile, readFile, readdir, rm, symlink, link } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -247,4 +248,21 @@ test("a fetched SVG wrapper keeps its normalized PNG extension when registered",
   assert.equal(result.filename, "picture.png");
   assert.deepEqual(runtime.run.registeredAttachments![0].data, raster);
   await runtime.close();
+});
+
+test("cancellation during output copying removes the unregistered snapshot", async (t) => {
+  const workspace = await fixture(t);
+  const source = path.join(workspace, "output.txt");
+  await writeFile(source, "cancelled output");
+  const runtime = new ArtifactTools(createArtifactRun(workspace));
+  const originalWrite = fs.writeFile;
+  t.mock.method(fs, "writeFile", async (...args: Parameters<typeof fs.writeFile>) => {
+    await originalWrite(...args);
+    runtime.controller.abort();
+  });
+  await assert.rejects(runtime.call("attach_file", { run_id: runtime.id, path: source }), { name: "AbortError" });
+  assert.deepEqual(runtime.run.registeredAttachments, []);
+  await runtime.close();
+  assert.deepEqual(await readdir(runtime.run.directory), []);
+  assert.equal(await readFile(source, "utf8"), "cancelled output");
 });

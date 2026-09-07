@@ -81,6 +81,7 @@ export async function downloadFileAttachments(attachments) {
             warnings.push(`Only ${MAX_FILE_COUNT} input attachments are accepted per message.`);
             break;
         }
+        count++;
         if (attachment.size !== undefined && attachment.size > maxBytes) {
             warnings.push(`${attachment.name}: exceeds the ${maxBytes}-byte input limit.`);
             continue;
@@ -145,7 +146,6 @@ export async function downloadFileAttachments(attachments) {
                     ...(binary ? { binary: true } : {}),
                 });
             }
-            count++;
         }
         catch (err) {
             warnings.push(`${attachment.name}: ${err instanceof Error ? err.message : "download failed"}`);
