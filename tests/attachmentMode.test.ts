@@ -84,3 +84,18 @@ test("raster-wrapped inbound SVGs become native image inputs", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("rejected binary and failed downloads still consume the input count budget", async (t) => {
+  const originalMode = process.env.DISCORD_ATTACHMENT_MODE;
+  t.after(() => { if (originalMode === undefined) delete process.env.DISCORD_ATTACHMENT_MODE; else process.env.DISCORD_ATTACHMENT_MODE = originalMode; });
+  process.env.DISCORD_ATTACHMENT_MODE = "text";
+  const fetchMock = t.mock.method(globalThis, "fetch", async (url: string) =>
+    new Response("binary", { status: url.endsWith("0") ? 403 : 200 }));
+  const inputs = Array.from({ length: 30 }, (_, index) => ({
+    url: `https://cdn.discordapp.com/video/${index}`, contentType: "video/mp4", name: "video.mp4",
+  }));
+  const result = await downloadFileAttachments([inputs[0], ...inputs]);
+  assert.equal(fetchMock.mock.callCount(), 5);
+  assert.deepEqual(result.attachments, []);
+  assert.match(result.warnings.at(-1)!, /Only 5 input attachments/);
+});
