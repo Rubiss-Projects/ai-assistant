@@ -1,10 +1,9 @@
-import { Client, Embed, GuildChannel, PermissionFlagsBits, TextChannel, NewsChannel, ThreadChannel, VoiceChannel } from "discord.js";
+import { Client, Embed } from "discord.js";
+import { readArtifactMessage } from "./artifactMessage.js";
 
 // Matches https://discord.com/channels/{guildId}/{channelId}/{messageId}
 const MESSAGE_URL_RE =
-  /https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+)/g;
-
-type ReadableChannel = TextChannel | NewsChannel | ThreadChannel | VoiceChannel;
+  /https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(\d+|@me)\/(\d+)\/(\d+)/g;
 
 /**
  * Serialises Discord rich embeds (e.g. Sonarr / bot notifications) into
@@ -49,36 +48,21 @@ export async function resolveMessageLinks(
   client: Client,
   requestingUserId?: string,
   contextAttachments: Array<{ url: string; contentType: string | null; name: string; size?: number }> = [],
+  canIncludeAuthor: (author: string) => boolean = () => true,
 ): Promise<string> {
   const matches = [...content.matchAll(MESSAGE_URL_RE)];
   if (matches.length === 0) return content;
 
   const contextBlocks: string[] = [];
 
-  for (const match of matches) {
+  for (const match of matches.slice(0, 10)) {
     const [, , channelId, messageId] = match;
     const url = match[0];
 
     try {
-      const channel = await client.channels.fetch(channelId);
-
-      if (!channel || !("messages" in channel)) {
-        contextBlocks.push(`[Could not fetch ${url}: channel not accessible or not a text channel]`);
-        continue;
-      }
-
-      // Permission check: verify the *requesting user* can view the channel.
-      // This prevents the bot's elevated credentials from being used to read
-      // content the requester isn't allowed to see.
-      if (requestingUserId && "permissionsFor" in channel) {
-        const perms = (channel as GuildChannel).permissionsFor(requestingUserId);
-        if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
-          contextBlocks.push(`[Could not fetch ${url}: you don't have permission to view that channel]`);
-          continue;
-        }
-      }
-
-      const msg = await (channel as ReadableChannel).messages.fetch(messageId);
+      if (!requestingUserId) throw new Error("Discord message lookup requires a requesting user.");
+      const msg = await readArtifactMessage(client, requestingUserId, url, canIncludeAuthor);
+      const channel = msg.channel;
       contextAttachments.push(...msg.attachments.values());
 
       const date = msg.createdAt.toISOString().split("T")[0];

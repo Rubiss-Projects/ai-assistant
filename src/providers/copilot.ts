@@ -6,6 +6,7 @@ import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
+import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
 import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -72,7 +73,7 @@ export function createCopilotPermissionHandler(workingDirectory: string): Permis
           ? { kind: "approve-once" }
           : reject("Writes are limited to non-sensitive files in the assigned workspace.");
       case "mcp":
-        return request.readOnly
+        return request.serverName === "artifact_tools" || request.readOnly
           ? { kind: "approve-once" }
           : reject("Mutating connector and MCP tools are disabled for Discord sessions.");
       case "url":
@@ -202,6 +203,7 @@ async function sendUntilIdle(
  * `UnsupportedError`.
  */
 export class CopilotProvider implements Provider {
+  private artifactTools = new ArtifactToolSessions();
   readonly name = "copilot" as const;
   readonly displayName = "GitHub Copilot";
 
@@ -243,6 +245,7 @@ export class CopilotProvider implements Provider {
     // Workspace MCP configuration may contain stdio commands. Loading it in shared mode
     // would execute repository-controlled code before the permission handler can intervene.
     const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
+    mcpServers.artifact_tools = { ...(await this.artifactTools.config(key)), type: "local", tools: ["*"], timeout: 960_000 };
     const configuredPrompt = providerSystemPrompt();
     const sessionConfig: SessionConfigBase = shared
       ? {
@@ -380,25 +383,22 @@ export class CopilotProvider implements Provider {
   ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
-      const attachments = imagePaths?.map((a) => ({
-        type: "file" as const,
-        path: a.path,
-        ...(a.displayName ? { displayName: a.displayName } : {}),
-      }));
       return this.withLiveSession(userId, async (session) => {
         try {
           const workingDirectory = this.sessionWorkingDirectories.get(userId)
             ?? this.workingDirOverrides.get(userId)
             ?? ensureProviderWorkingDirectory();
-          return await captureAgentArtifacts(workingDirectory, (artifactRun) =>
-            sendUntilIdle(
+          return await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
+            const attachments = staged.filter((file) => !file.binary).map((file) => ({ type: "file" as const, path: file.path, displayName: file.displayName }));
+            return sendUntilIdle(
               session,
               {
-                prompt: withArtifactOutputPrompt(prompt, artifactRun),
+                prompt: withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun),
                 ...(attachments?.length ? { attachments } : {}),
               },
               options,
-            )
+            );
+          })
           );
         } catch (error) {
           if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
@@ -543,6 +543,7 @@ export class CopilotProvider implements Provider {
   }
 
   async resetSession(key: string): Promise<void> {
+    await this.artifactTools.reset(key);
     const session = this.sessions.get(key);
     const storedSessionId = this.store.get(key);
 
@@ -638,6 +639,7 @@ export class CopilotProvider implements Provider {
   }
 
   async shutdown(): Promise<void> {
+    await this.artifactTools.shutdown();
     const allSessions = Array.from(this.sessions.values());
     this.sessions.clear();
     this.sessionWorkingDirectories.clear();

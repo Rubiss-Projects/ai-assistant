@@ -30,7 +30,7 @@ LABEL org.opencontainers.image.title="AI Assistant" \
 
 # These are useful agent tools. Additional tools can be added in a derived image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep \
+    && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global "opencode-ai@${OPENCODE_VERSION}" \
     && npm cache clean --force \

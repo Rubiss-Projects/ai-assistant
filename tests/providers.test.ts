@@ -142,6 +142,29 @@ test("Codex rejects oversized text attachments before invoking a turn", async ()
   }
 });
 
+test("Codex receives a readable binary input path instead of UTF-8 video contents", async () => {
+  const { readFileSync } = await import("node:fs");
+  const codex = new CodexProvider();
+  const workspace = mkdtempSync(join(tmpdir(), "codex-binary-"));
+  const input = join(workspace, "video.mp4");
+  const video = Buffer.from([0, 255, 128, 0, 24, 102, 116, 121, 112]);
+  writeFileSync(input, video);
+  const internal = codex as unknown as { sessions: Map<string, unknown>; workingDirOverrides: Map<string, string> };
+  internal.workingDirOverrides.set("binary", workspace);
+  internal.sessions.set("binary", { id: "binary-thread", run: async (prompt: string) => {
+    const inventory = JSON.parse(prompt.match(/\n(\[\{"filename".*\])\n<\/artifact-inputs>/)![1]);
+    assert.equal(inventory[0].binary, true);
+    assert.notEqual(inventory[0].path, input);
+    assert.deepEqual(readFileSync(inventory[0].path), video);
+    assert.ok(!prompt.includes("\ufffd"));
+    return { finalResponse: "Input received", items: [] };
+  } });
+  try {
+    const result = await codex.sendMessage("binary", "convert this", [{ path: input, displayName: "video.mp4", kind: "file", binary: true }]);
+    assert.equal(result.content, "Input received");
+  } finally { await codex.shutdown(); }
+});
+
 test("Codex captures completed image-generation paths without an artifact marker", async () => {
   const previousHome = process.env.CODEX_HOME;
   const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
@@ -196,7 +219,7 @@ test("Codex delivers the selected final artifact instead of discovered intermedi
     internal.sessions.set("selected-output", {
       id: "thread-final",
       runStreamed: async (input: string) => {
-        const directory = input.match(/outputs only under (.+?)\/ and/)![1];
+        const directory = input.match(/Save outputs under (.+?)\/\./)![1];
         writeFileSync(join(workspace, directory, "final.png"), "final edited image");
         const savedPath = join(generatedDirectory, "intermediate.png");
         writeFileSync(savedPath, "intermediate image");

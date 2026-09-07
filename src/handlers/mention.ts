@@ -3,6 +3,7 @@ import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../sessionMa
 import { resolveMessageLinks } from "../utils/resolveMessageLinks.js";
 import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/downloadAttachments.js";
+import { artifactMessageResolver } from "../utils/artifactMessage.js";
 import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../common/discordResponse.js";
@@ -103,7 +104,7 @@ export async function handleMention(
       canIncludeContextAuthor,
       (internalPrompt) => sessions.runEphemeral(key, internalPrompt),
     );
-    const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments);
+    const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments, canIncludeContextAuthor);
     let enrichedPrompt = await resolveDiscordContext(
       message,
       linkedPrompt,
@@ -118,6 +119,7 @@ export async function handleMention(
     cleanup = result.cleanup;
     const prepared = await prepareDownloadedAttachments(result.attachments);
     if (prepared.textContext) enrichedPrompt = `${enrichedPrompt}\n\n${prepared.textContext}`;
+    if (result.warnings.length) enrichedPrompt += `\n\n${result.warnings.map((warning) => `[Input attachment unavailable: ${warning}]`).join("\n")}`;
 
     // Keep typing indicator alive every 8s (Discord clears it after ~10s)
     if ("sendTyping" in message.channel) {
@@ -134,6 +136,7 @@ export async function handleMention(
       enrichedPrompt,
       prepared.fileAttachments.length ? prepared.fileAttachments : undefined,
       {
+        resolveArtifactMessage: artifactMessageResolver(client, message.author.id, canIncludeContextAuthor),
         onProgress: ({ elapsedMs }) => {
           progressUpdates = progressUpdates.catch(() => {}).then(async () => {
             const content = progressMessage(elapsedMs);

@@ -188,7 +188,8 @@ no restart required:
 - **Reasoning effort control** — per-session on Copilot and Codex (`/reasoning`)
 - **Slash commands** for quick actions and session management
 - **User allowlist** — restrict access to specific Discord user IDs
-- **Image attachments** — forwarded to the AI as context (Copilot/Codex/OpenCode)
+- **Images and binary attachments** — images remain vision context; videos, audio, and other files get accessible local paths (Copilot/Codex/OpenCode)
+- **Artifact tools** — fetch public file URLs or Discord message links, transcode video on the CPU, and explicitly register finished files for Discord delivery
 - **Downloadable agent artifacts** — requested patches, generated images, reports, and other workspace files are securely attached to the Discord response and retained in an ignored, isolated per-turn workspace directory
 - **Auto-restart** via systemd (WSL + Linux)
 
@@ -286,7 +287,7 @@ lists empty, everybody in a server containing the bot can interact with it.
   threads respond without a mention.
 - Mentions and free-channel responses include nearby channel conversation for
   context. A reply that mentions the bot also includes the replied-to message
-  and nearby messages. Images and supported text/code attachments on the direct,
+  and nearby messages. Images, videos, and other attachments on the direct,
   replied-to, nearby, or Discord-linked messages are included too. Sessions
   remain isolated by channel/thread and persist across container restarts in
   the `assistant-data` volume.
@@ -304,12 +305,63 @@ lists empty, everybody in a server containing the bot can interact with it.
   Discord's search endpoint requires **Read Message History** and the
   **Message Content Intent** to be enabled for the application in the Discord
   Developer Portal.
-- `DISCORD_ATTACHMENT_MODE=native` passes accepted attachments to the provider
-  as temporary files. Set `DISCORD_ATTACHMENT_MODE=text` for a shared bot: all
-  non-image attachments are delimited as untrusted text in the prompt and no
+- `DISCORD_ATTACHMENT_MODE=native` stages attachments in the turn's workspace
+  and supplies accessible file paths. Binary files are never inlined as UTF-8.
+  `DISCORD_ATTACHMENT_MODE=text` delimits text/code uploads as untrusted text and no
   path to an attached code/config file is exposed to the agent. The temporary
   upload is deleted before the provider runs, preventing the agent from finding
-  or executing that file. Images remain native vision inputs in both modes.
+  or executing that file. Binary uploads and video processing are unavailable
+  in text mode; rejected inputs are reported in the prompt. Images remain native
+  vision inputs in both modes.
+
+### Artifact and media tools
+
+The bot supplies a built-in `artifact_tools` MCP server to all three providers,
+including shared mode. It exposes:
+
+| Tool | Behavior |
+| --- | --- |
+| `fetch_artifact` | Downloads a public HTTP(S) file URL, or resolves a Discord message's attachments, embedded media, and links. One candidate downloads immediately; multiple candidates are returned for selection using `candidate_id`. |
+| `transcode_video` | Converts a local video to `av1`, `h264`, or `hevc` in MP4 using FFmpeg software encoding. Returns a decoded, verified local output. |
+| `attach_file` | Validates and copies a finished file, freezes its bytes, and registers it for the current Discord response. Returns `ready` or an actionable error while the agent can still correct its output. |
+
+Each call must use the `run_id` supplied in the current turn's instructions.
+The host binds that run to its provider session and the actual Discord requester;
+the agent cannot choose a delivery channel or impersonate another requester.
+Discord lookup runs in the bot process; the MCP configuration contains no Discord
+credentials. Calls from completed or cancelled
+runs are rejected, and cancellation stops active downloads and media jobs.
+
+For example, “convert the video in this Discord message to AV1” can resolve
+the message, fetch the referenced video, transcode its local file, and register
+the result. Message traversal checks requester and bot access at every hop,
+including private-thread membership, and is bounded to 10 messages and 3 nested
+links with cycle detection. Direct media links work too; arbitrary webpages,
+authenticated websites, and media extraction from streaming sites are not supported.
+
+URL downloads validate and pin public DNS addresses on every redirect, have a
+30-second deadline, and enforce their byte limit during streaming. Private and
+loopback network destinations are blocked. Inputs default to 100 MiB per file,
+with five automatic uploads per message; a turn retains at most twice the input
+byte limit through its tools. Output attachment limits remain independent and
+default to 10 MiB per response, so downloading a file does not guarantee that
+its converted output will fit in Discord.
+
+FFmpeg and ffprobe are included in the Docker image. Native installs must make
+them available on `PATH`, including the libsvtav1, libx264, and libx265 encoders.
+Video jobs run one at a time, use bounded CPU threads, accept at most 10 minutes
+and 4K resolution, and default to a five-minute deadline. GPU access is optional
+future work; this version always uses software encoders.
+
+Explicit tool registration is authoritative: only registered files are delivered
+after an `attach_file` attempt, even if it failed. Legacy `[[artifact:...]]`
+markers and provider image discovery remain a compatibility fallback for turns
+that never call `attach_file`. Registered files survive in the ignored
+`ai-assistant-artifacts/<run_id>/` workspace directory, and their in-memory
+delivery bytes cannot change after registration. Input workspace copies are also
+retained there; operators should periodically clean up old turn directories.
+`ready` means staged, not uploaded: the bot owns delivery and reports Discord
+upload failures separately from the text response.
 
 Public slash actions are `/ask`, `/chat`, `/reset`, `/history`, `/compact`, all
 `/plan` actions, and the read-only `list`/`current`/`get` actions under `/model`,
@@ -381,6 +433,8 @@ The AI configuration changes as follows:
 | `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | Maximum bytes per agent-created Discord attachment (default 10 MiB) |
 | `AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES` | `AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES` | Maximum combined bytes retained for one response (default 10 MiB; hard cap 100 MiB) |
 | `AI_OUTPUT_ATTACHMENT_MAX_COUNT` | `AI_OUTPUT_ATTACHMENT_MAX_COUNT` | Maximum agent-created attachments per response (default 10) |
+| `AI_INPUT_ATTACHMENT_MAX_BYTES` | `AI_INPUT_ATTACHMENT_MAX_BYTES` | Per-file upload/download limit (default 100 MiB; maximum 512 MiB) |
+| `AI_MEDIA_TIMEOUT_MS` | `AI_MEDIA_TIMEOUT_MS` | Software conversion deadline (default 300000 ms; maximum 900000 ms) |
 | Copilot model IDs (`COPILOT_MODEL`) | Codex/OpenAI model IDs (`CODEX_MODEL`) | `COPILOT_MODEL` / `CODEX_MODEL` / `OPENCODE_MODEL` |
 | — | — | New `PROVIDER=copilot\|codex\|opencode` sets the default backend |
 
@@ -465,7 +519,7 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 - In `shared` mode, external mutation is disabled independently of Discord prompt instructions. Codex connected apps default off except for the GitHub connector's known read-only repository tools; mutating and newly introduced connector tools remain disabled.
 - `AI_ASSISTANT_ENABLE_SITES=true` is an explicit Codex-only exception in `shared` mode. It enables the ChatGPT Sites connector so Discord users can create, update, and publish Sites under the logged-in ChatGPT account; connector actions marked destructive remain blocked. The Codex policy uses Sites' catalog connector ID, not the `sites` display name. Other connected apps remain default-denied. Leave it `false` unless everyone who can invoke the bot is trusted with that Sites identity and quota. In `unrestricted` mode, Sites follows the operator's normal Codex configuration along with all other capabilities.
 - This local Discord policy does not alter [Codex Cloud automatic GitHub reviews](https://learn.chatgpt.com/docs/third-party/github), which are configured separately in Codex settings.
-- In `shared` mode, Copilot uses its hardened multi-user `empty` mode. It permits scoped file/search/web tools and read-only MCP calls, but no arbitrary shell, mutating MCP calls, repository-defined MCP processes, or file access through workspace symlinks.
+- In `shared` mode, Copilot uses its hardened multi-user `empty` mode. It permits scoped file/search/web tools, read-only external MCP calls, and the host-owned artifact tools, but no arbitrary shell, external mutating MCP calls, repository-defined MCP processes, or file access through workspace symlinks.
 - In `shared` mode, OpenCode uses a deny-by-default inline permission policy, disables plugins, shell execution, and content-wide grep, and cannot read or modify sensitive paths or access paths outside the assigned workspace.
 - In `shared` mode, Codex retains local shell, build, and test support inside its filesystem permission profile. Local commands have no network egress unless Sites is explicitly enabled; that exception uses a network proxy allowing only `git.chatgpt-team.site` for Sites source pushes. Sites permits `.openai` metadata at the assigned workspace root, but existing `.git` directories and their history remain blocked. The agent stages only current site files in a fresh Git repository inside its private session temporary directory before pushing and packaging them. Hosted web search and explicitly allowed apps/connectors use separate provider controls. The shell receives a second, non-secret environment, cannot read provider login state, and uses a private temporary directory for each Discord session.
 - Docker sets `AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces`, and the setup wizard creates a native workspace root under the config directory. It is enforced in `shared` mode; if a manually configured native deployment omits it, the startup working directory becomes the non-bypassable root. `unrestricted` mode intentionally retains the legacy current-directory and `/workspace` behavior.

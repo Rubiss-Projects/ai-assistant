@@ -71,10 +71,26 @@ export interface SendAttachment {
   path: string;
   displayName?: string;
   kind?: "image" | "file";
+  /** Binary files remain on disk; never inline them as UTF-8. */
+  binary?: boolean;
 }
 
 export interface SendMessageOptions {
   onProgress?: (update: { elapsedMs: number; message: string }) => void | Promise<void>;
+  /** Host-owned, permission-checked Discord lookup; credentials never reach providers. */
+  resolveArtifactMessage?: (url: string) => Promise<ArtifactMessage>;
+}
+
+export interface ArtifactCandidate {
+  url: string;
+  name?: string;
+  contentType?: string | null;
+  size?: number;
+  sourceMessage?: string;
+}
+
+export interface ArtifactMessage {
+  candidates: ArtifactCandidate[];
 }
 
 export interface ResponseAttachment {

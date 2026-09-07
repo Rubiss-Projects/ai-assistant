@@ -3,6 +3,7 @@ import { downloadFileAttachments, prepareDownloadedAttachments } from "./downloa
 import { resolveMessageLinks } from "./resolveMessageLinks.js";
 import { enrichWithDiscordKnowledge } from "./discordKnowledge.js";
 import type { ChatInputCommandInteraction } from "discord.js";
+import type { SendAttachment } from "../providers/types.js";
 
 export async function prepareSlashAttachments(
   prompt: string,
@@ -14,7 +15,7 @@ export async function prepareSlashAttachments(
   infer?: (prompt: string) => Promise<string>,
 ): Promise<{
   prompt: string;
-  attachments: Array<{ path: string; displayName?: string }>;
+  attachments: SendAttachment[];
   cleanup: () => Promise<void>;
 }> {
   const linkedAttachments: Array<{
@@ -31,6 +32,7 @@ export async function prepareSlashAttachments(
     client,
     requestingUserId,
     linkedAttachments,
+    canIncludeContextAuthor,
   );
   const result = await downloadFileAttachments([
     ...(directAttachment ? [directAttachment] : []),
@@ -40,9 +42,7 @@ export async function prepareSlashAttachments(
   try {
     const prepared = await prepareDownloadedAttachments(result.attachments);
     return {
-      prompt: prepared.textContext
-        ? `${enrichedPrompt}\n\n${prepared.textContext}`
-        : enrichedPrompt,
+      prompt: [enrichedPrompt, prepared.textContext, ...result.warnings.map((warning) => `[Input attachment unavailable: ${warning}]`)].filter(Boolean).join("\n\n"),
       attachments: prepared.fileAttachments,
       cleanup: result.cleanup,
     };

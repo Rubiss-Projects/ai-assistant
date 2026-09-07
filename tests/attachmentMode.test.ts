@@ -38,6 +38,27 @@ test("invalid attachment modes fail closed", async () => {
   await assert.rejects(() => prepareDownloadedAttachments([], "execute"), /expected native or text/);
 });
 
+test("binary video uploads remain files and are explicitly rejected in text mode", async (t) => {
+  const video = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 255, 0]);
+  t.mock.method(globalThis, "fetch", async () => new Response(video, { headers: { "content-type": "video/mp4" } }));
+  const originalMode = process.env.DISCORD_ATTACHMENT_MODE;
+  t.after(() => { if (originalMode === undefined) delete process.env.DISCORD_ATTACHMENT_MODE; else process.env.DISCORD_ATTACHMENT_MODE = originalMode; });
+  process.env.DISCORD_ATTACHMENT_MODE = "native";
+  const input = { url: "https://cdn.discordapp.com/video.mp4", contentType: "video/mp4", name: "video.mp4", size: video.length };
+  const result = await downloadFileAttachments([input]);
+  try {
+    const prepared = await prepareDownloadedAttachments(result.attachments);
+    assert.equal(prepared.textContext, "");
+    assert.equal(prepared.fileAttachments[0].kind, "file");
+    assert.equal(prepared.fileAttachments[0].binary, true);
+    assert.equal(result.warnings.length, 0);
+  } finally { await result.cleanup(); }
+  process.env.DISCORD_ATTACHMENT_MODE = "text";
+  const rejected = await downloadFileAttachments([input]);
+  assert.deepEqual(rejected.attachments, []);
+  assert.match(rejected.warnings[0], /requires DISCORD_ATTACHMENT_MODE=native/);
+});
+
 test("raster-wrapped inbound SVGs become native image inputs", async () => {
   const originalFetch = globalThis.fetch;
   const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
