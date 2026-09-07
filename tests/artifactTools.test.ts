@@ -163,3 +163,18 @@ test("provider configuration enables only the host artifact bridge in shared mod
   assert.equal((await permission({ kind: "mcp", serverName: "artifact_tools", readOnly: false } as never, {} as never)).kind, "approve-once");
   assert.equal((await permission({ kind: "mcp", serverName: "other", readOnly: false } as never, {} as never)).kind, "reject");
 });
+
+test("text mode accepts raster signatures with generic MIME types and rejects binary media", async (t) => {
+  const workspace = await fixture(t);
+  const previous = process.env.DISCORD_ATTACHMENT_MODE;
+  process.env.DISCORD_ATTACHMENT_MODE = "text";
+  t.after(() => { if (previous === undefined) delete process.env.DISCORD_ATTACHMENT_MODE; else process.env.DISCORD_ATTACHMENT_MODE = previous; });
+  let data = Buffer.from("89504e470d0a1a0a00000000", "hex");
+  const runtime = new ArtifactTools(createArtifactRun(workspace), undefined,
+    async () => ({ data, filename: "download.png", contentType: "application/octet-stream" }));
+  const result = await runtime.call("fetch_artifact", { run_id: runtime.id, url: "https://example.com/raster" }) as { path: string };
+  assert.deepEqual(await readFile(result.path), data);
+  data = Buffer.from("not an image");
+  await assert.rejects(runtime.call("fetch_artifact", { run_id: runtime.id, url: "https://example.com/binary" }), /raster images only/);
+  await runtime.close();
+});
