@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { ArtifactTools } from "./artifactTools.js";
+import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 class ArtifactConnection {
     token = randomBytes(32).toString("hex");
     runs = new Map();
@@ -107,6 +108,9 @@ export function artifactInputPrompt(prompt, files) {
 /** A complete TOML table override prevents workspace configuration merging into this server. */
 export function codexArtifactMcpOverride(config, replaceAll = true) {
     const env = Object.entries(config.env).map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(",");
-    const server = `{command=${JSON.stringify(config.command)},args=${JSON.stringify(config.args)},env={${env}},startup_timeout_sec=60,tool_timeout_sec=960}`;
+    // These host-owned tools enforce workspace, download, and delivery policy.
+    // Without explicit approval, Codex blocks their writes in unattended sessions.
+    const tools = ARTIFACT_TOOLS.map(({ name }) => `${JSON.stringify(name)}={approval_mode="approve"}`).join(",");
+    const server = `{command=${JSON.stringify(config.command)},args=${JSON.stringify(config.args)},env={${env}},tools={${tools}},startup_timeout_sec=60,tool_timeout_sec=960}`;
     return replaceAll ? `mcp_servers={artifact_tools=${server}}` : `mcp_servers.artifact_tools=${server}`;
 }

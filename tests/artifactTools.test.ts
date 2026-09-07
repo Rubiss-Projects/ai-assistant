@@ -155,6 +155,9 @@ test("provider configuration enables only the host artifact bridge in shared mod
   const config = { command: process.execPath, args: ["/trusted/artifactMcp.js"], env: { AI_ARTIFACT_BRIDGE_TOKEN: "test", AI_ARTIFACT_BRIDGE_URL: "http://127.0.0.1:123/call" } };
   const codex = codexClientOptions(workspace, config);
   assert.match(codex.configOverrides![0], /^mcp_servers=\{artifact_tools=/);
+  assert.deepEqual([...codex.configOverrides![0].matchAll(/"([a-z_]+)"=\{approval_mode="approve"\}/g)].map((match) => match[1]),
+    ["fetch_artifact", "attach_file", "transcode_video"]);
+  assert.doesNotMatch(codex.configOverrides![0], /default_tools_approval_mode/);
   assert.equal(codex.env?.AI_ARTIFACT_BRIDGE_TOKEN, undefined);
   const openCode = JSON.parse(openCodeChildEnvironment({ AI_ASSISTANT_SECURITY_MODE: "shared" }, config).OPENCODE_CONFIG_CONTENT);
   assert.deepEqual(Object.keys(openCode.mcp), ["artifact_tools"]);
