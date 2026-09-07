@@ -46,12 +46,18 @@ test("slash prompts retain attachments from linked Discord messages", async () =
     size: 3,
   };
   const client = {
+    user: { id: "bot" },
     channels: {
       fetch: async () => ({
         name: "general",
+        guildId: "1",
+        guild: { members: { fetch: async () => ({ id: "user" }) } },
+        isDMBased: () => false,
+        permissionsFor: () => ({ has: () => true }),
         messages: {
           fetch: async () => ({
             content: "look at this",
+            channel: { name: "general" },
             embeds: [],
             attachments: new Map([["image", linkedAttachment]]),
             createdAt: new Date(0),

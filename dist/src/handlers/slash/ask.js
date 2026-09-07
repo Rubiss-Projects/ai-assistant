@@ -1,3 +1,4 @@
+import { artifactMessageResolver } from "../../utils/artifactMessage.js";
 import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
@@ -25,7 +26,7 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
                 sessions.setSessionWorkingDir(tempKey, workspace);
             const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(tempKey, internalPrompt));
             try {
-                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
+                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
             }
             finally {
                 // Temp file cleanup is independent of session reset — always run both

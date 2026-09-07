@@ -1,3 +1,4 @@
+import { artifactMessageResolver } from "../../utils/artifactMessage.js";
 import { ThreadAutoArchiveDuration } from "discord.js";
 import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
@@ -21,7 +22,7 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
             try {
                 if (workspace)
                     sessions.setSessionWorkingDir(interaction.user.id, workspace);
-                response = await sessions.sendMessage(interaction.user.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
+                response = await sessions.sendMessage(interaction.user.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
             }
             finally {
                 await prepared.cleanup();
@@ -66,7 +67,7 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                 // Can't create a thread inside a thread — use the current thread as the session
                 if (workspace)
                     sessions.setSessionWorkingDir(currentSessionKey, workspace);
-                const response = await sessions.sendMessage(currentSessionKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
+                const response = await sessions.sendMessage(currentSessionKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
                 const chunks = chunkForDiscord(response.content);
                 await durableReply.edit(discordTextOptions(chunks[0]));
                 for (const chunk of chunks.slice(1)) {
@@ -85,7 +86,7 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
             // Session keyed by thread ID — fully isolated per conversation
             if (workspace)
                 sessions.setSessionWorkingDir(thread.id, workspace);
-            const response = await sessions.sendMessage(thread.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => { }) });
+            const response = await sessions.sendMessage(thread.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => { }) });
             const chunks = chunkForDiscord(response.content);
             for (const chunk of chunks) {
                 await thread.send(discordTextOptions(chunk));

@@ -1,3 +1,4 @@
+import { artifactMessageResolver } from "../../utils/artifactMessage.js";
 import { ChatInputCommandInteraction, Message } from "discord.js";
 import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
@@ -45,7 +46,7 @@ export async function handleAsk(
           tempKey,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
-          { onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
+          { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
         );
       } finally {
         // Temp file cleanup is independent of session reset — always run both

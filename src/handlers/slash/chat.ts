@@ -1,3 +1,4 @@
+import { artifactMessageResolver } from "../../utils/artifactMessage.js";
 import { ChatInputCommandInteraction, Message, ThreadAutoArchiveDuration } from "discord.js";
 import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
@@ -40,7 +41,7 @@ export async function handleChat(
           interaction.user.id,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
-          { onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
+          { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
         );
       } finally {
         await prepared.cleanup();
@@ -96,7 +97,7 @@ export async function handleChat(
           currentSessionKey,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
-          { onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
+          { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
         );
         const chunks = chunkForDiscord(response.content);
         await durableReply.edit(discordTextOptions(chunks[0]));
@@ -122,7 +123,7 @@ export async function handleChat(
         thread.id,
         prepared.prompt,
         prepared.attachments.length ? prepared.attachments : undefined,
-        { onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => {}) },
+        { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => {}) },
       );
       const chunks = chunkForDiscord(response.content);
       for (const chunk of chunks) {
