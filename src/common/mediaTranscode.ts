@@ -3,6 +3,7 @@ import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { inputByteLimit } from "../utils/fetchArtifact.js";
+import { operationSignal } from "./operationSignal.js";
 
 let busy = false;
 
@@ -28,7 +29,8 @@ export async function transcodeVideo(data: Buffer, codec: "av1" | "h264" | "hevc
   busy = true;
   let directory: string | undefined;
   const timeout = Number(process.env.AI_MEDIA_TIMEOUT_MS ?? 300_000);
-  const deadline = AbortSignal.any([signal, AbortSignal.timeout(Number.isSafeInteger(timeout) && timeout > 0 ? Math.min(timeout, 900_000) : 300_000)]);
+  const operation = operationSignal(signal, Number.isSafeInteger(timeout) && timeout > 0 ? Math.min(timeout, 900_000) : 300_000);
+  const deadline = operation.signal;
   const inputOptions = ["-protocol_whitelist", "file,pipe", "-format_whitelist", "mov,matroska,avi,mpegts,mpeg,ogg,flv"];
   try {
     directory = await mkdtemp(path.join(os.tmpdir(), "assistant-media-"));
@@ -70,6 +72,7 @@ export async function transcodeVideo(data: Buffer, codec: "av1" | "h264" | "hevc
     }
     return await readFile(output);
   } finally {
+    operation.dispose();
     if (directory) await rm(directory, { recursive: true, force: true });
     busy = false;
   }

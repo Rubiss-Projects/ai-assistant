@@ -166,7 +166,6 @@ export class ArtifactTools {
     if (candidate.size && candidate.size > inputByteLimit()) throw new Error(`Input exceeds the ${inputByteLimit()}-byte limit.`);
     const fetched = await this.download(candidate.url, this.controller.signal);
     if ((process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() !== "native") {
-      if (!fetched.contentType.startsWith("image/")) throw new Error("Downloading files through tools requires DISCORD_ATTACHMENT_MODE=native; text mode permits only images.");
       const head = fetched.data.subarray(0, 12);
       if (!head.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))
         && !(head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
