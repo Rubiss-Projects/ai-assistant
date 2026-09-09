@@ -104,7 +104,7 @@ docker compose run --rm assistant opencode auth login
 
 The entrypoint registers the current slash commands on each container start unless `REGISTER_COMMANDS_ON_START=false`. Releases publish `ghcr.io/rubiss-projects/ai-assistant:<version>`; the included Compose file uses `latest`.
 
-Compose loads `.env` and keeps credentials, session state, attachments, and agent files in the Docker-managed `assistant-data` volume. Provider workspaces live under `/data/workspaces`. The container runs as an unprivileged user with a read-only image filesystem, dropped Linux capabilities, and no host bind mounts. See [Container isolation](#container-isolation) for the boundary this provides.
+Compose loads the project's host-side `.env` and passes its tokens and API keys into the container environment. Persisted CLI logins, session state, and retained agent files live in the Docker-managed `assistant-data` volume; provider workspaces are under `/data/workspaces`. The container runs as an unprivileged user with a read-only image filesystem, dropped Linux capabilities, and no host bind mounts. See [Container isolation](#container-isolation) for the boundary this provides.
 
 #### Run from source
 
@@ -456,7 +456,7 @@ Then remove the package:
 npm uninstall -g ai-assistant
 ```
 
-For Docker, `docker compose down` removes the containers while retaining the data volume. Add `--volumes` only if you intend to delete persisted credentials, sessions, memories, and agent files. Native configuration and state also remain after uninstall; remove the directories listed above only if you intend to discard that data.
+For Docker, `docker compose down` removes the containers while retaining the data volume. Add `--volumes` only if you intend to delete persisted CLI logins, sessions, memories, and agent files; the host-side `.env` and its secrets remain. Native configuration and state also remain after uninstall; remove the directories listed above only if you intend to discard that data.
 
 ## Development
 
