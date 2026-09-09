@@ -1,30 +1,90 @@
 # AI Assistant
 
-A single personal Discord bot that runs on **GitHub Copilot**, **OpenAI Codex**, or **OpenCode** — pick your AI provider with one config value. Chat with your AI from Discord channels, DMs, and bot-owned threads, with persistent per-conversation sessions, scoped coding tools, slash commands, and thread-based isolation.
+A Discord bot for **GitHub Copilot**, **OpenAI Codex**, and **OpenCode**. Choose a default provider, then chat through mentions, DMs, or dedicated conversation threads. You can switch providers during a conversation without restarting the bot.
 
-This repo replaces the two separate implementations, [ai-assistant-copilot-sdk](https://github.com/Rubiss-Projects/ai-assistant-copilot-sdk) and [ai-assistant-codex-sdk](https://github.com/Rubiss-Projects/ai-assistant-codex-sdk), with one codebase behind a provider abstraction.
+- Persistent conversations, isolated by user/channel or chat thread.
+- Images, video, audio, text/code attachments, and downloadable files created by the agent.
+- Discord history search and long-term server memory through natural requests.
+- Model and reasoning controls, plus provider-specific tools and slash commands.
+- User and admin access lists, scoped workspaces, and a Docker deployment for shared servers.
 
-## Quick Install
+## Contents
+
+- [Getting started](#getting-started)
+- [Using the bot](#using-the-bot)
+- [Environment variable reference](#environment-variable-reference)
+- [Access and security](#access-and-security)
+- [Managing your installation](#managing-your-installation)
+- [Development](#development)
+
+## Getting started
+
+First configure Discord and choose a provider. Then follow **one** installation path: [global npm install](#global-npm-install), [Docker](#docker), or [run from source](#run-from-source).
+
+### 1. Configure Discord
+
+1. Create an application with a bot user in the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Under **Bot**, enable **Message Content Intent** and copy the bot token (`DISCORD_TOKEN`). Under **General Information**, copy the Application ID (`DISCORD_APP_ID`).
+3. In Discord, enable **Settings → Advanced → Developer Mode**. Right-click your server to copy its ID (`DISCORD_GUILD_ID`). You can copy channel and user IDs the same way.
+4. In the Developer Portal, open **OAuth2 → URL Generator** and select the `bot` and `applications.commands` scopes. Select **View Channels**, **Send Messages**, **Send Messages in Threads**, **Create Public Threads**, **Read Message History**, **Attach Files**, and **Use Slash Commands**. Open the generated URL to invite the bot.
+
+Slash commands are registered to the server named by `DISCORD_GUILD_ID`. All three Discord variables are required for registration.
+
+Decide who can use the bot before starting it: when `DISCORD_ALLOWED_USERS` and `DISCORD_ADMIN_USERS` are both empty, everyone who can reach it can use public and administrative commands. See [Access and security](#access-and-security) for the permission rules.
+
+### 2. Choose and authenticate a provider
+
+Set `PROVIDER` to one of the following. Authenticate each provider you want to use, under the same operating-system user that runs the bot.
+
+| `PROVIDER` | Backend | Authentication | Default model in this repo |
+| --- | --- | --- | --- |
+| `copilot` | GitHub Copilot SDK | `COPILOT_GITHUB_TOKEN` (preferred), `GH_TOKEN`, or a persisted CLI login with Copilot access | `claude-haiku-4.5` |
+| `codex` | OpenAI Codex SDK | `OPENAI_API_KEY` or a persisted `codex login` | `gpt-5.6-sol` |
+| `opencode` | OpenCode CLI | `opencode auth login` or the selected model provider's API key | OpenCode's configured default |
+
+For native installs, OpenCode requires its CLI to be installed and discoverable (or set `OPENCODE_BIN`). Docker includes all three provider CLIs; [container login commands](#docker) are below.
+
+Native video conversion also requires `ffmpeg` and `ffprobe` on `PATH`, with the `libsvtav1`, `libx264`, and `libx265` encoders. These are included in the Docker image.
+
+### 3. Install and start
+
+#### Global npm install
+
+Requires Node.js 18+ and authentication for your chosen provider.
 
 ```bash
-# Install directly from GitHub (no cloning required)
 npm install -g --install-links github:Rubiss-Projects/ai-assistant
-
-# Run the setup wizard — creates ~/.ai-assistant/.env
 ai-assistant setup
-
-# Start the bot
 ai-assistant start
-
-# Optional: install as a systemd service (auto-start on boot)
-ai-assistant install-service
 ```
 
-### Sandboxed Docker deployment
+The setup wizard writes `~/.ai-assistant/.env` and offers to register slash commands. Accept that step, or run `ai-assistant register` before starting. Add advanced settings directly to that file using the [environment reference](#environment-variable-reference).
 
-Each release also publishes `ghcr.io/rubiss-projects/ai-assistant:<version>` for
-running the bot without giving it access to the host filesystem. Copy
-`.env.example` to `.env`, configure Discord and a provider, then run:
+For automatic startup on Linux or WSL with systemd, see [Run as a service](#run-as-a-service).
+
+#### Docker
+
+Requires Docker with Compose. Clone the repo to get the Compose file and configuration template:
+
+```bash
+git clone https://github.com/Rubiss-Projects/ai-assistant.git
+cd ai-assistant
+cp .env.example .env
+```
+
+Edit `.env`: fill in the Discord credentials, set `PROVIDER`, and configure access lists and provider authentication. For example, a Codex deployment using an API key needs these values alongside the template's other settings:
+
+```env
+DISCORD_TOKEN=your_bot_token
+DISCORD_APP_ID=your_application_id
+DISCORD_GUILD_ID=your_server_id
+PROVIDER=codex
+OPENAI_API_KEY=your_api_key
+AI_ASSISTANT_SECURITY_MODE=shared
+DISCORD_ATTACHMENT_MODE=text
+```
+
+Pull the image, then start the bot:
 
 ```bash
 docker compose pull
@@ -32,66 +92,7 @@ docker compose up -d
 docker compose logs -f assistant
 ```
 
-On each `compose up`, the container idempotently registers the current slash
-command set before starting the bot. Set `REGISTER_COMMANDS_ON_START=false` in
-`.env` to disable that behavior.
-
-Compose passes every entry in `.env` into the bot, so no corresponding edit to
-`compose.yaml` is needed. Provider and model defaults can be selected directly:
-
-```env
-PROVIDER=codex             # copilot | codex | opencode
-COPILOT_MODEL=claude-haiku-4.5
-CODEX_MODEL=gpt-5.6-sol
-CODEX_REASONING_EFFORT=low # minimal | low | medium | high | xhigh | max | ultra
-OPENCODE_MODEL=openrouter/anthropic/claude-sonnet-4.5
-# Optional instructions for the bot's personality and behavior
-AI_ASSISTANT_SYSTEM_PROMPT="You are our friendly community assistant."
-```
-
-The full configuration template is `.env.example`; copy it to `.env` and
-uncomment or fill only the settings you need. Provider API keys, timeout
-settings, Discord access lists, MCP inputs, custom endpoints, and container
-startup behavior all use the same file.
-
-Long tasks remain attached until the selected provider reports completion.
-Discord receives periodic “still working” updates (configured with
-`AI_PROGRESS_INTERVAL_MS`, default one minute). Each provider timeout is a
-one-hour hard limit by default; reaching it explicitly cancels or terminates the
-active run so work cannot silently continue after an error response. The bot
-waits up to `AI_CANCELLATION_GRACE_MS` (default five seconds) for confirmation.
-
-The included Compose configuration runs as an unprivileged user, drops all
-Linux capabilities, prevents privilege escalation, makes the image filesystem
-read-only, and mounts only a Docker-managed volume at `/data`. Agent-created
-files, session state, provider credentials, and downloaded attachments remain
-inside that volume. In `shared` security mode, provider tools are rooted at
-`/data/workspaces`; provider login and session state elsewhere in `/data` are
-outside the tool boundary.
-Container networking stays enabled for Discord, model APIs, and provider-hosted
-tools. Provider security mode can still restrict network access for local agent
-commands independently.
-
-Do not add host bind mounts, the Docker socket, `--privileged`, or host network
-mode when the bot is exposed to other people. Any of those can weaken or defeat
-the filesystem boundary. The Docker daemon and kernel are still part of the
-trusted computing base; keep Docker and the host patched.
-
-The image includes all three backends and their CLIs. Both persisted CLI login
-and explicitly configured API-key/token auth are supported:
-
-```env
-# Copilot (account must have Copilot access)
-COPILOT_GITHUB_TOKEN=github_pat_...
-
-# Codex
-OPENAI_API_KEY=sk-...
-
-# OpenCode (use the environment variable expected by the selected provider)
-ANTHROPIC_API_KEY=...
-```
-
-CLI logins are also available and persist in the `assistant-data` volume:
+If you use CLI login instead of a token or API key, run the matching command after pulling the image and before starting the bot:
 
 ```bash
 docker compose run --rm assistant copilot login
@@ -99,101 +100,77 @@ docker compose run --rm assistant codex login
 docker compose run --rm assistant opencode auth login
 ```
 
-The bundled executables and writable CLI configuration live inside the
-container boundary; no host CLI login is inherited unless you deliberately
-mount host credential files.
+The entrypoint registers the current slash commands on each container start unless `REGISTER_COMMANDS_ON_START=false`. Releases publish `ghcr.io/rubiss-projects/ai-assistant:<version>`; the included Compose file uses `latest`.
 
-Update to latest:
+Compose loads `.env` and keeps credentials, session state, attachments, and agent files in the Docker-managed `assistant-data` volume. Provider workspaces live under `/data/workspaces`. The container runs as an unprivileged user with a read-only image filesystem, dropped Linux capabilities, and no host bind mounts. See [Container isolation](#container-isolation) for the boundary this provides.
+
+#### Run from source
+
+Requires Node.js 18+ and authentication for your chosen provider.
+
 ```bash
-npm install -g --install-links github:Rubiss-Projects/ai-assistant
-# or: ai-assistant update  (prints the command)
+git clone https://github.com/Rubiss-Projects/ai-assistant.git
+cd ai-assistant
+npm install
+cp .env.example .env
 ```
 
-> **Prerequisites**: Node.js 18+ and one configured AI backend (see below).
+Fill in the Discord and provider settings in the repository's `.env`, then register commands and start:
 
-## Choosing a provider
-
-Set `PROVIDER` in `~/.ai-assistant/.env` (or use the `ai-assistant setup` wizard):
-
-| `PROVIDER` | Backend | Auth |
-|------------|---------|------|
-| `copilot` | GitHub Copilot SDK | `gh` CLI authenticated with a GitHub account that has Copilot access |
-| `codex` | OpenAI Codex SDK | `OPENAI_API_KEY`, or an existing Codex CLI login |
-| `opencode` | OpenCode CLI | `opencode auth login` |
-
-```env
-PROVIDER=codex
+```bash
+npm run register
+npm start
 ```
 
-All three expose the same Discord surface. Features a provider doesn't support
-(e.g. `/plan` on Codex/OpenCode) reply with a friendly
-"`<provider>` does not support `<feature>`" message instead of failing.
+## Using the bot
 
-### Custom system prompt
+### Conversations and sessions
 
-The operator can give the bot persistent custom instructions without changing
-how Discord users talk to it:
+Use `/ask <prompt>` for a private, one-shot answer or `/chat <message>` for an ongoing conversation:
 
-```env
-AI_ASSISTANT_SYSTEM_PROMPT="Use a playful tone, but be concise."
+| Where you use `/chat` | What happens |
+| --- | --- |
+| Server channel | Creates a public thread named `{Provider}: {your message}`, with its own conversation. |
+| Existing thread | Continues that thread's conversation. |
+| DM | Responds inline in your persistent DM session. |
+
+You can also mention the bot in a visible channel, or send a message without a mention in a channel listed in `DISCORD_FREE_CHANNELS`. Bot-owned chat threads respond without a mention. Ordinary channel conversations are isolated by user and channel; a bot-owned thread shares one session among its participants.
+
+Mentions and free-channel messages include nearby conversation. A reply mentioning the bot also includes the referenced message and its surroundings.
+
+Long tasks send periodic “still working” messages (every minute by default). Each provider has a one-hour hard timeout by default. At that limit, the bot cancels or terminates the run and waits up to five seconds for cancellation confirmation.
+
+### Artifact and media tools
+
+The built-in `artifact_tools` MCP server is available to all three providers, including in shared mode.
+
+| Tool | Behavior |
+| --- | --- |
+| `fetch_artifact` | Downloads a public HTTP(S) file URL, or resolves a Discord message's attachments, embedded media, and links. One candidate downloads immediately; multiple candidates are returned for selection using `candidate_id`. |
+| `transcode_video` | Converts a local video to `av1`, `h264`, or `hevc` in MP4 using FFmpeg software encoding. Returns a decoded, verified local output. |
+| `attach_file` | Validates and copies a finished file, freezes its bytes, and registers it for the current Discord response. Returns `ready` or an actionable error while the agent can still correct its output. |
+
+### Switch providers, models, and reasoning
+
+Every session starts with the provider selected by `PROVIDER`. Use the following slash commands to inspect or change it:
+
+```text
+/provider list
+/provider set codex
+/provider current
 ```
 
-For a long or multiline prompt, point to a UTF-8 file instead. The file setting
-takes precedence when both are present:
+A change inside a thread applies to that thread; a change in a channel or DM applies to that user's session. Provider choices survive restarts. Each provider keeps separate history for the same Discord session: switching to a provider for the first time starts fresh, and switching back resumes its earlier history. Conversation history is not transferred between providers.
 
-```env
-AI_ASSISTANT_SYSTEM_PROMPT_FILE=/home/bot/.ai-assistant/system-prompt.txt
-```
+Use `/model` to choose a model and `/reasoning` to control reasoning effort on supported providers. Commands that change providers, models, or reasoning require admin access.
 
-`ai-assistant setup` offers both settings. Native/daemon installs load them
-from `~/.ai-assistant/.env`; Docker Compose passes the same setting from the
-project `.env`. A prompt file used in the provided container must live under
-`/data`, such as `/data/system-prompt.txt`, because that is its persistent
-Docker volume. Restart the bot after changing either setting. Existing Copilot
-and Codex sessions may need `/reset` to guarantee that newly changed session
-instructions take effect.
+### Search and memory
 
-## Switching providers at runtime
+Ask naturally to “search this channel for the beach plans” or “search across the server.” The bot generates related queries, gathers indexed Discord messages, ranks the results, and returns source links. Searches respect the requester's channel access; the default pools are 200 candidates and 50 messages supplied to the answering agent.
 
-Every session (a `/chat` thread, or a user's DM) has an **active provider**.
-It defaults to `PROVIDER` but you can change it on the fly with `/provider` —
-no restart required:
+Say “remember this” or “put this in memory” to save information for the server, and “forget the cheese agreement” to remove matching records. Relevant memories are recalled in later conversations. Replied-to contract summaries are resolved to their original messages so complete text and source links are preserved. Each memory keeps its source channel and is recalled only while the requester can still read that channel.
 
-```
-/provider list          # show available providers + the active one
-/provider set codex     # switch THIS thread/session to Codex
-/provider current       # show the active provider for this session
-```
-
-- The choice is scoped: set it inside a thread and it applies to that thread;
-  set it in a channel/DM and it applies to that user's session.
-- Choices are persisted (per thread or per-user/channel session in `~/.config/ai-assistant/providers.json`),
-  so they survive a bot restart.
-- Each provider keeps its **own** session history per Discord key (namespaced
-  on disk). Switching to another provider starts that provider's thread fresh;
-  switching back resumes that provider's earlier thread for that key. There is
-  no automatic conversation handoff between different providers.
-
-## Features
-
-- **Thread-based chat** — `/chat` spawns a dedicated Discord thread per conversation, each with its own isolated session context
-- **Free-form chat** in a designated channel — no `@mention` required
-- **Conversation-aware mentions** — mentions include recent channel conversation; replies center context around the referenced message
-- **Persistent isolated sessions** — ordinary mentions are isolated per user and channel; bot-owned threads share their own session
-- **Conversational long-term memory** — say “remember this,” “put this in memory,” or “commit these contracts to memory” and recall relevant server memories later without a command. Replied-to contract summaries are resolved back to the original Discord messages so their complete text and source links are preserved.
-- **Discord history search** — ask naturally to search the current channel or accessible server channels, with source links
-- **Full tool access** — the AI can read files, run shell commands, search the web, etc.
-- **User-scope skills** — Copilot automatically loads skills from `~/.agents/skills` at session start
-- **Model switching** — change the model per-user at runtime (`/model set`)
-- **Reasoning effort control** — per-session on Copilot and Codex (`/reasoning`)
-- **Slash commands** for quick actions and session management
-- **User allowlist** — restrict access to specific Discord user IDs
-- **Images and binary attachments** — images remain vision context; videos, audio, and other files get accessible local paths (Copilot/Codex/OpenCode)
-- **Artifact tools** — fetch public file URLs or Discord message links, transcode video on the CPU, and explicitly register finished files for Discord delivery
-- **Downloadable agent artifacts** — requested patches, generated images, reports, and other workspace files are securely attached to the Discord response and retained in an ignored, isolated per-turn workspace directory
-- **Auto-restart** via systemd (WSL + Linux)
-
-## Slash Commands
+### Slash commands
 
 | Command | Description | Copilot | Codex | OpenCode |
 |---------|-------------|:---:|:---:|:---:|
@@ -216,257 +193,269 @@ no restart required:
 
 `✅` = supported · `⚠️` = replies "provider does not support this" · `partial` = listing works, injection not
 
-### How `/chat` works
+Support also depends on the configured security mode. Copilot's additional features include custom agents, plans, workspace commands, and user-scope skills loaded from `~/.agents/skills` at session start.
 
-- **In a channel** — creates a new public thread named `{Provider}: {your message}`. The session is isolated to that thread. Just type in the thread — no `@mention` needed.
-- **Already in a thread** — continues the conversation in that thread's session.
-- **In a DM** — responds inline; the whole DM is one persistent session.
+## Environment variable reference
 
-## Setup
+The tables below cover every setting read or explicitly passed to providers by this repository, including advanced settings missing from the starter template. Provider CLIs can have additional configuration of their own; in `unrestricted` mode they inherit the full process environment.
 
-### Developer Setup (clone the repo)
+### Where configuration lives
 
-#### 1. Prerequisites
+| Installation | Configuration file | How it is loaded |
+| --- | --- | --- |
+| Global CLI | `~/.ai-assistant/.env` | `setup` writes it; `start` and `register` change into that directory before loading it. |
+| Source checkout | `.env` in the repository | `npm start` and `npm run register` load it from the working directory. |
+| Docker Compose | `.env` beside `compose.yaml` | Compose passes entries into the container. Its explicit `environment` entries override the same keys in `.env`. |
 
-- Node.js 18+
-- A [Discord application](https://discord.com/developers/applications) with a bot user
-- One AI backend:
-  - **Copilot**: `gh auth login` with a Copilot-enabled GitHub account
-  - **Codex**: `OPENAI_API_KEY` or Codex CLI login (`codex login`)
-  - **OpenCode**: `opencode auth login` (configure any provider from models.dev)
+Restart native processes after changing configuration. For Docker, use `docker compose up -d` to apply changes; a container restart alone does not reload Compose's environment. Existing Copilot and Codex sessions may need `/reset` after system-prompt changes.
 
-#### 2. Clone and install
+Defaults below describe behavior when a setting is absent, with template, wizard, and container overrides called out explicitly. `~` in a documented default means the operating-system user's home; use absolute paths when setting path overrides yourself. Time values are milliseconds and size values are bytes.
 
-```bash
-git clone git@github.com:Rubiss-Projects/ai-assistant.git
-cd ai-assistant
-npm install
-```
+### General settings and security
 
-#### 3. Configure environment
+| Variable | Default / accepted values | What it does |
+| --- | --- | --- |
+| `PROVIDER` | `copilot`; accepts `copilot`, `codex`, `opencode` | Selects the default AI backend. `/provider set` overrides it for a session. |
+| `AI_ASSISTANT_CONFIG_DIR` | `~/.ai-assistant`; container: `/data` | Changes the CLI's configuration directory. Set in the launching environment **before** invoking the CLI; placing it only inside the file it is meant to locate does not redirect loading. Does not relocate session stores. |
+| `AI_ASSISTANT_SYSTEM_PROMPT` | Unset | Adds persistent operator instructions to every provider. Quote text containing spaces or `#` in `.env`. |
+| `AI_ASSISTANT_SYSTEM_PROMPT_FILE` | Unset | Reads operator instructions from a UTF-8 file, taking precedence over inline text. Relative paths resolve from the bot's working directory. Unreadable files cause an error. In Docker, keep the file under `/data`. |
+| `AI_ASSISTANT_SECURITY_MODE` | `unrestricted` if absent; template/wizard: `shared` | `shared` isolates credentials and scopes provider tools; `unrestricted` gives providers the operator's inherited capabilities. Invalid values stop startup. See [Provider security](#provider-security). |
+| `AI_ASSISTANT_ENABLE_SITES` | `false`; accepts `true`, `false` | In shared mode, enables the Codex Sites connector and scoped source-push network access to create, update, and publish through the logged-in ChatGPT account. Other apps remain restricted and destructive connector actions remain blocked. |
+| `AI_ASSISTANT_WORKSPACE_ROOT` | Working directory in shared mode; wizard: `<config dir>/workspaces`; Compose: `/data/workspaces` | Sets the enforced root for provider file access in shared mode. Ignored in unrestricted mode. Compose explicitly sets this value, so changing it there requires editing `compose.yaml`. |
+| `REGISTER_COMMANDS_ON_START` | `true` in the container entrypoint | Registers guild slash commands before the container starts the bot. Set `false` to skip; only the exact value `true` enables registration. Has no effect on native startup. |
 
-Copy `.env.example` to `.env` and fill in your values:
-
-```bash
-cp .env.example .env
-```
+For a short custom prompt:
 
 ```env
-PROVIDER=copilot            # copilot | codex | opencode
-
-DISCORD_TOKEN=              # Bot token from Discord Developer Portal → Bot
-DISCORD_APP_ID=             # Application ID from Discord Developer Portal → General Information
-DISCORD_GUILD_ID=           # Your Discord server ID (for slash command registration)
-DISCORD_FREE_CHANNELS=      # Optional: comma-separated channel IDs where bot replies without @mention
-DISCORD_ALLOWED_USERS=      # Optional: comma-separated user IDs allowed to use the bot
-DISCORD_ADMIN_USERS=        # Optional: user IDs allowed to use administrative actions
-DISCORD_ATTACHMENT_MODE=native # native | text (recommended for shared bots)
-
-# Provider-specific (see .env.example for the full list)
-# OPENAI_API_KEY=sk-...                  # for codex
-# CODEX_MODEL=gpt-5.6-sol                # for codex
-# COPILOT_MODEL=claude-haiku-4.5         # for copilot
-# OPENCODE_MODEL=openrouter/...          # for opencode
+AI_ASSISTANT_SYSTEM_PROMPT="Use a playful tone, but be concise."
 ```
 
-**Getting IDs**: Enable Developer Mode in Discord (Settings → Advanced → Developer Mode), then right-click any server/channel/user to copy its ID.
+For a longer prompt, set `AI_ASSISTANT_SYSTEM_PROMPT_FILE` to a file readable by the bot, such as `/data/system-prompt.txt` in Docker.
 
-### Discord access and permissions
+### Discord
 
-These settings work identically in Docker and native installs. With both user
-lists empty, everybody in a server containing the bot can interact with it.
-
-- `DISCORD_ALLOWED_USERS` controls normal messages, mentions, and public slash
-  actions. Set it to comma-separated Discord user IDs to make the bot private.
-- `DISCORD_ADMIN_USERS` controls administrative slash actions. Admins can also
-  use every public action. When this setting is empty, admin access falls back
-  to `DISCORD_ALLOWED_USERS`; when both are empty, everybody has admin access.
-- `DISCORD_FREE_CHANNELS` lists channels where an allowed user can talk to the
-  bot without mentioning it. In every other visible channel, the bot listens
-  but responds only when its account is explicitly `@mentioned`. Bot-owned chat
-  threads respond without a mention.
-- Mentions and free-channel responses include nearby channel conversation for
-  context. A reply that mentions the bot also includes the replied-to message
-  and nearby messages. Images, videos, and other attachments on the direct,
-  replied-to, nearby, or Discord-linked messages are included too. Sessions
-  remain isolated by channel/thread and persist across container restarts in
-  the `assistant-data` volume.
-- Natural requests such as “remember that Dave owes Sam a wheel of cheese” are
-  stored durably for the server. Relevant records are recalled automatically in
-  later conversations. “Forget the cheese agreement” removes matching records.
-  Each memory retains its source channel, and is returned only while the
-  requester can still read that channel.
-- Requests such as “search this channel for the beach plans” use Discord's
-  indexed guild search; “search across the server” broadens the permitted
-  scope. The AI generates several synonym-aware queries, gathers up to 200
-  unique candidates, semantically reranks them, and supplies the best 50 with
-  message permalinks. Tune these pools with `DISCORD_SEARCH_CANDIDATE_LIMIT`
-  and `DISCORD_SEARCH_CONTEXT_LIMIT`.
-  Discord's search endpoint requires **Read Message History** and the
-  **Message Content Intent** to be enabled for the application in the Discord
-  Developer Portal.
-- `DISCORD_ATTACHMENT_MODE=native` stages attachments in the turn's workspace
-  and supplies accessible file paths. Binary files are never inlined as UTF-8.
-  `DISCORD_ATTACHMENT_MODE=text` delimits text/code uploads as untrusted text and no
-  path to an attached code/config file is exposed to the agent. The temporary
-  upload is deleted before the provider runs, preventing the agent from finding
-  or executing that file. Binary uploads and video processing are unavailable
-  in text mode; rejected inputs are reported in the prompt. Images remain native
-  vision inputs in both modes.
-
-### Artifact and media tools
-
-The bot supplies a built-in `artifact_tools` MCP server to all three providers,
-including shared mode. It exposes:
-
-| Tool | Behavior |
-| --- | --- |
-| `fetch_artifact` | Downloads a public HTTP(S) file URL, or resolves a Discord message's attachments, embedded media, and links. One candidate downloads immediately; multiple candidates are returned for selection using `candidate_id`. |
-| `transcode_video` | Converts a local video to `av1`, `h264`, or `hevc` in MP4 using FFmpeg software encoding. Returns a decoded, verified local output. |
-| `attach_file` | Validates and copies a finished file, freezes its bytes, and registers it for the current Discord response. Returns `ready` or an actionable error while the agent can still correct its output. |
-
-Each call must use the `run_id` supplied in the current turn's instructions.
-The host binds that run to its provider session and the actual Discord requester;
-the agent cannot choose a delivery channel or impersonate another requester.
-Discord lookup runs in the bot process; the MCP configuration contains no Discord
-credentials. Calls from completed or cancelled
-runs are rejected, and cancellation stops active downloads and media jobs.
-
-For example, “convert the video in this Discord message to AV1” can resolve
-the message, fetch the referenced video, transcode its local file, and register
-the result. Message traversal checks requester and bot access at every hop,
-including private-thread membership, and is bounded to 10 messages and 3 nested
-links with cycle detection. Direct media links work too; arbitrary webpages,
-authenticated websites, and media extraction from streaming sites are not supported.
-
-URL downloads validate and pin public DNS addresses on every redirect, have a
-30-second deadline, and enforce their byte limit during streaming. Private and
-loopback network destinations are blocked. Inputs default to 100 MiB per file,
-with five automatic uploads per message; a turn retains at most twice the input
-byte limit through its tools. Output attachment limits remain independent and
-default to 10 MiB per response, so downloading a file does not guarantee that
-its converted output will fit in Discord.
-
-FFmpeg and ffprobe are included in the Docker image. Native installs must make
-them available on `PATH`, including the libsvtav1, libx264, and libx265 encoders.
-Video jobs run one at a time, use bounded CPU threads, accept at most 10 minutes
-and 4K resolution, and default to a five-minute deadline. GPU access is optional
-future work; this version always uses software encoders.
-
-Explicit tool registration is authoritative: only registered files are delivered
-after an `attach_file` attempt, even if it failed. Legacy `[[artifact:...]]`
-markers and provider image discovery remain a compatibility fallback for turns
-that never call `attach_file`. Registered files survive in the ignored
-`ai-assistant-artifacts/<run_id>/` workspace directory, and their in-memory
-delivery bytes cannot change after registration. Staged uploads, URL downloads,
-and tool intermediates are removed after response preparation, including failed
-and cancelled runs. Operators can periodically remove old retained output directories.
-`ready` means staged, not uploaded: the bot owns delivery and reports Discord
-upload failures separately from the text response.
-
-Public slash actions are `/ask`, `/chat`, `/reset`, `/history`, `/compact`, all
-`/plan` actions, and the read-only `list`/`current`/`get` actions under `/model`,
-`/reasoning`, `/provider`, `/agent`, and `/mode`. Supplying the optional
-`workspace` argument to `/ask` or `/chat` makes that invocation administrative.
-
-Administrative actions are `/model set`, `/reasoning set`, `/provider set`,
-`/agent select`, `/agent deselect`, `/mode set`, and every action under
-`/workspace` and `/mcp`, plus `/servers`, `/leave`, `/status`, and `/fleet`.
-Unknown commands and subcommands default to admin-only so newly added operations
-are not accidentally exposed.
-
-#### 4. Invite the bot to your server
-
-In the [Discord Developer Portal](https://discord.com/developers/applications), go to:
-**OAuth2 → URL Generator** → select scopes: `bot` + `applications.commands`
-
-Under Bot Permissions, select at minimum:
-**Send Messages**, **Send Messages in Threads**, **Create Public Threads**, **Read Message History**, **Use Slash Commands**.
-
-Copy the generated URL and open it in a browser to invite the bot to your server.
-
-#### 5. Register slash commands
-
-```bash
-npm run register
-```
-
-Run this once (and again whenever you add or change slash commands).
-
-#### 6. Start the bot
-
-```bash
-npm start
-```
-
-## Migrating from the Copilot/Codex versions
-
-If you currently run a bot from the separate, provider-specific repos — [ai-assistant-copilot-sdk](https://github.com/Rubiss-Projects/ai-assistant-copilot-sdk) or [ai-assistant-codex-sdk](https://github.com/Rubiss-Projects/ai-assistant-codex-sdk) — this repo is a drop-in replacement. Migrating lets you use **`/provider`** to switch between Copilot, Codex, and OpenCode at runtime instead of running a separate bot per provider.
-
-Both older packages install the same `ai-assistant` CLI, so uninstall whichever you have before installing this one:
-
-```bash
-npm uninstall -g ai-assistant
-```
-
-Then install this package (your config in `~/.ai-assistant/.env` is preserved):
-
-```bash
-npm install -g --install-links github:Rubiss-Projects/ai-assistant
-```
-
-### What carries over
-
-The Discord configuration is identical across all versions, so your existing
-settings transfer as-is:
-
-- `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`
-- `DISCORD_FREE_CHANNELS`, `DISCORD_ALLOWED_USERS`, `DISCORD_ADMIN_USERS`
-- `MCP_CONFIG_PATH`, `MCP_INPUT_*`
-
-The AI configuration changes as follows:
-
-| Copilot version | Codex version | Unified version |
+| Variable | Default / accepted values | What it does |
 | --- | --- | --- |
-| Copilot authentication via `gh` CLI | `OPENAI_API_KEY` or Codex CLI login | Unchanged — each provider keeps its own auth |
-| `COPILOT_TIMEOUT_MS` | `CODEX_TIMEOUT_MS` | Provider hard timeout (default 1 hour; timed-out work is explicitly cancelled); plus `OPENCODE_TIMEOUT_MS` for OpenCode |
-| `AI_PROGRESS_INTERVAL_MS` | `AI_PROGRESS_INTERVAL_MS` | Provider-agnostic “still working” interval (default 1 minute) |
-| `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | Maximum bytes per agent-created Discord attachment (default 10 MiB) |
-| `AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES` | `AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES` | Maximum combined bytes retained for one response (default 10 MiB; hard cap 100 MiB) |
-| `AI_OUTPUT_ATTACHMENT_MAX_COUNT` | `AI_OUTPUT_ATTACHMENT_MAX_COUNT` | Maximum agent-created attachments per response (default 10) |
-| `AI_INPUT_ATTACHMENT_MAX_BYTES` | `AI_INPUT_ATTACHMENT_MAX_BYTES` | Per-file upload/download limit (default 100 MiB; maximum 512 MiB) |
-| `AI_MEDIA_TIMEOUT_MS` | `AI_MEDIA_TIMEOUT_MS` | Software conversion deadline (default 300000 ms; maximum 900000 ms) |
-| Copilot model IDs (`COPILOT_MODEL`) | Codex/OpenAI model IDs (`CODEX_MODEL`) | `COPILOT_MODEL` / `CODEX_MODEL` / `OPENCODE_MODEL` |
-| — | — | New `PROVIDER=copilot\|codex\|opencode` sets the default backend |
+| `DISCORD_TOKEN` | Required | Bot token used to connect to Discord and register commands. |
+| `DISCORD_APP_ID` | Required for registration | Discord Application ID whose slash commands are registered. |
+| `DISCORD_GUILD_ID` | Required for registration | Server ID receiving the guild slash commands. The registration script does not fall back to global registration. |
+| `DISCORD_FREE_CHANNELS` | Empty; comma-separated channel IDs | Channels where allowed users can chat without mentioning the bot. |
+| `DISCORD_ALLOWED_USERS` | Empty; comma-separated user IDs | Restricts ordinary messages and public slash actions. Empty allows everyone; explicit admins can also invoke public slash actions. |
+| `DISCORD_ADMIN_USERS` | Falls back to `DISCORD_ALLOWED_USERS` | Comma-separated user IDs allowed to invoke administrative slash actions. If both lists are empty, everyone has admin access. Does not by itself grant access to ordinary messages. |
+| `DISCORD_ATTACHMENT_MODE` | `native`; accepts `native`, `text` | `native` stages attachments in the turn's workspace and supplies file paths; binary files are never inlined as text. `text` embeds text/code uploads as untrusted text and deletes temporary uploads before the provider runs; binary uploads and video processing are unavailable. Images remain vision inputs in both modes. |
+| `DISCORD_SEARCH_CANDIDATE_LIMIT` | `200`; integer ≥ `25` | Maximum unique indexed search candidates gathered across generated queries. Invalid or smaller values use the default. |
+| `DISCORD_SEARCH_CONTEXT_LIMIT` | `50`; integer ≥ `10` | Maximum ranked search messages supplied to the answering agent. Invalid or smaller values use the default. |
+| `DISCORD_MEMORY_RECALL_LIMIT` | `5`; integer ≥ `1` | Maximum relevant durable memories included in a response. Invalid or smaller values use the default. |
 
-### Replacement flow (global install)
+### Run timing and output files
+
+Provider timing and progress settings require integer values of at least `10`; invalid or smaller values use the default. Setting `0` does not disable progress updates or timeouts. Media timing and file limits have the bounds listed below.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `AI_PROGRESS_INTERVAL_MS` | `60000` (1 minute) | Interval between progress messages during long runs, for all providers. |
+| `AI_CANCELLATION_GRACE_MS` | `5000` (5 seconds) | How long to wait for a provider to confirm cancellation after a timeout. |
+| `COPILOT_TIMEOUT_MS` | `3600000` (1 hour) | Hard limit for a Copilot run; the active run is aborted on timeout. |
+| `CODEX_TIMEOUT_MS` | `3600000` (1 hour) | Hard limit for a Codex run; the active run is cancelled on timeout. |
+| `OPENCODE_TIMEOUT_MS` | `3600000` (1 hour) | Hard limit for an OpenCode run; its child process is terminated on timeout. |
+| `AI_INPUT_ATTACHMENT_MAX_BYTES` | `104857600` (100 MiB) | Per-file limit for incoming uploads and URL downloads. Requires an integer from `1` to `536870912` (512 MiB); invalid values raise an error. |
+| `AI_MEDIA_TIMEOUT_MS` | `300000` (5 minutes) | Deadline for software video conversion. Positive integer, capped at `900000` (15 minutes); invalid values use the default. |
+| `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | `10485760` (10 MiB) | Maximum size of each agent-created response attachment, also bounded by the total response limit. |
+| `AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES` | `10485760` (10 MiB) | Maximum combined attachment bytes retained for one response; hard cap `104857600` (100 MiB). |
+| `AI_OUTPUT_ATTACHMENT_MAX_COUNT` | `10` | Maximum agent-created attachments per response; hard cap `10`. |
+
+### GitHub Copilot
+
+| Variable | Default / accepted values | What it does |
+| --- | --- | --- |
+| `COPILOT_GITHUB_TOKEN` | Unset; persisted CLI login | Authenticates with a GitHub account that has Copilot access. Takes precedence over `GH_TOKEN`. |
+| `GH_TOKEN` | Unset | Fallback token when `COPILOT_GITHUB_TOKEN` is absent or blank. |
+| `COPILOT_MODEL` | `claude-haiku-4.5` | Default Copilot model ID. |
+| `COPILOT_HOME` | `~/.copilot` in shared mode | Sets Copilot's base directory in shared mode and is passed to its process for configuration/login state. |
+| `GH_CONFIG_DIR` | CLI-defined | Optional GitHub CLI configuration directory passed to Copilot in shared mode. |
+
+### OpenAI Codex
+
+| Variable | Default / accepted values | What it does |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | Unset; persisted Codex CLI login | Authenticates Codex with an API key. Also passed to OpenCode when using an OpenAI model provider. |
+| `OPENAI_BASE_URL` | SDK default | Overrides the OpenAI API endpoint used by Codex, for example `https://api.openai.com/v1`. |
+| `CODEX_MODEL` | `gpt-5.6-sol` | Default Codex model ID. |
+| `CODEX_REASONING_EFFORT` | `low`; accepts `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Default Codex reasoning effort. Invalid values raise an error; model support may vary. |
+| `CODEX_HOME` | `~/.codex` | Codex configuration/login directory, also used to locate its model cache and generated images. |
+| `CODEX_EXECUTABLE_PATH` | SDK executable; image: `/usr/local/lib/codex/bin/codex` | Overrides the Codex executable used by the SDK. The image sets this to its bundled runtime. |
+| `CODEX_MAX_INLINE_ATTACHMENT_BYTES` | `200000` | Maximum bytes per non-image attachment read as text by the Codex adapter; positive integer, capped at `1000000`. Oversized attachments produce an error. |
+
+### OpenCode and model provider keys
+
+The following API keys are explicitly allowed into the OpenCode child process in shared mode. Set the key for the model provider you use, or use a persisted CLI login. `OPENAI_API_KEY` is listed in the Codex table above.
+
+| Variable | Default / accepted values | What it does |
+| --- | --- | --- |
+| `OPENCODE_MODEL` | OpenCode's configured default | Selects a model in `provider/model` format, for example `openrouter/anthropic/claude-sonnet-4.5`. |
+| `OPENCODE_BIN` | Known npm install locations, then `opencode` on `PATH` | Overrides the OpenCode executable path. |
+| `ANTHROPIC_API_KEY` | Unset | API key for OpenCode's Anthropic provider. |
+| `OPENROUTER_API_KEY` | Unset | API key for OpenCode's OpenRouter provider. |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Unset | Google model provider API key passed to OpenCode. |
+| `GEMINI_API_KEY` | Unset | Gemini API key passed to OpenCode; interpretation depends on the selected provider. |
+| `GROQ_API_KEY` | Unset | API key for OpenCode's Groq provider. |
+| `MISTRAL_API_KEY` | Unset | API key for OpenCode's Mistral provider. |
+| `COHERE_API_KEY` | Unset | API key for OpenCode's Cohere provider. |
+| `XAI_API_KEY` | Unset | API key for OpenCode's xAI provider. |
+| `OPENCODE_DISABLE_AUTOUPDATE` | Forced to `1` by the bot | Disables CLI auto-updates for each OpenCode child process. Operator values are overwritten. |
+| `OPENCODE_CONFIG_CONTENT` | Generated by the bot in shared mode | Supplies OpenCode's inline security policy in shared mode, overriding operator values. In unrestricted mode, an existing value is inherited. |
+
+### MCP
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `MCP_CONFIG_PATH` | `~/.config/Code/User/mcp.json` | Overrides the global MCP file (`mcpServers` key). Workspace `.vscode/mcp.json` entries (`servers` key) win on duplicate names. Provider and security-mode support governs whether configuration is injected. |
+| `MCP_INPUT_*` | Unset | Resolves `${input:id}` placeholders in MCP configuration. Uppercase the ID and replace hyphens with underscores: `${input:grafana-service-account-token}` uses `MCP_INPUT_GRAFANA_SERVICE_ACCOUNT_TOKEN`; `${input:portainer-api-token}` uses `MCP_INPUT_PORTAINER_API_TOKEN`. Servers with unresolved inputs are skipped. |
+| `AI_ARTIFACT_BRIDGE_URL` | Generated by the bot | Internal endpoint supplied to the bot-launched artifact MCP adapter. Do not configure manually. |
+| `AI_ARTIFACT_BRIDGE_TOKEN` | Generated by the bot | Internal authentication token supplied to the artifact MCP adapter for its provider session. Do not configure manually. |
+
+### Inherited operating-system and runtime variables
+
+These are advanced runtime inputs, usually supplied by the operating system. The bot does not assign defaults unless noted. Shared mode passes the common runtime variables below to provider processes; Codex uses a separate, narrower environment for local shell commands. XDG and GitHub configuration variables are provider-specific. The bot's own session stores remain under `~/.config/ai-assistant` regardless of XDG overrides.
+
+| Variable | What it does / scope |
+| --- | --- |
+| `HOME` | Home-directory context on POSIX; also used to locate OpenCode's npm installation and Copilot's shared-mode base directory. Compose fixes this to `/data`. |
+| `USERPROFILE` | Windows home-directory context; fallback for Copilot's shared-mode base directory. |
+| `HOMEDRIVE` | Windows home drive passed to provider processes. |
+| `HOMEPATH` | Windows home path passed to provider processes. |
+| `APPDATA` | Used by the bot on Windows to look for OpenCode in the global npm installation. |
+| `PATH` | Executable search path. The image includes the bundled Codex runtime and provider binaries. |
+| `SYSTEMROOT` | Windows system directory context passed to providers. |
+| `WINDIR` | Windows installation directory passed to providers. |
+| `COMSPEC` | Windows command-interpreter path passed to providers. |
+| `PATHEXT` | Windows executable extensions used during command lookup. |
+| `TEMP` | Temporary-directory hint; Codex local commands use a private per-session directory in shared mode. |
+| `TMP` | Alternative temporary-directory hint, with the same Codex override. |
+| `TMPDIR` | POSIX temporary-directory hint, with the same Codex override. |
+| `LANG` | Default locale passed to providers. |
+| `LC_ALL` | Locale override passed to providers. |
+| `LC_CTYPE` | Character-handling locale passed to providers. |
+| `TERM` | Terminal type passed to providers. |
+| `NO_COLOR` | Color-output preference passed to providers. |
+| `HTTP_PROXY` | HTTP proxy configuration passed to provider processes; support depends on the CLI. |
+| `HTTPS_PROXY` | HTTPS proxy configuration passed to provider processes. |
+| `ALL_PROXY` | General proxy configuration passed to provider processes. |
+| `NO_PROXY` | Hosts excluded from proxy use by supporting clients. |
+| `NODE_EXTRA_CA_CERTS` | Additional certificate-authority file for Node-based clients. |
+| `SSL_CERT_FILE` | Certificate-authority bundle path for supporting clients. |
+| `SSL_CERT_DIR` | Certificate-authority directory for supporting clients. |
+| `XDG_CONFIG_HOME` | Configuration base directory passed to Copilot and OpenCode in shared mode. |
+| `XDG_DATA_HOME` | Data base directory passed to Copilot and OpenCode in shared mode. |
+| `XDG_CACHE_HOME` | Cache base directory passed to Copilot and OpenCode in shared mode. |
+| `XDG_STATE_HOME` | State base directory passed to OpenCode in shared mode. |
+| `SUDO_USER` | Preferred account name when the CLI generates a systemd service. |
+| `USER` | Service account fallback when `SUDO_USER` is absent; falls back to `root` if neither exists. |
+| `NODE_ENV` | Set to `production` in the container image for runtime dependencies; the bot has no separate behavior switch for it. |
+
+## Access and security
+
+### Discord permissions
+
+`DISCORD_ALLOWED_USERS` controls ordinary messages and public slash actions. `DISCORD_ADMIN_USERS` controls administrative slash actions; listed admins can also invoke public slash actions. To let an admin send ordinary messages when the allowlist is nonempty, include them in `DISCORD_ALLOWED_USERS` too.
+
+When the admin list is empty, admin access falls back to the allowed-user list. When both are empty, everyone has both levels of access.
+
+| Access level | Slash actions |
+| --- | --- |
+| Public | `/ask`, `/chat`, `/reset`, `/history`, `/compact`, all `/plan` actions, and `list`/`current`/`get` under `/model`, `/reasoning`, `/provider`, `/agent`, and `/mode`. |
+| Administrative | `/model set`, `/reasoning set`, `/provider set`, `/agent select/deselect`, `/mode set`, all `/workspace` and `/mcp` actions, `/servers`, `/leave`, `/status`, and `/fleet`. Supplying `workspace` to `/ask` or `/chat` also requires admin access. Unknown commands/subcommands default to admin-only. |
+
+Mention-only behavior determines when the bot replies; it does not restrict what tools a permitted user can invoke. Discord search also requires **Read Message History** and **Message Content Intent**. For shared bots, use `DISCORD_ATTACHMENT_MODE=text` to keep non-image uploads out of the agent's executable file inputs.
+
+### Provider security
+
+| `AI_ASSISTANT_SECURITY_MODE` | Intended use | Behavior |
+| --- | --- | --- |
+| `shared` | Servers with multiple users | Isolates bot secrets, restricts external mutations, and scopes file access to the assigned workspace. |
+| `unrestricted` | Private servers whose users are trusted as the operator | Inherits the operator's credentials, connected apps, filesystem access, and provider capabilities. |
+
+The template and setup wizard select `shared`. If the variable is absent, the bot uses `unrestricted` and logs a startup warning. Invalid mode values stop startup.
+
+In shared mode, provider processes receive an explicit environment allowlist that excludes Discord credentials and MCP input secrets. Each adapter enforces additional restrictions:
+
+- **Copilot** uses its `empty` mode with scoped file/search/web tools, read-only external MCP calls, and the host-owned artifact tools. Arbitrary shell, external mutating MCP calls, repository-defined MCP processes, and file access through workspace symlinks are blocked.
+- **Codex** retains local shell, build, and test support inside its filesystem permissions. Local commands have no network access unless Sites is enabled, which allows source pushes only to `git.chatgpt-team.site` through a proxy. Its shell gets a separate environment without provider credentials and a private temporary directory. Hosted web search and allowed connectors use separate controls. Connected apps default off except known read-only GitHub repository tools; mutating and newly introduced connector tools remain disabled.
+- **OpenCode** uses a permission policy that denies tools unless explicitly allowed. Plugins, shell execution, content-wide grep, sensitive paths, and access outside the workspace are blocked.
+
+`AI_ASSISTANT_ENABLE_SITES=true` adds a Codex-only exception to shared mode: Discord users can create, update, and publish Sites as the logged-in ChatGPT account. It permits workspace-root `.openai` metadata and stages current site files in a fresh temporary Git repository; existing `.git` directories and history remain blocked. Other apps remain restricted and destructive connector actions remain blocked. In unrestricted mode, Sites follows the operator's normal Codex configuration.
+
+Read-only connectors can still expose repository contents, and permitted users can consume model quota. Set the Discord access lists to match the audience you trust with those capabilities. Provider tool permissions are separate from conversational instructions.
+
+### Container isolation
+
+The included Compose deployment mounts only the Docker-managed `/data` volume. Shared-mode provider tools are rooted at `/data/workspaces`, outside the adjacent provider login and session state. CLI logins persist in the volume; host credentials are not automatically inherited.
+
+Container networking remains available for Discord, model APIs, and hosted tools. Provider restrictions can independently deny network access to local agent commands.
+
+Keep the provided isolation intact for a shared bot: host bind mounts, the Docker socket, privileged mode, or host networking can weaken the boundary. Docker and the host kernel remain part of that boundary and should be kept patched.
+
+## Managing your installation
+
+### Run as a service
+
+On Linux or WSL with systemd, install the service after completing global CLI setup:
 
 ```bash
-# If running as a service, stop it first
-sudo systemctl stop ai-assistant
-
-# Uninstall whatever version you have, then install the unified one
-npm uninstall -g ai-assistant
-npm install -g --install-links github:Rubiss-Projects/ai-assistant
-
-# Update ~/.ai-assistant/.env interactively (Discord values are preserved,
-# and you'll be prompted for PROVIDER + your provider's credentials)
-ai-assistant setup
-
-# Replace guild slash commands with the unified command set
-ai-assistant register
-
-# Refresh the systemd unit if you use it, then start
 ai-assistant install-service
 sudo systemctl start ai-assistant
+sudo journalctl -u ai-assistant -f
 ```
 
-If you run the bot manually (no service), just `ai-assistant start` after
-`ai-assistant register`. Everything else — thread-based `/chat` sessions, skills,
-`/ask`, permission allowlists — works the same as before.
+The installer enables startup on boot; the service restarts on failure. After changing configuration, run `sudo systemctl restart ai-assistant`.
 
+### Update
 
-## Project Structure
+Use the commands for your installation method, then restart the running bot. Register slash commands again after command changes.
+
+| Installation | Update | Register commands |
+| --- | --- | --- |
+| Global npm | `npm install -g --install-links github:Rubiss-Projects/ai-assistant` | `ai-assistant register` |
+| Source checkout | `git pull` followed by `npm install` | `npm run register` |
+| Docker | `docker compose pull` followed by `docker compose up -d` | Automatic on start unless disabled; manually use `docker compose run --rm assistant node /app/dist/scripts/register-commands.js`. |
+
+`ai-assistant update` prints the npm update command; it does not install the update. For a native foreground process, stop it and run the start command again. For systemd, run `sudo systemctl restart ai-assistant` after updating.
+
+### Persistent data
+
+| Data | Native location | Docker location |
+| --- | --- | --- |
+| CLI configuration | `~/.ai-assistant/.env` or the configured CLI directory | Values passed from the project `.env` |
+| Provider selections, session mappings, server memories | `~/.config/ai-assistant/` | `/data/.config/ai-assistant/` |
+| Provider credentials and provider-owned session state | Provider home/configuration directories | Provider directories within `/data` |
+| Agent workspaces and retained output files | Configured workspace root in shared mode | `/data/workspaces/` |
+
+`.env` is git-ignored. Provider CLI logins are stored in their own directories, so credentials are not limited to `.env`.
+
+### Uninstall
+
+For a global npm install, first stop and remove the systemd service if you installed it:
+
+```bash
+sudo systemctl stop ai-assistant
+sudo systemctl disable ai-assistant
+sudo rm /etc/systemd/system/ai-assistant.service
+sudo systemctl daemon-reload
+```
+
+Then remove the package:
+
+```bash
+npm uninstall -g ai-assistant
+```
+
+For Docker, `docker compose down` removes the containers while retaining the data volume. Add `--volumes` only if you intend to delete persisted credentials, sessions, memories, and agent files. Native configuration and state also remain after uninstall; remove the directories listed above only if you intend to discard that data.
+
+## Development
+
+After [installing from source](#run-from-source), use `npm run build` to compile TypeScript and `npm test` to run the test suite.
+
+### Project structure
 
 ```
 src/
@@ -498,50 +487,9 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 .env.example            # Environment variable template
 ```
 
-## Adding a new provider
+### Adding a provider
 
 1. Implement the [`Provider`](src/providers/types.ts) interface in a new file under `src/providers/`.
 2. Register it in the [`createProvider()`](src/providers/index.ts) factory.
 3. Add it to the `PROVIDERS` list and the CLI wizard (`src/cli.ts`).
 4. Any method you can't implement throws `UnsupportedError`, and the matching slash command automatically reports "provider does not support X".
-
-## Security Notes
-
-- The bot token and all credentials live only in `.env`, which is git-ignored and never committed.
-- `AI_ASSISTANT_SECURITY_MODE` controls provider capabilities for every current provider:
-
-  | Mode | Intended deployment | Behavior |
-  | --- | --- | --- |
-  | `shared` | Discord servers with multiple users | Isolates bot secrets, scopes file access, and blocks shell/connector mutations except explicitly enabled capabilities. |
-  | `unrestricted` | Private servers whose users are trusted as the operator | Preserves the legacy provider behavior, including inherited credentials, connected apps, shell access, and external side effects. |
-
-- New deployments created from `.env.example` use `shared`. Existing deployments with no `AI_ASSISTANT_SECURITY_MODE` remain `unrestricted` for backwards compatibility and emit a prominent startup warning. Invalid values stop startup.
-- In `shared` mode, every provider child receives an explicit environment allowlist. Discord credentials, MCP inputs, and future bot secrets are not inherited by provider processes.
-- In `shared` mode, external mutation is disabled independently of Discord prompt instructions. Codex connected apps default off except for the GitHub connector's known read-only repository tools; mutating and newly introduced connector tools remain disabled.
-- `AI_ASSISTANT_ENABLE_SITES=true` is an explicit Codex-only exception in `shared` mode. It enables the ChatGPT Sites connector so Discord users can create, update, and publish Sites under the logged-in ChatGPT account; connector actions marked destructive remain blocked. The Codex policy uses Sites' catalog connector ID, not the `sites` display name. Other connected apps remain default-denied. Leave it `false` unless everyone who can invoke the bot is trusted with that Sites identity and quota. In `unrestricted` mode, Sites follows the operator's normal Codex configuration along with all other capabilities.
-- This local Discord policy does not alter [Codex Cloud automatic GitHub reviews](https://learn.chatgpt.com/docs/third-party/github), which are configured separately in Codex settings.
-- In `shared` mode, Copilot uses its hardened multi-user `empty` mode. It permits scoped file/search/web tools, read-only external MCP calls, and the host-owned artifact tools, but no arbitrary shell, external mutating MCP calls, repository-defined MCP processes, or file access through workspace symlinks.
-- In `shared` mode, OpenCode uses a deny-by-default inline permission policy, disables plugins, shell execution, and content-wide grep, and cannot read or modify sensitive paths or access paths outside the assigned workspace.
-- In `shared` mode, Codex retains local shell, build, and test support inside its filesystem permission profile. Local commands have no network egress unless Sites is explicitly enabled; that exception uses a network proxy allowing only `git.chatgpt-team.site` for Sites source pushes. Sites permits `.openai` metadata at the assigned workspace root, but existing `.git` directories and their history remain blocked. The agent stages only current site files in a fresh Git repository inside its private session temporary directory before pushing and packaging them. Hosted web search and explicitly allowed apps/connectors use separate provider controls. The shell receives a second, non-secret environment, cannot read provider login state, and uses a private temporary directory for each Discord session.
-- Docker sets `AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces`, and the setup wizard creates a native workspace root under the config directory. It is enforced in `shared` mode; if a manually configured native deployment omits it, the startup working directory becomes the non-bypassable root. `unrestricted` mode intentionally retains the legacy current-directory and `/workspace` behavior.
-- The read-only GitHub connector may still reveal repository contents to Discord users. Use `DISCORD_ALLOWED_USERS` if repository confidentiality requires a tighter audience.
-- Use `DISCORD_ADMIN_USERS` to reserve configuration, workspace, MCP, and server-management actions for trusted users while allowing everyone selected by `DISCORD_ALLOWED_USERS` to chat and use public slash actions. See **Discord access and permissions** above for the complete command split and fallback rules.
-- Mention-only behavior controls when the bot responds; it is not a tool authorization boundary.
-- For a shared Discord bot, prefer the Docker deployment. Users can still consume model quota and use the explicitly enabled read/network capabilities.
-- Thread sessions are isolated by thread ID, so different `/chat` conversations don't share context.
-
-## Uninstall
-
-```bash
-# Stop and remove the systemd service (if installed)
-sudo systemctl stop ai-assistant
-sudo systemctl disable ai-assistant
-sudo rm /etc/systemd/system/ai-assistant.service
-sudo systemctl daemon-reload
-
-# Remove the npm package
-npm uninstall -g ai-assistant
-
-# Remove config and credentials (optional — destructive)
-rm -rf ~/.ai-assistant
-```
