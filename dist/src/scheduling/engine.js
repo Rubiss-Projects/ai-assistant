@@ -140,22 +140,37 @@ export class Scheduler {
         this.store.save({ ...task, enabled: true, pauseReason: undefined, revision: task.revision + 1,
             nextRunAt: validateSchedule(task.cron, task.timezone, this.limits.minimumMs, this.now()) });
     }
-    runNow(subject, id) {
+    async authorizeManual(subject, id) {
         this.assertAvailable();
         const task = this.requireTask(subject, id);
         this.requireCreate(subject, task);
+        // Reject the requester before claiming work or modifying a saved delivery.
+        // Requester-only failures must not change the owner's recurring schedule.
+        await this.adapter.authorize(task, subject.userId);
+        this.assertAvailable();
+        const latest = this.requireTask(subject, id);
+        if (latest.revision !== task.revision)
+            throw new Error("Schedule changed; try again.");
+        return latest;
+    }
+    async runNow(subject, id) {
+        const task = await this.authorizeManual(subject, id);
+        this.assertAvailable();
+        if (this.store.get(id)?.revision !== task.revision)
+            throw new Error("Schedule changed; try again.");
         if (this.active.size >= this.limits.concurrency)
             throw new Error("Scheduler is busy; try again later.");
         const claimed = this.store.claim(id, this.now(), this.limits.minimumMs, true);
         if (!claimed)
             throw new Error("Task is paused, already running, or within its minimum run interval.");
-        this.launch(claimed.task, claimed.run, subject.userId);
+        this.launch(claimed.task, claimed.run);
         return claimed.run.id;
     }
-    retryDelivery(subject, id, runId) {
+    async retryDelivery(subject, id, runId) {
+        const task = await this.authorizeManual(subject, id);
         this.assertAvailable();
-        const task = this.requireTask(subject, id);
-        this.requireCreate(subject, task);
+        if (this.store.get(id)?.revision !== task.revision)
+            throw new Error("Schedule changed; try again.");
         const run = this.store.getRun(runId);
         if (!run || run.taskId !== id || run.state !== "delivery_failed" || run.taskRevision !== task.revision) {
             throw new Error("Only a definitely rejected delivery from the current task revision can be retried. Uncertain sends need manual inspection.");
@@ -165,7 +180,7 @@ export class Scheduler {
         run.state = "ready";
         run.error = undefined;
         this.store.saveRun(run);
-        this.launch(task, run, subject.userId);
+        this.launch(task, run);
     }
     tick() {
         if (this.stopped)
@@ -184,8 +199,8 @@ export class Scheduler {
                 this.launch(claimed.task, claimed.run);
         }
     }
-    launch(task, run, actorId) {
-        const pending = this.execute(task, run, actorId).catch(error => console.error("[scheduler] Run persistence failed:", error));
+    launch(task, run) {
+        const pending = this.execute(task, run).catch(error => console.error("[scheduler] Run persistence failed:", error));
         this.active.add(pending);
         void pending.finally(() => this.active.delete(pending));
     }
@@ -197,10 +212,10 @@ export class Scheduler {
         if (!latest?.enabled || latest.revision !== task.revision)
             throw new ScheduleAccessError("Task was paused, edited, or deleted.");
     }
-    async execute(task, run, actorId) {
+    async execute(task, run) {
         try {
             this.current(task);
-            await this.adapter.authorize(task, actorId);
+            await this.adapter.authorize(task);
             this.current(task);
             if (run.state === "running") {
                 run.parts = await this.adapter.generate(task, run, this.limits.timeoutMs);

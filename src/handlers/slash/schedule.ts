@@ -62,9 +62,9 @@ export async function handleSchedule(cmd: ChatInputCommandInteraction, scheduler
     } else if (sub === "pause") { scheduler.pause(subject, id); await respond("Schedule paused. Any pending result will not be posted."); }
     else if (sub === "resume") { await scheduler.resume(subject, id); await respond("Schedule resumed. Missed occurrences will be skipped."); }
     else if (sub === "delete") { scheduler.delete(subject, id); await respond("Schedule and its run history deleted."); }
-    else if (sub === "run-now") { await respond(`Started run \`${scheduler.runNow(subject, id)}\`. Use /schedule inspect to check its result.`); }
+    else if (sub === "run-now") { await respond(`Started run \`${await scheduler.runNow(subject, id)}\`. Use /schedule inspect to check its result.`); }
     else if (sub === "retry-delivery") {
-      scheduler.retryDelivery(subject, id, cmd.options.getString("run_id", true));
+      await scheduler.retryDelivery(subject, id, cmd.options.getString("run_id", true));
       await respond("Retrying the unsent result without running the AI again.");
     } else throw new Error("Unknown schedule action.");
   } catch (error) {

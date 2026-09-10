@@ -16,11 +16,11 @@ const admin = { userId: "100", guildId: "200" };
 const input = { guildId: "200", channelId: "300", kind: "message" as const, content: "Reminder", cron: "0 * * * *", timezone: "UTC", contextMessages: 0 };
 const limits = { minimumMs: 60_000, maxOwner: 2, maxGuild: 3, concurrency: 2, timeoutMs: 1000 };
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; }
-function fixture(t: { after(fn: () => Promise<void>): void }, adapter: Partial<ScheduleAdapter> = {}) {
+function fixture(t: { after(fn: () => Promise<void>): void }, adapter: Partial<ScheduleAdapter> = {}, env = { DISCORD_ADMIN_USERS: "100" }) {
   let now = Date.UTC(2026, 0, 1);
   const store = new ScheduleStore(":memory:");
   const sent: string[] = [];
-  const scheduler = new Scheduler(store, createAccessPolicy({ DISCORD_ADMIN_USERS: "100" }), {
+  const scheduler = new Scheduler(store, createAccessPolicy(env), {
     authorize: async () => {}, generate: async task => [{ content: task.content }],
     send: async (_task, part) => { sent.push(part.content); return String(sent.length); }, ...adapter,
   }, limits, () => now);
@@ -87,12 +87,12 @@ test("all registered slash command payloads serialize", () => {
 test("fixed message runs persist delivery IDs and cannot immediately rerun", async t => {
   const f = fixture(t);
   const task = await f.scheduler.create(admin, input);
-  const runId = f.scheduler.runNow(admin, task.id);
+  const runId = await f.scheduler.runNow(admin, task.id);
   await f.scheduler.idle();
   assert.deepEqual(f.sent, ["Reminder"]);
   assert.equal(f.store.getRun(runId)?.state, "succeeded");
   assert.deepEqual(f.store.getRun(runId)?.messageIds, ["1"]);
-  assert.throws(() => f.scheduler.runNow(admin, task.id), /minimum run interval/);
+  await assert.rejects(() => f.scheduler.runNow(admin, task.id), /minimum run interval/);
 });
 
 test("task quotas count paused schedules and scope ownership", async t => {
@@ -109,7 +109,7 @@ test("pause during generation suppresses pending output", async t => {
   const gate = deferred();
   const f = fixture(t, { generate: async () => { await gate.promise; return [{ content: "Late" }]; } });
   const task = await f.scheduler.create(admin, input);
-  const id = f.scheduler.runNow(admin, task.id);
+  const id = await f.scheduler.runNow(admin, task.id);
   await new Promise(resolve => setImmediate(resolve));
   f.scheduler.pause(admin, task.id);
   gate.resolve();
@@ -122,7 +122,7 @@ test("edit during generation suppresses stale output without pausing the new rev
   const gate = deferred();
   const f = fixture(t, { generate: async () => { await gate.promise; return [{ content: "Old" }]; } });
   const task = await f.scheduler.create(admin, input);
-  f.scheduler.runNow(admin, task.id);
+  await f.scheduler.runNow(admin, task.id);
   await new Promise(resolve => setImmediate(resolve));
   await f.scheduler.edit(admin, task.id, { content: "New" });
   gate.resolve();
@@ -137,7 +137,7 @@ test("revoked authorization before delivery pauses without sending", async t => 
   const f = fixture(t, { authorize: async () => { if (!authorized) throw new ScheduleAccessError("Revoked"); },
     generate: async () => { authorized = false; return [{ content: "Private" }]; } });
   const task = await f.scheduler.create(admin, input);
-  f.scheduler.runNow(admin, task.id);
+  await f.scheduler.runNow(admin, task.id);
   await f.scheduler.idle();
   assert.equal(f.sent.length, 0);
   assert.equal(f.store.get(task.id)?.pauseReason, "Revoked");
@@ -148,11 +148,11 @@ test("definitely rejected delivery retries only the unsent parts without new gen
   const f = fixture(t, { generate: async () => { generated++; return [{ content: "A" }, { content: "B" }]; },
     send: async () => { sends++; if (sends === 2 && reject) throw new DeliveryRejectedError("Rejected"); return String(sends); } });
   const task = await f.scheduler.create(admin, input);
-  const id = f.scheduler.runNow(admin, task.id);
+  const id = await f.scheduler.runNow(admin, task.id);
   await f.scheduler.idle();
   assert.equal(f.store.getRun(id)?.state, "delivery_failed");
   reject = false;
-  f.scheduler.retryDelivery(admin, task.id, id);
+  await f.scheduler.retryDelivery(admin, task.id, id);
   await f.scheduler.idle();
   assert.equal(generated, 1);
   assert.equal(sends, 3);
@@ -162,17 +162,17 @@ test("definitely rejected delivery retries only the unsent parts without new gen
 test("uncertain sends are never automatically retried and pause the task", async t => {
   const f = fixture(t, { send: async () => { throw new Error("connection reset after send"); } });
   const task = await f.scheduler.create(admin, input);
-  const id = f.scheduler.runNow(admin, task.id);
+  const id = await f.scheduler.runNow(admin, task.id);
   await f.scheduler.idle();
   assert.equal(f.store.getRun(id)?.state, "uncertain");
   assert.equal(f.store.get(task.id)?.enabled, false);
-  assert.throws(() => f.scheduler.retryDelivery(admin, task.id, id), /Uncertain sends/);
+  await assert.rejects(() => f.scheduler.retryDelivery(admin, task.id, id), /Uncertain sends/);
 });
 
 test("unconfirmed AI cancellation pauses future execution", async t => {
   const f = fixture(t, { generate: async () => { throw new RunTimeoutError("test", 1000, false); } });
   const task = await f.scheduler.create(admin, { ...input, kind: "ai", provider: "codex", model: "test" });
-  const id = f.scheduler.runNow(admin, task.id);
+  const id = await f.scheduler.runNow(admin, task.id);
   await f.scheduler.idle();
   assert.equal(f.store.getRun(id)?.state, "uncertain");
   assert.equal(f.store.get(task.id)?.enabled, false);
@@ -315,10 +315,10 @@ test("graceful shutdown drains a claimed run and leaves its recurring schedule e
   scheduler.start();
   t.after(async () => { gate.resolve(); await scheduler.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
   const task = await scheduler.create(admin, input);
-  const runId = scheduler.runNow(admin, task.id);
+  const runId = await scheduler.runNow(admin, task.id);
   await new Promise(resolve => setImmediate(resolve));
   const stopping = scheduler.stop();
-  assert.throws(() => scheduler.runNow(admin, task.id), /not running/);
+  await assert.rejects(() => scheduler.runNow(admin, task.id), /not running/);
   gate.resolve();
   await stopping;
   assert.deepEqual(sent, ["Completed during shutdown"]);
@@ -327,4 +327,71 @@ test("graceful shutdown drains a claimed run and leaves its recurring schedule e
   assert.equal(reopened.getRun(runId)?.state, "succeeded");
   assert.deepEqual(reopened.getRun(runId)?.messageIds, ["message-id"]);
   reopened.close();
+});
+
+test("an inaccessible manager's manual attempt leaves the owner's schedule and cooldown unchanged", async t => {
+  const f = fixture(t, { authorize: async (_task, actorId) => {
+    if (actorId === "101") throw new ScheduleAccessError("Actor cannot access destination");
+  } }, { DISCORD_ADMIN_USERS: "100,101" });
+  const task = await f.scheduler.create(admin, input);
+  await assert.rejects(f.scheduler.runNow({ userId: "101", guildId: "200" }, task.id), /Actor cannot access/);
+  assert.deepEqual(f.store.get(task.id), task);
+  assert.deepEqual(f.store.runs(task.id), []);
+  await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.deepEqual(f.sent, ["Reminder"]);
+});
+
+test("an inaccessible manager cannot consume another owner's saved delivery retry", async t => {
+  let generated = 0;
+  let sends = 0;
+  const f = fixture(t, {
+    authorize: async (_task, actorId) => { if (actorId === "101") throw new ScheduleAccessError("Actor cannot access destination"); },
+    generate: async () => { generated++; return [{ content: "Saved output" }]; },
+    send: async () => { if (++sends === 1) throw new DeliveryRejectedError("Rejected"); return "message-id"; },
+  }, { DISCORD_ADMIN_USERS: "100,101" });
+  const task = await f.scheduler.create(admin, input);
+  const runId = await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  const beforeTask = f.store.get(task.id);
+  const beforeRun = f.store.getRun(runId);
+  await assert.rejects(f.scheduler.retryDelivery({ userId: "101", guildId: "200" }, task.id, runId), /Actor cannot access/);
+  assert.deepEqual(f.store.get(task.id), beforeTask);
+  assert.deepEqual(f.store.getRun(runId), beforeRun);
+  await f.scheduler.retryDelivery(admin, task.id, runId);
+  await f.scheduler.idle();
+  assert.equal(f.store.getRun(runId)?.state, "succeeded");
+  assert.equal(generated, 1);
+});
+
+test("shutdown while a manual request authorizes cannot admit a late run", async t => {
+  const gate = deferred();
+  let block = false;
+  const f = fixture(t, { authorize: async (_task, actorId) => { if (block && actorId) await gate.promise; } });
+  const task = await f.scheduler.create(admin, input);
+  block = true;
+  const pending = f.scheduler.runNow(admin, task.id);
+  await new Promise(resolve => setImmediate(resolve));
+  await f.scheduler.stop();
+  gate.resolve();
+  await assert.rejects(pending, /not running/);
+  assert.deepEqual(f.sent, []);
+});
+
+test("editing a task during manual authorization rejects the stale request without claiming it", async t => {
+  const gate = deferred();
+  let block = false;
+  const f = fixture(t, { authorize: async (task, actorId) => {
+    if (block && actorId && task.content === "Reminder") await gate.promise;
+  } });
+  const task = await f.scheduler.create(admin, input);
+  block = true;
+  const pending = f.scheduler.runNow(admin, task.id);
+  await new Promise(resolve => setImmediate(resolve));
+  await f.scheduler.edit(admin, task.id, { content: "Changed destination prompt" });
+  gate.resolve();
+  await assert.rejects(pending, /Schedule changed/);
+  assert.equal(f.store.get(task.id)?.enabled, true);
+  assert.deepEqual(f.store.runs(task.id), []);
+  assert.deepEqual(f.sent, []);
 });

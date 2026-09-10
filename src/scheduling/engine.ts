@@ -112,20 +112,32 @@ export class Scheduler {
     this.store.save({ ...task, enabled: true, pauseReason: undefined, revision: task.revision + 1,
       nextRunAt: validateSchedule(task.cron, task.timezone, this.limits.minimumMs, this.now()) });
   }
-  runNow(subject: AccessSubject, id: string): string {
+  private async authorizeManual(subject: AccessSubject, id: string): Promise<ScheduledTask> {
     this.assertAvailable();
     const task = this.requireTask(subject, id);
     this.requireCreate(subject, task);
+    // Reject the requester before claiming work or modifying a saved delivery.
+    // Requester-only failures must not change the owner's recurring schedule.
+    await this.adapter.authorize(task, subject.userId);
+    this.assertAvailable();
+    const latest = this.requireTask(subject, id);
+    if (latest.revision !== task.revision) throw new Error("Schedule changed; try again.");
+    return latest;
+  }
+  async runNow(subject: AccessSubject, id: string): Promise<string> {
+    const task = await this.authorizeManual(subject, id);
+    this.assertAvailable();
+    if (this.store.get(id)?.revision !== task.revision) throw new Error("Schedule changed; try again.");
     if (this.active.size >= this.limits.concurrency) throw new Error("Scheduler is busy; try again later.");
     const claimed = this.store.claim(id, this.now(), this.limits.minimumMs, true);
     if (!claimed) throw new Error("Task is paused, already running, or within its minimum run interval.");
-    this.launch(claimed.task, claimed.run, subject.userId);
+    this.launch(claimed.task, claimed.run);
     return claimed.run.id;
   }
-  retryDelivery(subject: AccessSubject, id: string, runId: string): void {
+  async retryDelivery(subject: AccessSubject, id: string, runId: string): Promise<void> {
+    const task = await this.authorizeManual(subject, id);
     this.assertAvailable();
-    const task = this.requireTask(subject, id);
-    this.requireCreate(subject, task);
+    if (this.store.get(id)?.revision !== task.revision) throw new Error("Schedule changed; try again.");
     const run = this.store.getRun(runId);
     if (!run || run.taskId !== id || run.state !== "delivery_failed" || run.taskRevision !== task.revision) {
       throw new Error("Only a definitely rejected delivery from the current task revision can be retried. Uncertain sends need manual inspection.");
@@ -133,7 +145,7 @@ export class Scheduler {
     if (!task.enabled || this.store.busy(id) || this.active.size >= this.limits.concurrency) throw new Error("Task is paused or scheduler is busy.");
     run.state = "ready"; run.error = undefined;
     this.store.saveRun(run);
-    this.launch(task, run, subject.userId);
+    this.launch(task, run);
   }
   tick(): void {
     if (this.stopped) return;
@@ -149,8 +161,8 @@ export class Scheduler {
       if (claimed) this.launch(claimed.task, claimed.run);
     }
   }
-  private launch(task: ScheduledTask, run: TaskRun, actorId?: string): void {
-    const pending = this.execute(task, run, actorId).catch(error => console.error("[scheduler] Run persistence failed:", error));
+  private launch(task: ScheduledTask, run: TaskRun): void {
+    const pending = this.execute(task, run).catch(error => console.error("[scheduler] Run persistence failed:", error));
     this.active.add(pending);
     void pending.finally(() => this.active.delete(pending));
   }
@@ -161,10 +173,10 @@ export class Scheduler {
     // stop() rejects new work but drains claimed runs while retaining the lease.
     if (!latest?.enabled || latest.revision !== task.revision) throw new ScheduleAccessError("Task was paused, edited, or deleted.");
   }
-  private async execute(task: ScheduledTask, run: TaskRun, actorId?: string): Promise<void> {
+  private async execute(task: ScheduledTask, run: TaskRun): Promise<void> {
     try {
       this.current(task);
-      await this.adapter.authorize(task, actorId);
+      await this.adapter.authorize(task);
       this.current(task);
       if (run.state === "running") {
         run.parts = await this.adapter.generate(task, run, this.limits.timeoutMs);
