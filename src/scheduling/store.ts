@@ -105,10 +105,12 @@ export class ScheduleStore {
       const interrupted = this.db.prepare("SELECT data FROM runs WHERE state IN ('running','ready','sending')").all() as { data: string }[];
       for (const row of interrupted) {
         const run: TaskRun = JSON.parse(row.data);
-        run.state = run.state === "sending" || run.state === "running" ? "uncertain" : "cancelled";
-        run.error = "Interrupted by restart. Inspect before resuming; execution or delivery may have occurred.";
+        const unsent = run.state === "ready";
+        run.state = unsent ? "delivery_failed" : "uncertain";
+        run.error = unsent ? "Output was saved before restart. Retry delivery if it is still wanted."
+          : "Interrupted by restart. Inspect before resuming; execution or delivery may have occurred.";
         this.saveRun(run);
-        this.pause(run.taskId, run.error);
+        if (!unsent) this.pause(run.taskId, run.error);
       }
       for (const task of this.list()) {
         if (task.enabled && task.nextRunAt <= now) {
