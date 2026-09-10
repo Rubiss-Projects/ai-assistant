@@ -288,7 +288,8 @@ bot before copying it. SQLite transactional claims and a 60-second scheduler
 lease allow one active scheduler per database. An unclean restart may need to
 wait for that lease to expire. A stale worker is checked before delivery.
 
-Missed occurrences after downtime are skipped. Tasks do not overlap, and full
+Graceful shutdown stops accepting new runs and drains active runs without disabling
+their schedules. Missed occurrences after downtime are skipped. Tasks do not overlap, and full
 worker capacity skips occurrences rather than building an unbounded backlog.
 Defaults are 15 minutes between starts, 10 tasks per owner across servers, 50 per
 guild, two concurrent runs, and a 10-minute AI inference limit; the `SCHEDULE_*`

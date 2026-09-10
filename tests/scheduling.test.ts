@@ -300,3 +300,31 @@ test("a raw bot.manage grant does not confer administrator or unrelated capabili
     assert.equal(policy.can(subject, capability), false, capability);
   }
 });
+
+test("graceful shutdown drains a claimed run and leaves its recurring schedule enabled", async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "draining-schedule-"));
+  const file = path.join(dir, "schedules.sqlite");
+  const store = new ScheduleStore(file);
+  const gate = deferred();
+  const sent: string[] = [];
+  const scheduler = new Scheduler(store, createAccessPolicy({ DISCORD_ADMIN_USERS: "100" }), {
+    authorize: async () => {},
+    generate: async () => { await gate.promise; return [{ content: "Completed during shutdown" }]; },
+    send: async (_task, part, _nonce, beforeSend) => { beforeSend(); sent.push(part.content); return "message-id"; },
+  }, limits);
+  scheduler.start();
+  t.after(async () => { gate.resolve(); await scheduler.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const task = await scheduler.create(admin, input);
+  const runId = scheduler.runNow(admin, task.id);
+  await new Promise(resolve => setImmediate(resolve));
+  const stopping = scheduler.stop();
+  assert.throws(() => scheduler.runNow(admin, task.id), /not running/);
+  gate.resolve();
+  await stopping;
+  assert.deepEqual(sent, ["Completed during shutdown"]);
+  const reopened = new ScheduleStore(file);
+  assert.equal(reopened.get(task.id)?.enabled, true);
+  assert.equal(reopened.getRun(runId)?.state, "succeeded");
+  assert.deepEqual(reopened.getRun(runId)?.messageIds, ["message-id"]);
+  reopened.close();
+});
