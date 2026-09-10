@@ -285,3 +285,18 @@ test("shared mode rejects rights files writable through provider workspaces", t 
   assert.throws(() => createAccessPolicy({ ...env, DISCORD_RIGHTS_FILE: linkOut }), /outside the provider workspace/);
   assert.doesNotThrow(() => createAccessPolicy({ ...env, DISCORD_RIGHTS_FILE: outside }));
 });
+
+test("a raw bot.manage grant does not confer administrator or unrelated capabilities", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bot-management-rights-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "rights.json");
+  fs.writeFileSync(file, JSON.stringify({ grants: [{ userId: "101", capabilities: ["bot.manage"] }] }));
+  const policy = createAccessPolicy({ DISCORD_ALLOWED_USERS: "100", DISCORD_ADMIN_USERS: "100", DISCORD_RIGHTS_FILE: file });
+  const subject = { userId: "101", guildId: "200" };
+  assert.equal(policy.can(subject, "bot.manage"), true);
+  assert.equal(policy.isExplicitAdmin(subject), false);
+  assert.equal(policy.canUseAdminCommands("101"), false);
+  for (const capability of ["workspace.manage", "mcp.manage", "session.configure", "schedule.ai.create", "schedule.message.create", "schedule.manage.guild"] as const) {
+    assert.equal(policy.can(subject, capability), false, capability);
+  }
+});

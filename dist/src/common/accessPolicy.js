@@ -51,7 +51,7 @@ export function createAccessPolicy(env = process.env) {
     const matches = (g, s) => (g.userId === s.userId || Boolean(g.roleId && s.roleIds?.includes(g.roleId)))
         && (!g.guildId || g.guildId === s.guildId);
     const explicitAdmin = (s) => admins.has(s.userId) || grants.some(g => !g.guildId && matches(g, s)
-        && (g.roles?.includes("bot-admin") || g.capabilities?.includes("bot.manage")));
+        && g.roles?.includes("bot-admin"));
     const granted = (s, capability) => grants.some(g => matches(g, s)
         && (g.capabilities?.includes(capability) || g.roles?.some(role => PRESETS[role].includes(capability))));
     const legacyMessage = (userId) => allowed.size === 0 || allowed.has(userId);
