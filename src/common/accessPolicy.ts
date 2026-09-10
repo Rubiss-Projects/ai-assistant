@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import path from "node:path";
+import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
 
 export const CAPABILITIES = [
   "chat.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
@@ -42,8 +44,16 @@ export function parseGrants(value: unknown): Grant[] {
 export function createAccessPolicy(env: NodeJS.ProcessEnv = process.env) {
   const allowed = ids(env.DISCORD_ALLOWED_USERS);
   const admins = ids(env.DISCORD_ADMIN_USERS);
-  const grants = env.DISCORD_RIGHTS_FILE?.trim()
-    ? parseGrants(JSON.parse(fs.readFileSync(env.DISCORD_RIGHTS_FILE.trim(), "utf8"))) : [];
+  const rightsFile = env.DISCORD_RIGHTS_FILE?.trim();
+  const workspace = configuredWorkspaceRoot(env);
+  if (rightsFile && workspace) {
+    const relative = path.relative(path.resolve(workspace), path.resolve(rightsFile));
+    const lexicallyInside = relative === "" || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative));
+    if (lexicallyInside || pathIsWithin(workspace, rightsFile)) {
+      throw new Error("DISCORD_RIGHTS_FILE must be outside the provider workspace root, including symlink targets.");
+    }
+  }
+  const grants = rightsFile ? parseGrants(JSON.parse(fs.readFileSync(rightsFile, "utf8"))) : [];
   const matches = (g: Grant, s: AccessSubject) => (g.userId === s.userId || Boolean(g.roleId && s.roleIds?.includes(g.roleId)))
     && (!g.guildId || g.guildId === s.guildId);
   const explicitAdmin = (s: AccessSubject) => admins.has(s.userId) || grants.some(g => !g.guildId && matches(g, s)

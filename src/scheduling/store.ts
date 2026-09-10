@@ -94,8 +94,8 @@ export class ScheduleStore {
       task.nextRunAt = nextOccurrences(task.cron, task.timezone, now, 1)[0];
       task.lastStartedAt = now;
       this.save(task);
-      // Keep bounded run history, retaining any run that still needs attention.
-      this.db.prepare(`DELETE FROM runs WHERE task_id=? AND state IN ('succeeded','failed','cancelled') AND id NOT IN (SELECT id FROM runs WHERE task_id=? ORDER BY started DESC LIMIT 20)`).run(taskId, taskId);
+      // Keep the latest 20 runs, including unresolved outcomes; never delete an active run.
+      this.db.prepare(`DELETE FROM runs WHERE task_id=? AND state IN ('succeeded','failed','cancelled','delivery_failed','uncertain') AND id NOT IN (SELECT id FROM runs WHERE task_id=? ORDER BY started DESC LIMIT 20)`).run(taskId, taskId);
       return { task, run };
     }).immediate();
   }
