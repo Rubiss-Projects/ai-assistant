@@ -108,3 +108,24 @@ test("a task change during channel fetch is checked immediately before sending",
   await assert.rejects(adapter.send(task, { content: "Stale output" }, "run:0", () => { throw new Error("Task changed"); }), /Task changed/);
   assert.equal(f.sent.length, 0);
 });
+
+test("AI schedule creation accepts the same default-provider configuration as the session manager", async t => {
+  const { handleSchedule } = await import("../src/handlers/slash/schedule.js");
+  const oldProvider = process.env.PROVIDER;
+  t.after(() => { if (oldProvider === undefined) delete process.env.PROVIDER; else process.env.PROVIDER = oldProvider; });
+  for (const [configured, expected] of [[undefined, "copilot"], ["", "copilot"], ["   ", "copilot"], [" CoDeX ", "codex"], ["OpenCode", "opencode"]]) {
+    if (configured === undefined) delete process.env.PROVIDER; else process.env.PROVIDER = configured;
+    let saved: any;
+    const replies: string[] = [];
+    const values: Record<string, string> = { kind: "ai", model: "test-model", content: "Prompt", cron: "0 9 * * *", timezone: "UTC" };
+    const interaction = {
+      deferReply: async () => {}, editReply: async ({ content }: { content: string }) => { replies.push(content); }, followUp: async () => {},
+      options: { getSubcommand: () => "create", getString: (key: string) => values[key] ?? null, getChannel: () => ({ id: "300" }), getInteger: () => null },
+    };
+    const scheduler = { assertAvailable: () => {}, create: async (_subject: unknown, input: any) => {
+      saved = input; return { ...task, ...input };
+    } };
+    await handleSchedule(interaction as any, scheduler as any, { userId: "100", guildId: "200" });
+    assert.equal(saved?.provider, expected, `${JSON.stringify(configured)}: ${replies.join("\n")}`);
+  }
+});

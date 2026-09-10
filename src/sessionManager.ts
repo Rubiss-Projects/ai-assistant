@@ -1,7 +1,7 @@
 import { chunkForDiscord } from "./common/chunkForDiscord.js";
 import { ProviderStore } from "./common/providerStore.js";
 import { createProvider, isValidProviderName } from "./providers/index.js";
-import { PROVIDERS, isUnsupported, RunTimeoutError, UnsupportedError, type Provider } from "./providers/types.js";
+import { PROVIDERS, normalizeProviderName, isUnsupported, RunTimeoutError, UnsupportedError, type Provider } from "./providers/types.js";
 import type {
   AgentInfo,
   AgentResponse,
@@ -63,7 +63,7 @@ export class SessionManager {
   private store: ProviderStore;
 
   constructor(defaultName?: string, store?: ProviderStore) {
-    const name = (defaultName ?? process.env.PROVIDER ?? "copilot").trim().toLowerCase() || "copilot";
+    const name = normalizeProviderName(defaultName ?? process.env.PROVIDER);
     if (!isValidProviderName(name)) {
       throw new Error(`Unknown PROVIDER "${name}". Choose one of: ${PROVIDERS.join(", ")}.`);
     }
