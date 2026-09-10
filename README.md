@@ -219,7 +219,7 @@ grant bot administration.
 | `mcp.manage` | MCP configuration |
 | `bot.manage` | Global bot administration: servers, leave, status, fleet |
 | `schedule.message.create` | Create or modify fixed-message tasks |
-| `schedule.ai.create` | AI tasks; additionally requires explicit bot administration |
+| `schedule.ai.create` | AI tasks; explicit opt-in for trusted users or guild roles |
 | `schedule.manage.own` | Inspect and manage owned tasks |
 | `schedule.manage.guild` | Inspect and manage all tasks in the granted guild |
 
@@ -229,8 +229,8 @@ adds `schedule.manage.guild`; it grants no host, provider, or cross-server
 administration. The global `bot-admin` preset grants all capabilities and may
 only be assigned to user IDs. Role grants require `guildId`. Task edits,
 resumes, manual runs, and delivery retries also require creation rights for that
-task type: a server schedule manager cannot rewrite or execute an AI task owned
-by a bot administrator. No in-Discord rights editor is exposed.
+task type: a server schedule manager also needs `schedule.ai.create` to rewrite
+or execute an AI task. No in-Discord rights editor is exposed.
 
 For an admin-only installation, set `DISCORD_ADMIN_USERS` explicitly and
 `SCHEDULES_ENABLED=true`. For a scheduling whitelist, additionally grant the
@@ -238,6 +238,13 @@ For an admin-only installation, set `DISCORD_ADMIN_USERS` explicitly and
 never grants scheduling, even if legacy commands allow everybody. Scheduling
 rights are additive to the existing lists; set an explicit admin list if you
 want other configuration commands restricted too.
+
+To allow trusted Discord admins to schedule both messages and AI tasks, grant
+their guild-scoped role the `server-admin` preset and explicitly add
+`"capabilities": ["schedule.ai.create"]`. Neither the `scheduler` nor the
+`server-admin` preset enables AI scheduling by itself. Explicit bot administrators
+retain scheduling access; ordinary Discord Administrator permissions alone do
+not grant it.
 
 ```text
 /schedule create kind:message channel:#reminders content:Submit your availability cron:0 9 * * 5 timezone:America/New_York
@@ -266,7 +273,9 @@ model, use the selected provider (or the bot's configured provider at creation),
 and optionally save a reasoning effort. They start with a fresh session and a
 separate temporary workspace on every run. Provider-wide security, system prompt,
 and integration configuration still apply; this is not a new tool sandbox.
-For that reason, AI scheduling remains restricted to explicit bot administrators.
+AI scheduling defaults to explicit bot administrators. Only grant
+`schedule.ai.create` to users or guild roles trusted to run unattended AI tasks
+with those same provider tools and integrations.
 Scheduled AI runs use at most `SCHEDULE_AI_TIMEOUT_MS`, or the provider's shorter
 configured inference timeout, plus its existing cancellation grace period.
 
