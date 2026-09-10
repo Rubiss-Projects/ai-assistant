@@ -9,7 +9,7 @@ import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt, codexArtifactMcpOverride } from "../common/artifactToolBridge.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
-import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, RunTimeoutError, } from "./types.js";
 import { readFile, stat } from "node:fs/promises";
@@ -445,7 +445,7 @@ export class CodexProvider {
                         ...images.map((a) => ({ type: "local_image", path: a.path })),
                     ]
                     : artifactPrompt;
-                const timeoutMs = configuredMilliseconds("CODEX_TIMEOUT_MS", 60 * 60 * 1000);
+                const timeoutMs = providerTimeout("CODEX_TIMEOUT_MS", options);
                 const controller = new AbortController();
                 let timedOut = false;
                 const stopProgress = startProgressUpdates(options);
@@ -644,6 +644,13 @@ export class CodexProvider {
     }
     async createWorkspaceFile() {
         throw new UnsupportedError(this.displayName, "workspace file creation");
+    }
+    async forgetSession(key) {
+        await this.resetSession(key);
+        this.workingDirOverrides.delete(key);
+        this.modelOverrides.delete(key);
+        this.reasoningEffortOverrides.delete(key);
+        this.mcpToolOverrides.delete(key);
     }
     async resetSession(key) {
         await this.artifactTools.reset(key);

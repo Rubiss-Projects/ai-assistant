@@ -5,7 +5,7 @@ import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
-import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError } from "./types.js";
 /**
@@ -228,7 +228,7 @@ export class OpenCodeProvider {
             const model = this.modelOverrides.get(userId) ?? this.configuredModel();
             if (model)
                 args.push("--model", model);
-            const timeoutMs = configuredMilliseconds("OPENCODE_TIMEOUT_MS", 60 * 60 * 1000);
+            const timeoutMs = providerTimeout("OPENCODE_TIMEOUT_MS", options);
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
             const workingDirectory = this.workingDir(userId);
             const response = await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
@@ -376,6 +376,11 @@ export class OpenCodeProvider {
     }
     async createWorkspaceFile() {
         throw new UnsupportedError(this.displayName, "workspace file creation");
+    }
+    async forgetSession(key) {
+        await this.resetSession(key);
+        this.workingDirOverrides.delete(key);
+        this.modelOverrides.delete(key);
     }
     async resetSession(key) {
         await this.artifactTools.reset(key);

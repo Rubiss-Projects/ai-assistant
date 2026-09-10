@@ -7,7 +7,7 @@ import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
-import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
   ensureProviderWorkingDirectory,
@@ -146,7 +146,7 @@ async function sendUntilIdle(
   message: { prompt: string; attachments?: Array<{ type: "file"; path: string; displayName?: string }> },
   options?: SendMessageOptions,
 ): Promise<string> {
-  const hardTimeoutMs = configuredMilliseconds("COPILOT_TIMEOUT_MS", 60 * 60 * 1000);
+  const hardTimeoutMs = providerTimeout("COPILOT_TIMEOUT_MS", options);
   const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
   let lastAssistantMessage: string | undefined;
   let settled = false;
@@ -540,6 +540,13 @@ export class CopilotProvider implements Provider {
     await this.withLiveSession(key, (session) =>
       session.rpc.workspaces.createFile({ path: filePath, content })
     );
+  }
+
+  async forgetSession(key: string): Promise<void> {
+    await this.resetSession(key);
+    this.workingDirOverrides.delete(key);
+    this.reasoningEffortOverrides.delete(key);
+    this.mcpToolOverrides.delete(key);
   }
 
   async resetSession(key: string): Promise<void> {

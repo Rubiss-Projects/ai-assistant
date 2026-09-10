@@ -197,6 +197,12 @@ export class SessionManager {
     createWorkspaceFile(key, filePath, content) {
         return this.providerFor(key).createWorkspaceFile(key, filePath, content);
     }
+    async forgetSession(key) {
+        const provider = this.providerFor(key);
+        await (provider.forgetSession ? provider.forgetSession(key) : provider.resetSession(key));
+        this.overrides.delete(key);
+        this.store.delete(key);
+    }
     resetSession(key) {
         return this.providerFor(key).resetSession(key);
     }
