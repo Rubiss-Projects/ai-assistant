@@ -149,7 +149,7 @@ export class Scheduler {
         const claimed = this.store.claim(id, this.now(), this.limits.minimumMs, true);
         if (!claimed)
             throw new Error("Task is paused, already running, or within its minimum run interval.");
-        this.launch(claimed.task, claimed.run);
+        this.launch(claimed.task, claimed.run, subject.userId);
         return claimed.run.id;
     }
     retryDelivery(subject, id, runId) {
@@ -165,7 +165,7 @@ export class Scheduler {
         run.state = "ready";
         run.error = undefined;
         this.store.saveRun(run);
-        this.launch(task, run);
+        this.launch(task, run, subject.userId);
     }
     tick() {
         if (this.stopped)
@@ -184,8 +184,8 @@ export class Scheduler {
                 this.launch(claimed.task, claimed.run);
         }
     }
-    launch(task, run) {
-        const pending = this.execute(task, run).catch(error => console.error("[scheduler] Run persistence failed:", error));
+    launch(task, run, actorId) {
+        const pending = this.execute(task, run, actorId).catch(error => console.error("[scheduler] Run persistence failed:", error));
         this.active.add(pending);
         void pending.finally(() => this.active.delete(pending));
     }
@@ -196,13 +196,14 @@ export class Scheduler {
         if (this.stopped || !latest?.enabled || latest.revision !== task.revision)
             throw new ScheduleAccessError("Task was paused, edited, deleted, or scheduler stopped.");
     }
-    async execute(task, run) {
+    async execute(task, run, actorId) {
         try {
             this.current(task);
-            await this.adapter.authorize(task);
+            await this.adapter.authorize(task, actorId);
             this.current(task);
             if (run.state === "running") {
                 run.parts = await this.adapter.generate(task, run, this.limits.timeoutMs);
+                this.current(task);
                 if (!run.parts.length || JSON.stringify(run.parts).length > 20_000_000)
                     throw new Error("Scheduled output is empty or exceeds the 20 MB run limit.");
                 run.state = "ready";
@@ -213,7 +214,8 @@ export class Scheduler {
                 this.current(task);
                 run.state = "sending";
                 this.store.saveRun(run);
-                const messageId = await this.adapter.send(task, part, `${run.id}:${run.messageIds.length}`);
+                const messageId = await this.adapter.send(task, part, `${run.id}:${run.messageIds.length}`, () => this.current(task));
+                this.store.assertLease(this.now());
                 run.messageIds.push(messageId);
                 run.state = "ready";
                 this.store.saveRun(run);
@@ -228,12 +230,14 @@ export class Scheduler {
             this.store.assertLease(this.now());
             run.error = error instanceof ScheduleAccessError ? error.message : "Run failed; see bot logs for details.";
             console.error(`[scheduler] Run ${run.id}:`, error);
-            if (error instanceof DeliveryRejectedError)
+            if (error instanceof ScheduleAccessError)
+                run.state = "cancelled";
+            else if (error instanceof DeliveryRejectedError)
                 run.state = "delivery_failed";
             else if (run.state === "sending" || (error instanceof RunTimeoutError && !error.cancellationConfirmed))
                 run.state = "uncertain";
             else
-                run.state = error instanceof ScheduleAccessError ? "cancelled" : "failed";
+                run.state = "failed";
             this.store.saveRun(run);
             const latest = this.store.get(task.id);
             if (latest?.revision === task.revision && (error instanceof ScheduleAccessError || run.state === "uncertain"

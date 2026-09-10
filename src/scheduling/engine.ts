@@ -23,7 +23,7 @@ export class DeliveryRejectedError extends Error {}
 export interface ScheduleAdapter {
   authorize(task: ScheduledTask, actorId?: string): Promise<void>;
   generate(task: ScheduledTask, run: TaskRun, timeoutMs: number): Promise<DeliveryPart[]>;
-  send(task: ScheduledTask, part: DeliveryPart, nonce: string): Promise<string>;
+  send(task: ScheduledTask, part: DeliveryPart, nonce: string, beforeSend: () => void): Promise<string>;
 }
 export class Scheduler {
   private active = new Set<Promise<void>>();
@@ -119,7 +119,7 @@ export class Scheduler {
     if (this.active.size >= this.limits.concurrency) throw new Error("Scheduler is busy; try again later.");
     const claimed = this.store.claim(id, this.now(), this.limits.minimumMs, true);
     if (!claimed) throw new Error("Task is paused, already running, or within its minimum run interval.");
-    this.launch(claimed.task, claimed.run);
+    this.launch(claimed.task, claimed.run, subject.userId);
     return claimed.run.id;
   }
   retryDelivery(subject: AccessSubject, id: string, runId: string): void {
@@ -133,7 +133,7 @@ export class Scheduler {
     if (!task.enabled || this.store.busy(id) || this.active.size >= this.limits.concurrency) throw new Error("Task is paused or scheduler is busy.");
     run.state = "ready"; run.error = undefined;
     this.store.saveRun(run);
-    this.launch(task, run);
+    this.launch(task, run, subject.userId);
   }
   tick(): void {
     if (this.stopped) return;
@@ -149,8 +149,8 @@ export class Scheduler {
       if (claimed) this.launch(claimed.task, claimed.run);
     }
   }
-  private launch(task: ScheduledTask, run: TaskRun): void {
-    const pending = this.execute(task, run).catch(error => console.error("[scheduler] Run persistence failed:", error));
+  private launch(task: ScheduledTask, run: TaskRun, actorId?: string): void {
+    const pending = this.execute(task, run, actorId).catch(error => console.error("[scheduler] Run persistence failed:", error));
     this.active.add(pending);
     void pending.finally(() => this.active.delete(pending));
   }
@@ -160,13 +160,14 @@ export class Scheduler {
     const latest = this.store.get(task.id);
     if (this.stopped || !latest?.enabled || latest.revision !== task.revision) throw new ScheduleAccessError("Task was paused, edited, deleted, or scheduler stopped.");
   }
-  private async execute(task: ScheduledTask, run: TaskRun): Promise<void> {
+  private async execute(task: ScheduledTask, run: TaskRun, actorId?: string): Promise<void> {
     try {
       this.current(task);
-      await this.adapter.authorize(task);
+      await this.adapter.authorize(task, actorId);
       this.current(task);
       if (run.state === "running") {
         run.parts = await this.adapter.generate(task, run, this.limits.timeoutMs);
+        this.current(task);
         if (!run.parts.length || JSON.stringify(run.parts).length > 20_000_000) throw new Error("Scheduled output is empty or exceeds the 20 MB run limit.");
         run.state = "ready";
         this.store.saveRun(run);
@@ -176,7 +177,8 @@ export class Scheduler {
         this.current(task);
         run.state = "sending";
         this.store.saveRun(run);
-        const messageId = await this.adapter.send(task, part, `${run.id}:${run.messageIds.length}`);
+        const messageId = await this.adapter.send(task, part, `${run.id}:${run.messageIds.length}`, () => this.current(task));
+        this.store.assertLease(this.now());
         run.messageIds.push(messageId);
         run.state = "ready";
         this.store.saveRun(run);
@@ -190,9 +192,10 @@ export class Scheduler {
       this.store.assertLease(this.now());
       run.error = error instanceof ScheduleAccessError ? error.message : "Run failed; see bot logs for details.";
       console.error(`[scheduler] Run ${run.id}:`, error);
-      if (error instanceof DeliveryRejectedError) run.state = "delivery_failed";
+      if (error instanceof ScheduleAccessError) run.state = "cancelled";
+      else if (error instanceof DeliveryRejectedError) run.state = "delivery_failed";
       else if (run.state === "sending" || (error instanceof RunTimeoutError && !error.cancellationConfirmed)) run.state = "uncertain";
-      else run.state = error instanceof ScheduleAccessError ? "cancelled" : "failed";
+      else run.state = "failed";
       this.store.saveRun(run);
       const latest = this.store.get(task.id);
       if (latest?.revision === task.revision && (error instanceof ScheduleAccessError || run.state === "uncertain"
