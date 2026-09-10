@@ -116,9 +116,10 @@ export class DiscordScheduleAdapter {
             }
         }
     }
-    async send(task, part, nonce) {
+    async send(task, part, nonce, beforeSend = () => { }) {
         const channel = await this.destination(task);
         try {
+            beforeSend();
             const result = await channel.send({
                 content: part.content || undefined,
                 files: part.attachment ? [{ attachment: Buffer.from(part.attachment.base64, "base64"), name: part.attachment.name }] : [],

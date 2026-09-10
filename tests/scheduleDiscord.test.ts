@@ -101,3 +101,10 @@ test("fixed messages never invoke a provider", async () => {
   const adapter = new DiscordScheduleAdapter(f.client, createAccessPolicy({}), {} as SessionManager);
   assert.deepEqual(await adapter.generate({ ...task, kind: "message", content: "Exact text", contextMessages: 0 }, run, 1), [{ content: "Exact text" }]);
 });
+
+test("a task change during channel fetch is checked immediately before sending", async () => {
+  const f = discordMock();
+  const adapter = new DiscordScheduleAdapter(f.client, createAccessPolicy({}), {} as SessionManager);
+  await assert.rejects(adapter.send(task, { content: "Stale output" }, "run:0", () => { throw new Error("Task changed"); }), /Task changed/);
+  assert.equal(f.sent.length, 0);
+});
