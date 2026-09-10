@@ -1,4 +1,7 @@
 export const PROVIDERS = ["copilot", "codex", "opencode"];
+export function normalizeProviderName(value) {
+    return value?.trim().toLowerCase() || "copilot";
+}
 export class UnsupportedError extends Error {
     constructor(providerName, feature) {
         super(`The **${providerName}** provider does not support **${feature}**.`);

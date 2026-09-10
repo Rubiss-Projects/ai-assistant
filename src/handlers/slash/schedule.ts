@@ -4,7 +4,7 @@ import { chunkForDiscord } from "../../common/chunkForDiscord.js";
 import type { Scheduler } from "../../scheduling/engine.js";
 import { nextOccurrences, scheduleDescription } from "../../scheduling/cron.js";
 import type { ScheduledTask } from "../../scheduling/types.js";
-import { PROVIDERS, type ProviderName } from "../../providers/types.js";
+import { PROVIDERS, normalizeProviderName, type ProviderName } from "../../providers/types.js";
 
 export function describeTask(task: ScheduledTask): string {
   const dates = nextOccurrences(task.cron, task.timezone).map(time => `<t:${Math.floor(time / 1000)}:F>`).join("\n");
@@ -24,7 +24,7 @@ export async function handleSchedule(cmd: ChatInputCommandInteraction, scheduler
     const sub = cmd.options.getSubcommand(true);
     if (sub === "create") {
       const kind = cmd.options.getString("kind", true) as "message" | "ai";
-      const provider = cmd.options.getString("provider") ?? process.env.PROVIDER ?? "copilot";
+      const provider = normalizeProviderName(cmd.options.getString("provider") ?? process.env.PROVIDER);
       if (kind === "ai" && !PROVIDERS.includes(provider as ProviderName)) throw new Error("Choose a supported provider.");
       const model = cmd.options.getString("model") ?? undefined;
       const reasoning = cmd.options.getString("reasoning") ?? (provider === "opencode" ? undefined : "low");

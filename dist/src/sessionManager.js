@@ -1,7 +1,7 @@
 import { chunkForDiscord } from "./common/chunkForDiscord.js";
 import { ProviderStore } from "./common/providerStore.js";
 import { createProvider, isValidProviderName } from "./providers/index.js";
-import { PROVIDERS, isUnsupported, RunTimeoutError, UnsupportedError } from "./providers/types.js";
+import { PROVIDERS, normalizeProviderName, isUnsupported, RunTimeoutError, UnsupportedError } from "./providers/types.js";
 import { randomUUID } from "node:crypto";
 export { chunkForDiscord, isUnsupported, RunTimeoutError, UnsupportedError };
 /**
@@ -45,7 +45,7 @@ export class SessionManager {
     overrides = new Map(); // session key -> provider name
     store;
     constructor(defaultName, store) {
-        const name = (defaultName ?? process.env.PROVIDER ?? "copilot").trim().toLowerCase() || "copilot";
+        const name = normalizeProviderName(defaultName ?? process.env.PROVIDER);
         if (!isValidProviderName(name)) {
             throw new Error(`Unknown PROVIDER "${name}". Choose one of: ${PROVIDERS.join(", ")}.`);
         }

@@ -1,6 +1,6 @@
 import { chunkForDiscord } from "../../common/chunkForDiscord.js";
 import { nextOccurrences, scheduleDescription } from "../../scheduling/cron.js";
-import { PROVIDERS } from "../../providers/types.js";
+import { PROVIDERS, normalizeProviderName } from "../../providers/types.js";
 export function describeTask(task) {
     const dates = nextOccurrences(task.cron, task.timezone).map(time => `<t:${Math.floor(time / 1000)}:F>`).join("\n");
     return `Schedule \`${task.id}\` — ${task.enabled ? "enabled" : "paused"}\nOwner: <@${task.ownerId}> · Destination: <#${task.channelId}>\n${scheduleDescription(task.cron, task.timezone)}\nCron: \`${task.cron}\`\nNext occurrences${task.enabled ? "" : " (if resumed)"}:\n${dates}\n${task.pauseReason ?? ""}\n${task.kind === "ai" ? `AI: ${task.provider} / ${task.model}; context: ${task.contextMessages} messages\n` : ""}${task.content}`;
@@ -22,7 +22,7 @@ export async function handleSchedule(cmd, scheduler, subject) {
         const sub = cmd.options.getSubcommand(true);
         if (sub === "create") {
             const kind = cmd.options.getString("kind", true);
-            const provider = cmd.options.getString("provider") ?? process.env.PROVIDER ?? "copilot";
+            const provider = normalizeProviderName(cmd.options.getString("provider") ?? process.env.PROVIDER);
             if (kind === "ai" && !PROVIDERS.includes(provider))
                 throw new Error("Choose a supported provider.");
             const model = cmd.options.getString("model") ?? undefined;
