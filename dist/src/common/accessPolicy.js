@@ -72,8 +72,6 @@ export function createAccessPolicy(env = process.env) {
                 if (!s.guildId)
                     return false;
                 // Legacy open-admin fallback never grants unattended execution.
-                if (capability === "schedule.ai.create")
-                    return explicitAdmin(s);
                 return explicitAdmin(s) || granted(s, capability);
             }
             if (explicitAdmin(s) || granted(s, capability))

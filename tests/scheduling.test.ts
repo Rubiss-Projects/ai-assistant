@@ -40,7 +40,7 @@ test("schedule rights never inherit legacy open-admin fallback", () => {
   assert.equal(explicit.can(admin, "schedule.manage.guild", { guildId: "999" }), false);
 });
 
-test("role grants are guild scoped, AI remains trusted-admin only, own resources stay owned", t => {
+test("explicit AI role grants are guild scoped, preserve ownership and do not grant bot administration", t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rights-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "rights.json");
@@ -51,9 +51,17 @@ test("role grants are guild scoped, AI remains trusted-admin only, own resources
   assert.equal(policy.canMessage("101", user), true);
   assert.equal(policy.can({ ...user, guildId: "201" }, "schedule.message.create"), false);
   assert.equal(policy.can({ ...user, roleIds: [] }, "schedule.message.create"), false);
-  assert.equal(policy.can(user, "schedule.ai.create"), false);
+  assert.equal(policy.can(user, "schedule.ai.create"), true);
+  assert.equal(policy.can({ ...user, guildId: "201" }, "schedule.ai.create"), false);
+  assert.equal(policy.can({ ...user, roleIds: [] }, "schedule.ai.create"), false);
+  assert.equal(policy.can({ ...user, guildId: null }, "schedule.ai.create"), false);
   assert.equal(policy.can(user, "schedule.manage.own", { guildId: "200", ownerId: "102" }), false);
   assert.equal(policy.can(user, "bot.manage"), false);
+  assert.equal(policy.can(user, "workspace.manage"), false);
+  assert.equal(policy.isExplicitAdmin(user), false);
+  fs.writeFileSync(file, JSON.stringify({ grants: [{ guildId: "200", roleId: "400", roles: ["server-admin"] }] }));
+  const messageOnly = createAccessPolicy({ DISCORD_RIGHTS_FILE: file, DISCORD_ADMIN_USERS: "999" });
+  assert.equal(messageOnly.can(user, "schedule.ai.create"), false);
 });
 
 test("malformed and overbroad rights fail closed", () => {

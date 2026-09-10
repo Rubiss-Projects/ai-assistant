@@ -80,7 +80,7 @@ export class Scheduler {
     }
     requireCreate(subject, task) {
         if (!this.access.can(subject, task.kind === "ai" ? "schedule.ai.create" : "schedule.message.create", task)) {
-            throw new ScheduleAccessError(task.kind === "ai" ? "AI schedules require an explicit bot administrator." : "You do not have permission to create message schedules.");
+            throw new ScheduleAccessError(task.kind === "ai" ? "You do not have permission to create AI schedules." : "You do not have permission to create message schedules.");
         }
     }
     async create(subject, input) {
