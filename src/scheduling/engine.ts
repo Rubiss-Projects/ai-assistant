@@ -158,7 +158,8 @@ export class Scheduler {
   private current(task: ScheduledTask): void {
     this.store.assertLease(this.now());
     const latest = this.store.get(task.id);
-    if (this.stopped || !latest?.enabled || latest.revision !== task.revision) throw new ScheduleAccessError("Task was paused, edited, deleted, or scheduler stopped.");
+    // stop() rejects new work but drains claimed runs while retaining the lease.
+    if (!latest?.enabled || latest.revision !== task.revision) throw new ScheduleAccessError("Task was paused, edited, or deleted.");
   }
   private async execute(task: ScheduledTask, run: TaskRun, actorId?: string): Promise<void> {
     try {
