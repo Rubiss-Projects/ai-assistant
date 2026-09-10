@@ -76,6 +76,8 @@ export interface SendAttachment {
 }
 
 export interface SendMessageOptions {
+  /** Host-selected cap; never extends the provider timeout. */
+  timeoutMs?: number;
   onProgress?: (update: { elapsedMs: number; message: string }) => void | Promise<void>;
   /** Host-owned, permission-checked Discord lookup; credentials never reach providers. */
   resolveArtifactMessage?: (url: string) => Promise<ArtifactMessage>;
@@ -157,6 +159,7 @@ export interface Provider {
   createWorkspaceFile(key: string, filePath: string, content: string): Promise<void>;
 
   resetSession(key: string): Promise<void>;
+  forgetSession?(key: string): Promise<void>;
   setSessionWorkingDir(key: string, dir: string): void;
   getSessionWorkingDir(key: string): string | undefined;
   setSessionMcpEnabled(key: string, serverName: string, enabled: boolean): void;

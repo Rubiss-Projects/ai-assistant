@@ -25,62 +25,17 @@ import { handleWorkspace } from "./handlers/slash/workspace.js";
 import { handleMcp } from "./handlers/slash/mcp.js";
 import { handleMention } from "./handlers/mention.js";
 
-function userIdSet(value: string | undefined): Set<string> {
-  return new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean));
-}
+import os from "node:os";
+import path from "node:path";
+import { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
+import { Scheduler } from "./scheduling/engine.js";
+import { ScheduleStore } from "./scheduling/store.js";
+import { DiscordScheduleAdapter, discordSubject } from "./scheduling/discordAdapter.js";
+import { handleSchedule } from "./handlers/slash/schedule.js";
+export { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
+export type { SlashCommandRequest } from "./common/accessPolicy.js";
 
-export function createAccessPolicy(env: NodeJS.ProcessEnv = process.env): {
-  canMessage: (userId: string) => boolean;
-  canUseAdminCommands: (userId: string) => boolean;
-} {
-  const allowedUsers = userIdSet(env.DISCORD_ALLOWED_USERS);
-  const adminUsers = userIdSet(env.DISCORD_ADMIN_USERS);
-  const canMessage = (userId: string): boolean =>
-    allowedUsers.size === 0 || allowedUsers.has(userId);
-
-  return {
-    canMessage,
-    canUseAdminCommands: (userId: string): boolean =>
-      adminUsers.size > 0 ? adminUsers.has(userId) : canMessage(userId),
-  };
-}
-
-export interface SlashCommandRequest {
-  commandName: string;
-  subcommand?: string | null;
-  hasWorkspace?: boolean;
-}
-
-const ADMIN_COMMANDS = new Set(["fleet", "leave", "mcp", "servers", "status", "workspace"]);
-const PUBLIC_COMMANDS = new Set(["compact", "history", "reset"]);
-const PUBLIC_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
-  agent: new Set(["current", "list"]),
-  mode: new Set(["get"]),
-  model: new Set(["current", "list"]),
-  plan: new Set(["delete", "read", "update"]),
-  provider: new Set(["current", "list"]),
-  reasoning: new Set(["current", "list"]),
-};
-
-/** Unknown commands and subcommands are administrative by default. */
-export function slashCommandRequiresAdmin(request: SlashCommandRequest): boolean {
-  const { commandName, subcommand, hasWorkspace = false } = request;
-  if (ADMIN_COMMANDS.has(commandName)) return true;
-  if (PUBLIC_COMMANDS.has(commandName)) return Boolean(subcommand);
-  if (commandName === "ask" || commandName === "chat") return hasWorkspace;
-  return !subcommand || !PUBLIC_SUBCOMMANDS[commandName]?.has(subcommand);
-}
-
-export function canInvokeSlashCommand(
-  access: ReturnType<typeof createAccessPolicy>,
-  userId: string,
-  request: SlashCommandRequest,
-): boolean {
-  if (access.canUseAdminCommands(userId)) return true;
-  return !slashCommandRequiresAdmin(request) && access.canMessage(userId);
-}
-
-export function createBot(sessions: SessionManager): Client {
+export function createBot(sessions: SessionManager): Client & { stopScheduler(): Promise<void> } {
   // Computed here so dotenv.config() has already run in index.ts.
   const access = createAccessPolicy();
 
@@ -99,7 +54,22 @@ export function createBot(sessions: SessionManager): Client {
     partials: [Partials.Channel], // Required for DM support
   });
 
+  const enabled = process.env.SCHEDULES_ENABLED?.trim() || "false";
+  if (!["true", "false"].includes(enabled)) throw new Error("SCHEDULES_ENABLED must be true or false.");
+  const scheduler = enabled === "true" ? new Scheduler(
+    new ScheduleStore(path.join(os.homedir(), ".config", "ai-assistant", "schedules.sqlite")),
+    access, new DiscordScheduleAdapter(client, access, sessions),
+  ) : undefined;
+
   client.once(Events.ClientReady, (c) => {
+    try { scheduler?.start(); }
+    catch (error) {
+      console.error("[scheduler] Startup failed:", error);
+      process.exitCode = 1;
+      client.destroy();
+      void sessions.shutdown();
+      return;
+    }
     console.log(`✅ Discord bot ready as ${c.user.tag}`);
   });
 
@@ -112,7 +82,14 @@ export function createBot(sessions: SessionManager): Client {
       && Boolean(cmd.options.getString("workspace", false));
     const request = { commandName: cmd.commandName, subcommand, hasWorkspace };
 
-    if (!canInvokeSlashCommand(access, interaction.user.id, request)) {
+    const roles = cmd.member?.roles;
+    const subject = { userId: cmd.user.id, guildId: cmd.guildId,
+      roleIds: Array.isArray(roles) ? roles : roles ? [...roles.cache.keys()] : [] };
+    if (cmd.commandName === "schedule") {
+      await handleSchedule(cmd, scheduler, subject);
+      return;
+    }
+    if (!canInvokeSlashCommand(access, interaction.user.id, request, subject)) {
       const content = slashCommandRequiresAdmin(request)
         ? "⛔ This action is restricted to bot administrators."
         : "⛔ You are not authorized to use this bot.";
@@ -180,21 +157,21 @@ export function createBot(sessions: SessionManager): Client {
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (!client.user) return;
-    if (!access.canMessage(message.author.id)) return;
+    const ownedThread = message.channel.isThread() && message.channel.ownerId === client.user.id;
+    const isMentioned = message.mentions.has(client.user.id);
+    const isFreeChannel = freeChannels.has(message.channelId);
+    if (!ownedThread && !isMentioned && !isFreeChannel) return;
+    const subject = await discordSubject(client, message.author.id, message.guildId).catch(() => undefined);
+    if (!subject || !access.canMessage(message.author.id, subject)) return;
 
     // Bot-owned threads: respond to every message, session keyed by thread ID
-    if (message.channel.isThread() && message.channel.ownerId === client.user.id) {
+    if (ownedThread) {
       await handleMention(message, client, sessions, message.channelId, access.canMessage);
       return;
     }
 
-    const isMentioned = message.mentions.has(client.user.id);
-    const isFreeChannel = freeChannels.has(message.channelId);
-
-    if (!isMentioned && !isFreeChannel) return;
-
     await handleMention(message, client, sessions, undefined, access.canMessage);
   });
 
-  return client;
+  return Object.assign(client, { stopScheduler: async () => { await scheduler?.stop(); } });
 }

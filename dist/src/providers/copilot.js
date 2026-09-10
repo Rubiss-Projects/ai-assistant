@@ -6,7 +6,7 @@ import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
-import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
 const DEFAULT_MODEL = process.env.COPILOT_MODEL?.trim() || "claude-haiku-4.5";
@@ -98,7 +98,7 @@ function toHistoryEvent(event) {
     }
 }
 async function sendUntilIdle(session, message, options) {
-    const hardTimeoutMs = configuredMilliseconds("COPILOT_TIMEOUT_MS", 60 * 60 * 1000);
+    const hardTimeoutMs = providerTimeout("COPILOT_TIMEOUT_MS", options);
     const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
     let lastAssistantMessage;
     let settled = false;
@@ -416,6 +416,12 @@ export class CopilotProvider {
     }
     async createWorkspaceFile(key, filePath, content) {
         await this.withLiveSession(key, (session) => session.rpc.workspaces.createFile({ path: filePath, content }));
+    }
+    async forgetSession(key) {
+        await this.resetSession(key);
+        this.workingDirOverrides.delete(key);
+        this.reasoningEffortOverrides.delete(key);
+        this.mcpToolOverrides.delete(key);
     }
     async resetSession(key) {
         await this.artifactTools.reset(key);

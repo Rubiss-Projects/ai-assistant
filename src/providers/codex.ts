@@ -9,7 +9,7 @@ import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt, codexArtifactMcpOverride, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
-import { configuredMilliseconds, startProgressUpdates } from "../common/runLifecycle.js";
+import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
   configuredSitesEnabled,
@@ -554,7 +554,7 @@ export class CodexProvider implements Provider {
                 ...images.map((a) => ({ type: "local_image" as const, path: a.path })),
               ]
             : artifactPrompt;
-        const timeoutMs = configuredMilliseconds("CODEX_TIMEOUT_MS", 60 * 60 * 1000);
+        const timeoutMs = providerTimeout("CODEX_TIMEOUT_MS", options);
         const controller = new AbortController();
         let timedOut = false;
         const stopProgress = startProgressUpdates(options);
@@ -788,6 +788,14 @@ export class CodexProvider implements Provider {
 
   async createWorkspaceFile(): Promise<void> {
     throw new UnsupportedError(this.displayName, "workspace file creation");
+  }
+
+  async forgetSession(key: string): Promise<void> {
+    await this.resetSession(key);
+    this.workingDirOverrides.delete(key);
+    this.modelOverrides.delete(key);
+    this.reasoningEffortOverrides.delete(key);
+    this.mcpToolOverrides.delete(key);
   }
 
   async resetSession(key: string): Promise<void> {

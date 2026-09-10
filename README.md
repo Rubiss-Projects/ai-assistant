@@ -12,6 +12,7 @@ A Discord bot for **GitHub Copilot**, **OpenAI Codex**, and **OpenCode**. Choose
 
 - [Getting started](#getting-started)
 - [Using the bot](#using-the-bot)
+- [Scheduled tasks and named rights](#scheduled-tasks-and-named-rights)
 - [Environment variable reference](#environment-variable-reference)
 - [Access and security](#access-and-security)
 - [Managing your installation](#managing-your-installation)
@@ -196,6 +197,114 @@ Say “remember this” or “put this in memory” to save information for the 
 `✅` = supported · `⚠️` = replies "provider does not support this" · `partial` = listing works, injection not
 
 Support also depends on the configured security mode. Copilot's additional features include custom agents, plans, workspace commands, and user-scope skills loaded from `~/.agents/skills` at session start.
+
+## Scheduled tasks and named rights
+
+Authorization is centralized in `src/common/accessPolicy.ts`. Existing
+`DISCORD_ALLOWED_USERS` and `DISCORD_ADMIN_USERS` behavior remains compatible,
+including the open-admin fallback for existing commands. Optional
+`DISCORD_RIGHTS_FILE` JSON grants add named capabilities to individual Discord
+users or guild-scoped Discord roles. The file is operator-controlled, must be
+outside agent workspaces, and is validated at startup; restart to reload changes.
+See [`rights.example.json`](rights.example.json) for a complete example with
+placeholder IDs. Discord's Administrator permission does **not** automatically
+grant bot administration.
+
+| Capability | Operations |
+| --- | --- |
+| `chat.use` | Conversations and existing public slash actions |
+| `session.configure` | Model, reasoning, provider, agent, and mode changes |
+| `workspace.manage` | Workspace operations and explicit `/ask`/`/chat` workspaces |
+| `mcp.manage` | MCP configuration |
+| `bot.manage` | Global bot administration: servers, leave, status, fleet |
+| `schedule.message.create` | Create or modify fixed-message tasks |
+| `schedule.ai.create` | AI tasks; additionally requires explicit bot administration |
+| `schedule.manage.own` | Inspect and manage owned tasks |
+| `schedule.manage.guild` | Inspect and manage all tasks in the granted guild |
+
+The `member` preset grants `chat.use`. The `scheduler` preset adds
+`schedule.message.create` and `schedule.manage.own`. The `server-admin` preset
+adds `schedule.manage.guild`; it grants no host, provider, or cross-server
+administration. The global `bot-admin` preset grants all capabilities and may
+only be assigned to user IDs. Role grants require `guildId`. Task edits,
+resumes, manual runs, and delivery retries also require creation rights for that
+task type: a server schedule manager cannot rewrite or execute an AI task owned
+by a bot administrator. No in-Discord rights editor is exposed.
+
+For an admin-only installation, set `DISCORD_ADMIN_USERS` explicitly and
+`SCHEDULES_ENABLED=true`. For a scheduling whitelist, additionally grant the
+`scheduler` preset to selected user IDs or a Discord role. An empty admin list
+never grants scheduling, even if legacy commands allow everybody. Scheduling
+rights are additive to the existing lists; set an explicit admin list if you
+want other configuration commands restricted too.
+
+```text
+/schedule create kind:message channel:#reminders content:Submit your availability cron:0 9 * * 5 timezone:America/New_York
+/schedule create kind:ai channel:#daily-updates content:Summarize the recent discussion cron:0 9 * * 1-5 timezone:America/New_York provider:codex model:<model-id> context_messages:100
+```
+
+Creation shows the interpreted schedule and the next three occurrences.
+`/schedule list` shows manageable tasks in the current guild. Use
+`/schedule inspect id:<id>` for the prompt/message, ownership, saved settings,
+pause reason, recent runs, and delivered-message links. `/schedule edit`,
+`pause`, `resume`, `delete`, and `run-now` operate on that ID. Delete also removes
+the task's run history. Configuration responses are ephemeral. A guild schedule
+manager can inspect all scheduled prompts in their guild, so grant that role
+only to users trusted with those prompts.
+
+Only ordinary guild text channels are supported initially; DMs, threads, forum
+containers, natural-language schedule creation, and one-time tasks are deferred.
+Cron accepts five fields (minute, hour, day of month, month, weekday) and requires
+an explicit IANA timezone. Local schedules use cron-parser's daylight-saving
+semantics: the UTC execution time changes with the local clock. Use UTC when
+fixed UTC intervals matter; inspect the preview around clock changes. A runtime
+minimum interval also prevents closely spaced executions, including manual runs.
+
+Fixed-message tasks make no provider call. AI tasks require an explicit saved
+model, use the selected provider (or the bot's configured provider at creation),
+and optionally save a reasoning effort. They start with a fresh session and a
+separate temporary workspace on every run. Provider-wide security, system prompt,
+and integration configuration still apply; this is not a new tool sandbox.
+For that reason, AI scheduling remains restricted to explicit bot administrators.
+Scheduled AI runs use at most `SCHEDULE_AI_TIMEOUT_MS`, or the provider's shorter
+configured inference timeout, plus its existing cancellation grace period.
+
+AI context is opt-in (`context_messages:0` by default, maximum 100 recent messages,
+40,000 characters). Only non-bot messages from the destination channel whose
+authors are allowed to use the bot are included. No conversation history or
+server-wide memory is automatically reused. Host-provided Discord attachment
+lookups are restricted to that same destination, and linked private channels
+cannot be resolved through this callback. Every run checks the owner's current
+guild membership, role grants, and owner/bot channel permissions before execution
+and before each outbound message. Revoked access pauses the task. Restart after
+environment or rights-file changes so the new policy applies. All scheduled
+posts suppress automatic user, role, and everyone mentions.
+
+Schedules and run history live in
+`~/.config/ai-assistant/schedules.sqlite` (inside the existing `assistant-data`
+volume in Docker). Back up the database consistently with its WAL, or stop the
+bot before copying it. SQLite transactional claims and a 60-second scheduler
+lease allow one active scheduler per database. An unclean restart may need to
+wait for that lease to expire. A stale worker is checked before delivery.
+
+Missed occurrences after downtime are skipped. Tasks do not overlap, and full
+worker capacity skips occurrences rather than building an unbounded backlog.
+Defaults are 15 minutes between starts, 10 tasks per owner across servers, 50 per
+guild, two concurrent runs, and a 10-minute AI inference limit; the `SCHEDULE_*`
+variables in `.env.example` configure these bounds. Paused tasks count toward
+quotas. Three consecutive generation failures pause a task.
+
+Generation output and delivery state are recorded separately. Successful runs
+retain message IDs but discard output payloads. Recent ordinary run history is
+bounded to 20 per task; unresolved delivery failures and uncertain outcomes are
+retained for inspection. A definitely rejected Discord send can be retried with
+`/schedule retry-delivery id:<id> run_id:<run-id>`; it sends only the remaining
+parts and does not repeat AI work. Editing a task invalidates old delivery retries.
+An ambiguous send, interrupted inference, or unconfirmed cancellation pauses the
+task for inspection; it is never automatically replayed. Exactly-once Discord
+delivery is not guaranteed, including the crash window between a successful send
+and saving its message ID. Pausing or editing suppresses pending output, but cannot
+recall a message already being sent or undo provider tool effects.
 
 ## Environment variable reference
 

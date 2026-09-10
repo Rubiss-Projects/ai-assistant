@@ -14,6 +14,7 @@ const client = createBot(sessions);
 async function shutdown(signal) {
     console.log(`\n${signal} received — shutting down...`);
     try {
+        await client.stopScheduler();
         client.destroy();
         await sessions.shutdown();
         console.log("✅ Shutdown complete.");

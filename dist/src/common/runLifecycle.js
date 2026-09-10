@@ -14,3 +14,12 @@ export function startProgressUpdates(options) {
     }, intervalMs);
     return () => clearInterval(timer);
 }
+export function providerTimeout(key, options) {
+    const configured = configuredMilliseconds(key, 60 * 60 * 1000);
+    const requested = options?.timeoutMs;
+    if (requested === undefined)
+        return configured;
+    if (!Number.isSafeInteger(requested) || requested < 1)
+        throw new Error("Invalid run timeout.");
+    return Math.min(configured, requested);
+}

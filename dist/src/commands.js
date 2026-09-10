@@ -1,5 +1,7 @@
+import { scheduleCommand } from "./scheduling/commands.js";
 import { SlashCommandBuilder } from "discord.js";
 export const commands = [
+    scheduleCommand,
     new SlashCommandBuilder()
         .setName("ask")
         .setDescription("Ask the AI a one-shot question (no session history)")
