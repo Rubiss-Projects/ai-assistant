@@ -300,6 +300,7 @@ bounded to 20 per task; unresolved delivery failures and uncertain outcomes are
 retained for inspection. A definitely rejected Discord send can be retried with
 `/schedule retry-delivery id:<id> run_id:<run-id>`; it sends only the remaining
 parts and does not repeat AI work. Editing a task invalidates old delivery retries.
+Output saved before a restart remains available for an explicit delivery retry.
 An ambiguous send, interrupted inference, or unconfirmed cancellation pauses the
 task for inspection; it is never automatically replayed. Exactly-once Discord
 delivery is not guaranteed, including the crash window between a successful send

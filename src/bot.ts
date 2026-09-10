@@ -30,7 +30,8 @@ import path from "node:path";
 import { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
 import { Scheduler } from "./scheduling/engine.js";
 import { ScheduleStore } from "./scheduling/store.js";
-import { DiscordScheduleAdapter, discordSubject } from "./scheduling/discordAdapter.js";
+import { discordSubject, contextAuthorPolicy } from "./common/discordAccess.js";
+import { DiscordScheduleAdapter } from "./scheduling/discordAdapter.js";
 import { handleSchedule } from "./handlers/slash/schedule.js";
 export { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
 export type { SlashCommandRequest } from "./common/accessPolicy.js";
@@ -99,10 +100,10 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
 
     switch (cmd.commandName) {
       case "ask":
-        await handleAsk(cmd, sessions, access.canMessage);
+        await handleAsk(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId));
         break;
       case "chat":
-        await handleChat(cmd, sessions, access.canMessage);
+        await handleChat(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId));
         break;
       case "reset":
         await handleReset(cmd, sessions);
@@ -166,11 +167,11 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
 
     // Bot-owned threads: respond to every message, session keyed by thread ID
     if (ownedThread) {
-      await handleMention(message, client, sessions, message.channelId, access.canMessage);
+      await handleMention(message, client, sessions, message.channelId, contextAuthorPolicy(access, client, message.guildId));
       return;
     }
 
-    await handleMention(message, client, sessions, undefined, access.canMessage);
+    await handleMention(message, client, sessions, undefined, contextAuthorPolicy(access, client, message.guildId));
   });
 
   return Object.assign(client, { stopScheduler: async () => { await scheduler?.stop(); } });

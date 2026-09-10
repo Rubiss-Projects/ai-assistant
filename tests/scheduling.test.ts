@@ -210,3 +210,40 @@ test("host timeout can only shorten provider timeout", () => {
   assert.equal(providerTimeout("TEST_MISSING_TIMEOUT", { timeoutMs: 9_000_000 }), 3_600_000);
   assert.throws(() => providerTimeout("TEST_MISSING_TIMEOUT", { timeoutMs: NaN }));
 });
+
+test("restart preserves generated output for explicit delivery retry", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ready-schedule-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new ScheduleStore(path.join(dir, "db.sqlite"));
+  t.after(() => store.close());
+  const now = Date.UTC(2026, 0, 1);
+  store.acquire(now);
+  store.save({ ...input, id: "task", ownerId: "100", revision: 1, createdAt: now, nextRunAt: now, enabled: true });
+  const { run } = store.claim("task", now, 60_000)!;
+  run.state = "ready";
+  run.parts = [{ content: "Already generated" }];
+  store.saveRun(run);
+  store.recover(now + 1);
+  assert.equal(store.getRun(run.id)?.state, "delivery_failed");
+  assert.deepEqual(store.getRun(run.id)?.parts, [{ content: "Already generated" }]);
+  assert.equal(store.get("task")?.enabled, true);
+  assert.equal(store.get("task")?.revision, 1);
+});
+
+test("context author policy retains guild-scoped user and role grants", async t => {
+  const { contextAuthorPolicy } = await import("../src/common/discordAccess.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "context-rights-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "rights.json");
+  fs.writeFileSync(file, JSON.stringify({ grants: [
+    { userId: "101", guildId: "200", roles: ["member"] },
+    { roleId: "400", guildId: "200", roles: ["member"] },
+  ] }));
+  const policy = createAccessPolicy({ DISCORD_ALLOWED_USERS: "100", DISCORD_ADMIN_USERS: "100", DISCORD_RIGHTS_FILE: file });
+  const client = { guilds: { cache: new Map([["200", { members: { cache: new Map([["102", { roles: { cache: new Map([["400", {}]]) } }]]) } }]]) } };
+  const filter = contextAuthorPolicy(policy, client as any, "200");
+  assert.equal(filter("101"), true);
+  assert.equal(filter("102"), true);
+  assert.equal(filter("103"), false);
+  assert.equal(contextAuthorPolicy(policy, client as any, "201")("101"), false);
+});
