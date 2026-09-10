@@ -247,3 +247,41 @@ test("context author policy retains guild-scoped user and role grants", async t 
   assert.equal(filter("103"), false);
   assert.equal(contextAuthorPolicy(policy, client as any, "201")("101"), false);
 });
+
+test("repeated rejected deliveries cannot accumulate unbounded saved payloads", t => {
+  const store = new ScheduleStore(":memory:");
+  t.after(() => store.close());
+  const now = Date.UTC(2026, 0, 1);
+  store.acquire(now);
+  store.save({ ...input, id: "task", ownerId: "100", revision: 1, createdAt: now, nextRunAt: now, enabled: true });
+  let firstId = "";
+  for (let i = 0; i < 25; i++) {
+    const { run } = store.claim("task", now + i * 1000, 1, true)!;
+    if (!firstId) firstId = run.id;
+    run.state = "delivery_failed";
+    run.parts = [{ content: "Saved result" }];
+    store.saveRun(run);
+  }
+  assert.equal(store.runs("task").length, 20);
+  assert.equal(store.getRun(firstId), undefined);
+});
+
+test("shared mode rejects rights files writable through provider workspaces", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "protected-rights-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const workspace = path.join(dir, "workspace");
+  fs.mkdirSync(workspace);
+  const inside = path.join(workspace, "rights.json");
+  const outside = path.join(dir, "rights.json");
+  fs.writeFileSync(inside, '{"grants":[]}');
+  fs.writeFileSync(outside, '{"grants":[]}');
+  const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: workspace };
+  assert.throws(() => createAccessPolicy({ ...env, DISCORD_RIGHTS_FILE: inside }), /outside the provider workspace/);
+  const linkIn = path.join(dir, "link-in.json");
+  const linkOut = path.join(workspace, "link-out.json");
+  fs.symlinkSync(inside, linkIn);
+  fs.symlinkSync(outside, linkOut);
+  assert.throws(() => createAccessPolicy({ ...env, DISCORD_RIGHTS_FILE: linkIn }), /outside the provider workspace/);
+  assert.throws(() => createAccessPolicy({ ...env, DISCORD_RIGHTS_FILE: linkOut }), /outside the provider workspace/);
+  assert.doesNotThrow(() => createAccessPolicy({ ...env, DISCORD_RIGHTS_FILE: outside }));
+});

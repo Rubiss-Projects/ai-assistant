@@ -205,7 +205,8 @@ Authorization is centralized in `src/common/accessPolicy.ts`. Existing
 including the open-admin fallback for existing commands. Optional
 `DISCORD_RIGHTS_FILE` JSON grants add named capabilities to individual Discord
 users or guild-scoped Discord roles. The file is operator-controlled, must be
-outside agent workspaces, and is validated at startup; restart to reload changes.
+outside agent workspaces, and is validated at startup; shared mode rejects paths
+inside the provider workspace root, including symlink targets. Restart to reload changes.
 See [`rights.example.json`](rights.example.json) for a complete example with
 placeholder IDs. Discord's Administrator permission does **not** automatically
 grant bot administration.
@@ -295,9 +296,8 @@ variables in `.env.example` configure these bounds. Paused tasks count toward
 quotas. Three consecutive generation failures pause a task.
 
 Generation output and delivery state are recorded separately. Successful runs
-retain message IDs but discard output payloads. Recent ordinary run history is
-bounded to 20 per task; unresolved delivery failures and uncertain outcomes are
-retained for inspection. A definitely rejected Discord send can be retried with
+retain message IDs but discard output payloads. Run history, including unresolved delivery failures and uncertain outcomes, is
+bounded to the latest 20 runs per task. Inspect failures before starting more runs. A definitely rejected Discord send can be retried with
 `/schedule retry-delivery id:<id> run_id:<run-id>`; it sends only the remaining
 parts and does not repeat AI work. Editing a task invalidates old delivery retries.
 Output saved before a restart remains available for an explicit delivery retry.
