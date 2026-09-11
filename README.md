@@ -287,8 +287,12 @@ lookups are restricted to that same destination, and linked private channels
 cannot be resolved through this callback. Every run checks the owner's current
 guild membership, role grants, and owner/bot channel permissions before execution
 and before each outbound message. Revoked access pauses the task. Restart after
-environment or rights-file changes so the new policy applies. All scheduled
-posts suppress automatic user, role, and everyone mentions.
+environment or rights-file changes so the new policy applies. Both fixed-message
+and AI scheduled posts allow user, role, `@everyone`, and `@here` mentions.
+Use actual Discord mentions (`<@USER_ID>` or `<@&ROLE_ID>`), not plain display
+names. Role pings require a mentionable role or the bot's "Mention @everyone,
+@here, and All Roles" permission; `@everyone` and `@here` require that permission.
+Recipients' Discord notification settings still apply.
 
 Schedules and run history live in
 `~/.config/ai-assistant/schedules.sqlite` (inside the existing `assistant-data`
