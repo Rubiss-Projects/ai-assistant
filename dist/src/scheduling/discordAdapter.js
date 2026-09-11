@@ -117,7 +117,7 @@ export class DiscordScheduleAdapter {
             const result = await channel.send({
                 content: part.content || undefined,
                 files: part.attachment ? [{ attachment: Buffer.from(part.attachment.base64, "base64"), name: part.attachment.name }] : [],
-                allowedMentions: { parse: [], repliedUser: false },
+                allowedMentions: { parse: ["users", "roles", "everyone"], repliedUser: false },
                 nonce: createHash("sha256").update(nonce).digest("hex").slice(0, 24), enforceNonce: true,
             });
             return result.id;

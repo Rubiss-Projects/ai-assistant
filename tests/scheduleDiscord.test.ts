@@ -48,13 +48,14 @@ test("Discord scheduler checks owner, bot, actor, and channel type", async () =>
   await assert.rejects(adapter.authorize(task), /text channel/);
 });
 
-test("scheduled sends suppress mentions and use a stable nonce", async () => {
+for (const kind of ["message", "ai"] as const) test(`${kind} scheduled sends allow mentions and use a stable nonce`, async () => {
   const f = discordMock();
   const adapter = new DiscordScheduleAdapter(f.client, createAccessPolicy({}), {} as SessionManager);
-  const part = { content: "@everyone <@100>" };
-  await adapter.send(task, part, "run:0");
-  await adapter.send(task, part, "run:0");
-  assert.deepEqual(f.sent[0].allowedMentions, { parse: [], repliedUser: false });
+  const part = { content: "@everyone @here <@100> <@&400>" };
+  await adapter.send({ ...task, kind }, part, "run:0");
+  await adapter.send({ ...task, kind }, part, "run:0");
+  assert.equal(f.sent[0].content, part.content);
+  assert.deepEqual(f.sent[0].allowedMentions, { parse: ["users", "roles", "everyone"], repliedUser: false });
   assert.equal(f.sent[0].nonce, f.sent[1].nonce);
   assert.equal(f.sent[0].enforceNonce, true);
 });
