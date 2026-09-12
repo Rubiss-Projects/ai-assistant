@@ -441,13 +441,13 @@ test("definitely rejected delivery retries only the unsent parts without new gen
   assert.deepEqual(f.store.getRun(id)?.messageIds, ["1", "3"]);
 });
 
-test("uncertain sends are never automatically retried and pause the task", async t => {
+test("uncertain sends are never automatically retried and leave future occurrences enabled", async t => {
   const f = fixture(t, { send: async () => { throw new Error("connection reset after send"); } });
   const task = await f.scheduler.create(admin, input);
   const id = await f.scheduler.runNow(admin, task.id);
   await f.scheduler.idle();
   assert.equal(f.store.getRun(id)?.state, "uncertain");
-  assert.equal(f.store.get(task.id)?.enabled, false);
+  assert.equal(f.store.get(task.id)?.enabled, true);
   await assert.rejects(() => f.scheduler.retryDelivery(admin, task.id, id), /Uncertain sends/);
 });
 
@@ -476,14 +476,14 @@ test("database survives restart, skips missed schedules and fences a second work
   second.acquire(now + 60_001);
   assert.throws(() => first.assertLease(now + 60_001), /lease lost/);
   second.recover(now + 60_001);
-  assert.equal(second.get(task.id)?.enabled, false);
-  assert.equal(second.runs(task.id)[0].state, "uncertain");
+  assert.equal(second.get(task.id)?.enabled, true);
+  assert.equal(second.runs(task.id)[0].state, "queued");
   second.save({ ...task, id: "missed", nextRunAt: now });
   second.recover(now + 60_001);
   assert.equal(second.get("missed")?.nextRunAt, now + 3_600_000);
   first.close(); second.close();
   const third = new ScheduleStore(file);
-  assert.equal(third.runs(task.id)[0].state, "uncertain");
+  assert.equal(third.runs(task.id)[0].state, "queued");
   third.close();
 });
 
@@ -493,7 +493,7 @@ test("host timeout can only shorten provider timeout", () => {
   assert.throws(() => providerTimeout("TEST_MISSING_TIMEOUT", { timeoutMs: NaN }));
 });
 
-test("restart preserves generated output for explicit delivery retry", t => {
+test("restart preserves generated output for automatic delivery recovery", t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ready-schedule-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const store = new ScheduleStore(path.join(dir, "db.sqlite"));
@@ -506,7 +506,7 @@ test("restart preserves generated output for explicit delivery retry", t => {
   run.parts = [{ content: "Already generated" }];
   store.saveRun(run);
   store.recover(now + 1);
-  assert.equal(store.getRun(run.id)?.state, "delivery_failed");
+  assert.equal(store.getRun(run.id)?.state, "ready");
   assert.deepEqual(store.getRun(run.id)?.parts, [{ content: "Already generated" }]);
   assert.equal(store.get("task")?.enabled, true);
   assert.equal(store.get("task")?.revision, 1);

@@ -4,6 +4,8 @@ services:
     build:
       context: .
     restart: unless-stopped
+    # Allow the default 10-minute scheduled inference timeout plus delivery/cleanup.
+    stop_grace_period: 11m
     init: true
     env_file:
       - .env

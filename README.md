@@ -360,11 +360,16 @@ Schedules and run history live in
 `~/.config/ai-assistant/schedules.sqlite` (inside the existing `assistant-data`
 volume in Docker). Back up the database consistently with its WAL, or stop the
 bot before copying it. SQLite transactional claims and a 60-second scheduler
-lease allow one active scheduler per database. An unclean restart may need to
-wait for that lease to expire. A stale worker is checked before delivery.
+lease allow one active scheduler per database. After an unclean restart the bot
+waits for that lease to expire and starts the scheduler automatically, without
+exiting or restarting the bot again. A stale worker is checked before delivery.
 
 Graceful shutdown stops accepting new runs and drains active runs without disabling
-their schedules. Missed occurrences after downtime are skipped. Tasks do not overlap, and full
+their schedules. The supplied Compose file allows 11 minutes for shutdown, covering
+the default 10-minute inference timeout and delivery/cleanup. Set the deployment's
+`stop_grace_period` above your configured inference timeout, and avoid overriding it
+with a short `docker stop`/`docker compose` timeout during updates.
+Missed occurrences after downtime are skipped. Tasks do not overlap, and full
 worker capacity skips occurrences rather than building an unbounded backlog.
 Defaults are 15 minutes between starts, 10 tasks per owner across servers, 50 per
 guild, two concurrent runs, and a 10-minute AI inference limit; the `SCHEDULE_*`
@@ -376,9 +381,17 @@ retain message IDs but discard output payloads. Run history, including unresolve
 bounded to the latest 20 runs per task. Inspect failures before starting more runs. A definitely rejected Discord send can be retried with
 `/schedule retry-delivery id:<id> run_id:<run-id>`; it sends only the remaining
 parts and does not repeat AI work. Editing a task invalidates old delivery retries.
-Output saved before a restart remains available for an explicit delivery retry.
-An ambiguous send, interrupted inference, or unconfirmed cancellation pauses the
-task for inspection; it is never automatically replayed. Exactly-once Discord
+After a restart, interrupted generation is queued under its original run ID and
+occurrence, with up to three generation restarts per run. Saved output resumes from
+the first part without a recorded message ID, without repeating AI work. Recovery
+obeys concurrency limits and rechecks task revisions, dates, and permissions.
+Generation starts afresh; provider tool effects from the interrupted attempt may
+be repeated. This does not resume the provider's in-memory reasoning session.
+An ambiguous send stays uncertain and is never automatically replayed, but future
+occurrences remain enabled. Unconfirmed provider cancellation still pauses the task
+because the old provider may be running. Existing schedules paused solely by the
+old restart recovery are repaired automatically on upgrade, unless subsequently
+edited, explicitly paused, or ended. Exactly-once Discord
 delivery is not guaranteed, including the crash window between a successful send
 and saving its message ID. Pausing or editing suppresses pending output, but cannot
 recall a message already being sent or undo provider tool effects.
