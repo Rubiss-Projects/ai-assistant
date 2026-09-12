@@ -32,6 +32,10 @@ export class PublicFetchError extends Error {
         this.status = status;
     }
 }
+export function contentCharset(contentType) {
+    const match = contentType.match(/;\s*charset\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;\s]*))/i);
+    return (match?.[1] ?? match?.[2] ?? match?.[3])?.trim() || undefined;
+}
 export async function fetchPublicArtifact(rawUrl, signal) {
     const file = await fetchPublicResource(rawUrl, { signal, maxBytes: inputByteLimit() });
     if (file.contentType === "text/html" || /^\s*(?:<!doctype html|<html[\s>])/i.test(file.data.subarray(0, 512).toString())) {
@@ -123,10 +127,11 @@ export async function fetchPublicResource(rawUrl, options) {
                     response.on("aborted", () => reject(new PublicFetchError("network_error", "The source closed the response before it completed.")));
                     response.on("end", () => {
                         const data = Buffer.concat(chunks);
-                        const contentType = (response.headers["content-type"] ?? "application/octet-stream").split(";")[0].trim().toLowerCase();
+                        const contentTypeHeader = response.headers["content-type"] ?? "application/octet-stream";
+                        const contentType = contentTypeHeader.split(";")[0].trim().toLowerCase();
                         const disposition = response.headers["content-disposition"];
                         const name = disposition?.match(/filename="([^"]+)"/i)?.[1] ?? path.basename(url.pathname);
-                        resolve({ file: { data, filename: artifactFilename(name), contentType, url: url.href } });
+                        resolve({ file: { data, filename: artifactFilename(name), contentType, url: url.href, charset: contentCharset(contentTypeHeader) } });
                     });
                 });
                 request.on("error", reject);

@@ -4,10 +4,34 @@ import dns from "node:dns/promises";
 import https from "node:https";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { extractWebpage, fetchWebpage } from "../src/utils/fetchWebpage.js";
+import { decodeWebpage, extractWebpage, fetchWebpage } from "../src/utils/fetchWebpage.js";
 import { PublicFetchError, type PublicResource } from "../src/utils/fetchArtifact.js";
 
 const page = (html: string): PublicResource => ({ data: Buffer.from(html), contentType: "text/html", filename: "page", url: "https://example.com/page" });
+
+test("only the HTML document title participates in challenge detection", async () => {
+  const hidden = "<svg><title>Access denied</title></svg><template><head><title>Robot check</title></head></template>";
+  assert.equal(extractWebpage(`<html><head><title>Watch</title></head><body>${hidden}<p>$42</p></body></html>`).title, "Watch");
+  assert.equal(extractWebpage(`<html><body>${hidden}<p>$42</p></body></html>`).title, "");
+  const result = await fetchWebpage("https://example.com", undefined, async () => page(`${hidden}<p>$42</p>`));
+  assert.equal(result.status, "available");
+});
+
+test("HTTP charset, HTML metadata, and Unicode BOMs preserve currency and names", () => {
+  const latin = Buffer.from("<title>Caf\u00e9</title><p>\u00a342</p>", "latin1");
+  const http = { ...page(""), data: latin, charset: "windows-1252" };
+  assert.equal(extractWebpage(decodeWebpage(http)).text, "£42");
+  assert.equal(extractWebpage(decodeWebpage(http)).title, "Café");
+  for (const meta of ['<meta charset="windows-1252">', '<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">']) {
+    assert.equal(extractWebpage(decodeWebpage({ ...page(""), data: Buffer.concat([Buffer.from(meta), latin]) })).text, "£42");
+  }
+  assert.equal(decodeWebpage({ ...page(""), data: Buffer.from("<p>£42</p>", "utf16le"), charset: "utf-16le" }), "<p>£42</p>");
+  const utf16 = Buffer.from("\ufeff<p>£42</p>", "utf16le");
+  for (const data of [utf16, Buffer.from(utf16).swap16()]) {
+    assert.equal(decodeWebpage({ ...page(""), data, charset: "windows-1252" }), "<p>£42</p>");
+  }
+  assert.throws(() => decodeWebpage({ ...http, charset: "not-a-real-charset" }), /character encoding/);
+});
 
 test("large hidden subtrees cannot consume the visible text budget and inline prices stay intact", () => {
   for (const hidden of [`<svg>${"<path></path>".repeat(25_000)}</svg>`, `<template>${"<div>hidden</div>".repeat(25_000)}</template>`, `<div hidden>${"<div>hidden</div>".repeat(25_000)}</div>`]) {
@@ -73,9 +97,9 @@ test("the reader rejects credential URLs and nonstandard ports before connecting
     queueMicrotask(() => {
       const response = new PassThrough() as PassThrough & { statusCode: number; headers: Record<string, string> };
       response.statusCode = url.pathname === "/redirect" ? 302 : 200;
-      response.headers = url.pathname === "/redirect" ? { location: "https://internal.test/private" } : { "content-type": "text/html" };
+      response.headers = url.pathname === "/redirect" ? { location: "https://internal.test/private" } : { "content-type": "text/html; charset=windows-1252" };
       callback(response);
-      if (url.pathname !== "/redirect") response.end("<p>Public data</p>");
+      if (url.pathname !== "/redirect") response.end(Buffer.from("<p>£42</p>", "latin1"));
     });
     return request;
   });
@@ -85,7 +109,9 @@ test("the reader rejects credential URLs and nonstandard ports before connecting
     assert.doesNotMatch(JSON.stringify(result), /secret/);
   }
   assert.equal(calls, 0);
-  assert.equal((await fetchWebpage("https://public.test")).status, "available");
+  const publicPage = await fetchWebpage("https://public.test");
+  assert.equal(publicPage.status, "available");
+  if (publicPage.status === "available") assert.equal(publicPage.text, "£42");
   const redirected = await fetchWebpage("https://public.test/redirect");
   assert.equal(redirected.status === "unavailable" && redirected.errorCode, "policy_blocked");
   assert.equal(calls, 2);
