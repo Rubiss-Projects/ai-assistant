@@ -162,8 +162,17 @@ addresses on every redirect, and sends no account cookies or authentication.
 It does not execute JavaScript or load subresources. Each read is limited to
 2 MiB, 25 seconds, 24,000 text characters, and 16,000 JSON-LD characters; each
 response can read at most 10 distinct URLs. Transient connection and HTTP 5xx
-failures get one retry within the same deadline. HTTP refusals, challenge pages,
-private addresses, and other policy failures are reported without retries.
+failures get one retry within the same deadline. HTTPS item URLs on `ebay.com`
+and `www.ebay.com` use a fresh sandboxed Chromium session, restricted to the
+canonical listing URL with pinned public DNS. A first HTTP 403 that establishes
+anonymous site cookies gets one follow-up navigation. JavaScript, subresources,
+downloads, and redirects are blocked. Cookies are discarded with the session;
+bot credentials and existing browser profiles are never loaded. Chromium is
+included in the container; other installs can set `AI_ASSISTANT_BROWSER_EXECUTABLE`
+to their Chromium executable. The Linux container seccomp profile must permit
+Chromium's user namespace sandbox, including `chroot` inside that namespace.
+Other HTTP refusals, challenge pages, private addresses, and policy failures are
+reported without retries.
 Direct access cannot guarantee that a site serves its content: HTTP 403, login,
 JavaScript requirements, and missing data remain explicit unavailable outcomes.
 

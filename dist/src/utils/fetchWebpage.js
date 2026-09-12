@@ -2,6 +2,7 @@ import { Parser } from "htmlparser2";
 import { setTimeout as delay } from "node:timers/promises";
 import { operationSignal } from "../common/operationSignal.js";
 import { contentCharset, fetchPublicResource, PublicFetchError } from "./fetchArtifact.js";
+import { ebayListingUrl, fetchEbayListing } from "./fetchEbayListing.js";
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_TEXT = 24_000;
 const MAX_STRUCTURED = 16_000;
@@ -117,7 +118,8 @@ export function decodeWebpage(resource) {
         throw new PublicFetchError("unsupported", "The page could not be decoded using its declared character encoding (or UTF-8 when none is declared).");
     }
 }
-export async function fetchWebpage(rawUrl, signal, fetchResource = fetchPublicResource) {
+export const fetchWebpageResource = (url, options) => ebayListingUrl(url) ? fetchEbayListing(url, options) : fetchPublicResource(url, options);
+export async function fetchWebpage(rawUrl, signal, fetchResource = fetchWebpageResource) {
     const operation = operationSignal(signal, 25_000);
     const fetchedAt = () => new Date().toISOString();
     let url;

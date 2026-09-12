@@ -34,7 +34,8 @@
     "gifenc": "1.0.3",
     "gifuct-js": "2.1.2",
     "htmlparser2": "^10.1.0",
-    "ipaddr.js": "^2.5.0"
+    "ipaddr.js": "^2.5.0",
+    "playwright-core": "^1.63.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
