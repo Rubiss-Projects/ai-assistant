@@ -25,16 +25,20 @@ export function extractWebpage(html) {
     const parser = new Parser({
         onopentag(name, attributes) {
             const parent = stack.at(-1);
-            const titleElement = name === "title" && !titleSeen && (!parent || parent.titleScope);
+            // Head text is invisible, but its metadata is active. Templates, foreign
+            // SVG content and explicitly hidden subtrees must not supply lookup facts.
+            const inert = !!parent?.inert || ["template", "svg", "noscript", "style"].includes(name)
+                || Object.hasOwn(attributes, "hidden") || attributes["aria-hidden"] === "true";
+            const titleElement = name === "title" && !inert && !titleSeen && (!parent || parent.titleScope);
             if (titleElement)
                 titleSeen = true;
             const current = {
                 name,
-                hidden: !!parent?.hidden || ["script", "style", "template", "svg", "noscript", "head"].includes(name)
-                    || Object.hasOwn(attributes, "hidden") || attributes["aria-hidden"] === "true",
+                hidden: inert || !!parent?.hidden || ["script", "head"].includes(name),
+                inert,
                 title: titleElement,
                 titleScope: (name === "html" && !parent) || (name === "head" && (!parent || (parent.name === "html" && parent.titleScope))),
-                json: name === "script" && attributes.type?.toLowerCase() === "application/ld+json",
+                json: name === "script" && !inert && attributes.type?.toLowerCase() === "application/ld+json",
                 block: blocks.has(name),
             };
             stack.push(current);

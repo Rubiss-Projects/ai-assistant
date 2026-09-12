@@ -9,6 +9,16 @@ import { PublicFetchError, type PublicResource } from "../src/utils/fetchArtifac
 
 const page = (html: string): PublicResource => ({ data: Buffer.from(html), contentType: "text/html", filename: "page", url: "https://example.com/page" });
 
+test("inert structured data cannot supply facts or exhaust active JSON-LD budgets", () => {
+  const stale = '<script type="application/ld+json">{"price":"stale"}</script>'.repeat(12);
+  const oversized = `<script type="application/ld+json">${JSON.stringify({ stale: "x".repeat(30_000) })}</script>`;
+  const inert = `<template>${stale}${oversized}<head>${stale}</head></template><svg>${stale}</svg><div hidden>${stale}</div><div aria-hidden="true">${stale}</div><noscript>${stale}</noscript>`;
+  const result = extractWebpage(`<html><head><script type="application/ld+json">{"price":42}</script></head><body>${inert}<script type="application/ld+json">{"bids":3}</script><p>Current listing</p></body></html>`);
+  assert.deepEqual(result.structuredData.map(value => JSON.parse(value)), [{ price: 42 }, { bids: 3 }]);
+  assert.equal(result.text, "Current listing");
+  assert.equal(result.truncated, false);
+});
+
 test("only the HTML document title participates in challenge detection", async () => {
   const hidden = "<svg><title>Access denied</title></svg><template><head><title>Robot check</title></head></template>";
   assert.equal(extractWebpage(`<html><head><title>Watch</title></head><body>${hidden}<p>$42</p></body></html>`).title, "Watch");
