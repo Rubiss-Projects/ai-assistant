@@ -9,6 +9,7 @@ import { DiscordScheduleAdapter } from "../src/scheduling/discordAdapter.js";
 import type { ScheduledTask, TaskRun } from "../src/scheduling/types.js";
 import type { SessionManager } from "../src/sessionManager.js";
 import type { SendMessageOptions } from "../src/providers/types.js";
+import { describeTask, handleSchedule } from "../src/handlers/slash/schedule.js";
 
 const task: ScheduledTask = { id: "task", ownerId: "100", guildId: "200", channelId: "300", kind: "ai", content: "Summarize discussion",
   cron: "0 9 * * *", timezone: "UTC", contextMessages: 10, enabled: true, nextRunAt: 0, revision: 1, createdAt: 0, provider: "codex", model: "model", reasoning: "low" };
@@ -31,6 +32,82 @@ function discordMock() {
   const client = { channels: { fetch: async () => channel }, guilds: { fetch: async () => guild } } as unknown as Client;
   return { client, channel, denied, sent };
 }
+
+test("schedule descriptions show the cutoff and only occurrences strictly before it", () => {
+  const now = Date.UTC(2026, 0, 1);
+  const endAt = now + 2 * 3_600_000;
+  const hourly = { ...task, cron: "0 * * * *", endAt };
+  const description = describeTask(hourly, now);
+  assert.match(description, /— enabled/);
+  assert.ok(description.includes(`Ends: <t:${endAt / 1000}:F>`));
+  const preview = description.split("Next occurrences:")[1];
+  assert.ok(preview.includes(`<t:${(now + 3_600_000) / 1000}:F>`));
+  assert.ok(!preview.includes(`<t:${endAt / 1000}:F>`));
+  assert.match(describeTask(hourly, endAt), /— ended/);
+  assert.match(describeTask(hourly, endAt), /None within the schedule dates/);
+  assert.doesNotMatch(describeTask({ ...hourly, enabled: false }, endAt), /if resumed/);
+  assert.match(describeTask({ ...hourly, endAt: now + 1000 }, now), /None within the schedule dates/);
+  assert.match(describeTask({ ...hourly, endAt: undefined }, now), /No end date/);
+});
+
+test("previews begin at the inclusive start and distinguish scheduled tasks from paused tasks", () => {
+  const now = Date.UTC(2026, 0, 1);
+  const startAt = now + 2 * 3_600_000;
+  const scheduled = { ...task, cron: "0 * * * *", startAt, endAt: startAt + 3_600_000 };
+  const description = describeTask(scheduled, now);
+  assert.match(description, /— scheduled/);
+  assert.ok(description.includes(`Starts: <t:${startAt / 1000}:F>`));
+  const preview = description.split("Next occurrences:")[1];
+  assert.ok(preview.includes(`<t:${startAt / 1000}:F>`));
+  assert.ok(!preview.includes(`<t:${(startAt - 3_600_000) / 1000}:F>`));
+  assert.match(describeTask(scheduled, startAt), /— enabled/);
+  assert.match(describeTask({ ...scheduled, enabled: false }, now), /— paused/);
+});
+
+for (const field of ["start", "end"] as const) test(`schedule commands parse, change, preserve and clear ${field} dates using the effective timezone`, async () => {
+  const property = field === "start" ? "startAt" : "endAt";
+  for (const [sub, values, expected] of [
+    ["create", { [`${field}_at`]: "2026-12-01 18:30", timezone: "America/New_York" }, Date.UTC(2026, 11, 1, 23, 30)],
+    ["edit", { [`${field}_at`]: "2026-12-01 18:30" }, Date.UTC(2026, 11, 1, 23, 30)],
+    ["edit", { [`${field}_at`]: "2026-12-01 18:30", timezone: "UTC" }, Date.UTC(2026, 11, 1, 18, 30)],
+    ["edit", { [`${field}_at`]: "2026-12-01T18:30:00.000+02:00" }, Date.UTC(2026, 11, 1, 16, 30)],
+    ["edit", { [`${field}_at`]: " NoNe " }, undefined],
+    ["edit", { content: "Updated" }, "preserved"],
+  ] as const) {
+    let saved: any;
+    const replies: string[] = [];
+    const existing = { ...task, timezone: "America/New_York", startAt: Date.UTC(2026, 11, 1), endAt: Date.UTC(2026, 11, 31) };
+    const options: Record<string, string> = sub === "create"
+      ? { kind: "message", content: "Reminder", cron: "0 * * * *", ...values }
+      : { id: task.id, ...values };
+    const interaction = {
+      deferReply: async () => {}, editReply: async ({ content }: { content: string }) => { replies.push(content); }, followUp: async () => {},
+      options: { getSubcommand: () => sub, getString: (key: string) => options[key] ?? null, getChannel: () => sub === "create" ? { id: "300" } : null, getInteger: () => null },
+    };
+    const scheduler = {
+      assertAvailable: () => {}, requireTask: () => existing,
+      create: async (_subject: unknown, input: any) => { saved = input; return { ...existing, ...input }; },
+      edit: async (_subject: unknown, _id: string, patch: any) => { saved = patch; return { ...existing, ...patch }; },
+    };
+    await handleSchedule(interaction as any, scheduler as any, { userId: "100", guildId: "200" });
+    assert.ok(saved, replies.join("\n"));
+    if (expected === "preserved") assert.equal(Object.hasOwn(saved, property), false);
+    else { assert.equal(Object.hasOwn(saved, property), true); assert.equal(saved[property], expected); }
+  }
+});
+
+test("schedule list marks elapsed tasks ended before a scheduler tick", async () => {
+  const replies: string[] = [];
+  const endedTask = { ...task, endAt: Date.now() - 1000 };
+  const interaction = {
+    deferReply: async () => {}, editReply: async ({ content }: { content: string }) => { replies.push(content); }, followUp: async () => {},
+    options: { getSubcommand: () => "list" },
+  };
+  const scheduler = { assertAvailable: () => {}, canManage: () => true, store: { list: () => [endedTask] } };
+  await handleSchedule(interaction as any, scheduler as any, { userId: "100", guildId: "200" });
+  assert.match(replies.join("\n"), /· ended ·/);
+  assert.match(replies.join("\n"), /Ends: <t:/);
+});
 
 test("Discord scheduler checks owner, bot, actor, and channel type", async () => {
   const f = discordMock();
