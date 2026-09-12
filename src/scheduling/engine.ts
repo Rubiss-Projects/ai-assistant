@@ -101,6 +101,14 @@ export class Scheduler {
     const latest = this.store.get(id);
     if (latest?.revision !== before.revision) throw new Error("Schedule changed; try again.");
     this.validate(task);
+    // Apply elapsed cutoffs to the saved revision before a patch can clear or extend them.
+    // Do this after authorization so a rejected edit cannot mutate the owner's schedule.
+    if (this.store.expire(id, this.now())) {
+      const ended = this.store.get(id)!;
+      task.enabled = false;
+      task.pauseReason = ended.pauseReason;
+      task.revision = ended.revision + 1;
+    }
     task.lastStartedAt = latest.lastStartedAt;
     this.store.save(task);
     return task;
