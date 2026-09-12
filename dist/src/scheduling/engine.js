@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { RunTimeoutError } from "../providers/types.js";
 import { validateSchedule, nextOccurrences, scheduleHasStarted } from "./cron.js";
+import { SchedulerLeaseHeldError } from "./store.js";
 import { retainVerifiedLookups } from "./lookups.js";
 export function scheduleLimits(env = process.env) {
     const number = (key, fallback, min, max) => {
@@ -25,9 +26,10 @@ export class Scheduler {
     adapter;
     limits;
     now;
-    active = new Set();
+    active = new Map();
     timer;
     stopped = true;
+    ownsLease = false;
     constructor(store, access, adapter, limits = scheduleLimits(), now = Date.now) {
         this.store = store;
         this.access = access;
@@ -36,12 +38,22 @@ export class Scheduler {
         this.now = now;
     }
     start() {
-        this.store.acquire(this.now());
-        this.store.recover(this.now());
+        if (!this.stopped)
+            return;
         this.stopped = false;
+        try {
+            this.tick();
+        }
+        catch (error) {
+            this.stopped = true;
+            throw error;
+        }
+        if (!this.ownsLease)
+            console.log("[scheduler] Waiting for the previous worker's lease to expire.");
         this.timer = setInterval(() => {
             try {
-                this.store.renew(this.now());
+                if (this.ownsLease)
+                    this.store.renew(this.now());
                 this.tick();
             }
             catch (error) {
@@ -56,11 +68,12 @@ export class Scheduler {
         clearInterval(this.timer);
         // Keep the lease alive while already-running providers drain.
         const heartbeat = setInterval(() => { try {
-            this.store.renew(this.now());
+            if (this.ownsLease)
+                this.store.renew(this.now());
         }
         catch { /* Delivery checks still fence this worker. */ } }, 5000);
         try {
-            await Promise.allSettled(this.active);
+            await Promise.allSettled(this.active.values());
         }
         finally {
             clearInterval(heartbeat);
@@ -70,6 +83,8 @@ export class Scheduler {
     assertAvailable() {
         if (this.stopped)
             throw new Error("Scheduler is not running.");
+        if (!this.ownsLease)
+            throw new Error("Scheduler is waiting for the previous worker's lease to expire; it will start automatically.");
         this.store.assertLease(this.now());
     }
     canManage(subject, task) {
@@ -181,11 +196,13 @@ export class Scheduler {
         if (this.store.get(id)?.revision !== task.revision)
             throw new Error("Schedule changed; try again.");
         this.assertWithinDates(task);
+        if (!task.enabled)
+            throw new Error(`Task is paused. Use /schedule resume id:${id} before running it.`);
         if (this.active.size >= this.limits.concurrency)
             throw new Error("Scheduler is busy; try again later.");
         const claimed = this.store.claim(id, this.now(), this.limits.minimumMs, true);
         if (!claimed)
-            throw new Error("Task is paused, already running, or within its minimum run interval.");
+            throw new Error("Task is already running or within its minimum run interval.");
         this.launch(claimed.task, claimed.run);
         return claimed.run.id;
     }
@@ -209,7 +226,28 @@ export class Scheduler {
     tick() {
         if (this.stopped)
             return;
+        if (!this.ownsLease) {
+            try {
+                this.store.acquire(this.now());
+            }
+            catch (error) {
+                if (error instanceof SchedulerLeaseHeldError)
+                    return;
+                throw error;
+            }
+            this.store.recover(this.now());
+            this.ownsLease = true;
+        }
         this.store.assertLease(this.now());
+        for (const run of this.store.pendingRuns()) {
+            if (this.active.size >= this.limits.concurrency)
+                break;
+            if (this.active.has(run.id))
+                continue;
+            const task = this.store.get(run.taskId);
+            if (task)
+                this.launch(task, run);
+        }
         for (const task of this.store.list()) {
             if (this.store.expire(task.id, this.now()))
                 continue;
@@ -226,11 +264,13 @@ export class Scheduler {
         }
     }
     launch(task, run) {
+        if (this.active.has(run.id))
+            return;
         const pending = this.execute(task, run).catch(error => console.error("[scheduler] Run persistence failed:", error));
-        this.active.add(pending);
-        void pending.finally(() => this.active.delete(pending));
+        this.active.set(run.id, pending);
+        void pending.finally(() => this.active.delete(run.id));
     }
-    async idle() { await Promise.all(this.active); }
+    async idle() { await Promise.all(this.active.values()); }
     assertWithinDates(task) {
         if (this.store.expire(task.id, this.now()))
             throw new ScheduleAccessError("Schedule has ended. Edit or clear its end date before resuming.");
@@ -248,8 +288,15 @@ export class Scheduler {
     async execute(task, run) {
         try {
             this.current(task);
+            if (run.taskRevision !== task.revision)
+                throw new ScheduleAccessError("Task was edited after this run was saved.");
             await this.adapter.authorize(task);
             this.current(task);
+            if (run.state === "queued") {
+                run.state = "running";
+                run.error = undefined;
+                this.store.saveRun(run);
+            }
             if (run.state === "running") {
                 run.parts = await this.adapter.generate(task, run, this.limits.timeoutMs);
                 this.current(task);
@@ -275,6 +322,7 @@ export class Scheduler {
                 this.store.saveRun(run);
             }
             run.state = "succeeded";
+            run.error = undefined;
             // IDs are enough for successful history; avoid retaining large attachment payloads.
             run.parts = [];
             this.store.saveRun(run);
@@ -294,7 +342,8 @@ export class Scheduler {
                 run.state = "failed";
             this.store.saveRun(run);
             const latest = this.store.get(task.id);
-            if (latest?.revision === task.revision && (error instanceof ScheduleAccessError || run.state === "uncertain"
+            if (latest?.revision === task.revision && run.taskRevision === task.revision && (error instanceof ScheduleAccessError
+                || (error instanceof RunTimeoutError && !error.cancellationConfirmed)
                 || this.store.runs(task.id).slice(0, 3).filter(previous => previous.state === "failed").length === 3)) {
                 this.store.pause(task.id, run.error);
             }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AccessPolicy, AccessSubject } from "../common/accessPolicy.js";
 import { RunTimeoutError } from "../providers/types.js";
 import { validateSchedule, nextOccurrences, scheduleHasStarted } from "./cron.js";
-import { ScheduleStore } from "./store.js";
+import { ScheduleStore, SchedulerLeaseHeldError } from "./store.js";
 import type { DeliveryPart, ScheduledTask, TaskRun } from "./types.js";
 import { retainVerifiedLookups } from "./lookups.js";
 
@@ -27,17 +27,20 @@ export interface ScheduleAdapter {
   send(task: ScheduledTask, part: DeliveryPart, nonce: string, beforeSend: () => void): Promise<string>;
 }
 export class Scheduler {
-  private active = new Set<Promise<void>>();
+  private active = new Map<string, Promise<void>>();
   private timer?: ReturnType<typeof setInterval>;
   private stopped = true;
+  private ownsLease = false;
   constructor(readonly store: ScheduleStore, readonly access: AccessPolicy, readonly adapter: ScheduleAdapter,
     readonly limits = scheduleLimits(), private now = Date.now) {}
   start(): void {
-    this.store.acquire(this.now());
-    this.store.recover(this.now());
+    if (!this.stopped) return;
     this.stopped = false;
+    try { this.tick(); }
+    catch (error) { this.stopped = true; throw error; }
+    if (!this.ownsLease) console.log("[scheduler] Waiting for the previous worker's lease to expire.");
     this.timer = setInterval(() => {
-      try { this.store.renew(this.now()); this.tick(); }
+      try { if (this.ownsLease) this.store.renew(this.now()); this.tick(); }
       catch (error) { this.stopped = true; clearInterval(this.timer); console.error("[scheduler] Stopped:", error); }
     }, 5000);
   }
@@ -45,12 +48,13 @@ export class Scheduler {
     this.stopped = true;
     clearInterval(this.timer);
     // Keep the lease alive while already-running providers drain.
-    const heartbeat = setInterval(() => { try { this.store.renew(this.now()); } catch { /* Delivery checks still fence this worker. */ } }, 5000);
-    try { await Promise.allSettled(this.active); }
+    const heartbeat = setInterval(() => { try { if (this.ownsLease) this.store.renew(this.now()); } catch { /* Delivery checks still fence this worker. */ } }, 5000);
+    try { await Promise.allSettled(this.active.values()); }
     finally { clearInterval(heartbeat); this.store.close(); }
   }
   assertAvailable(): void {
     if (this.stopped) throw new Error("Scheduler is not running.");
+    if (!this.ownsLease) throw new Error("Scheduler is waiting for the previous worker's lease to expire; it will start automatically.");
     this.store.assertLease(this.now());
   }
   canManage(subject: AccessSubject, task: ScheduledTask): boolean {
@@ -151,9 +155,10 @@ export class Scheduler {
     this.assertAvailable();
     if (this.store.get(id)?.revision !== task.revision) throw new Error("Schedule changed; try again.");
     this.assertWithinDates(task);
+    if (!task.enabled) throw new Error(`Task is paused. Use /schedule resume id:${id} before running it.`);
     if (this.active.size >= this.limits.concurrency) throw new Error("Scheduler is busy; try again later.");
     const claimed = this.store.claim(id, this.now(), this.limits.minimumMs, true);
-    if (!claimed) throw new Error("Task is paused, already running, or within its minimum run interval.");
+    if (!claimed) throw new Error("Task is already running or within its minimum run interval.");
     this.launch(claimed.task, claimed.run);
     return claimed.run.id;
   }
@@ -173,7 +178,19 @@ export class Scheduler {
   }
   tick(): void {
     if (this.stopped) return;
+    if (!this.ownsLease) {
+      try { this.store.acquire(this.now()); }
+      catch (error) { if (error instanceof SchedulerLeaseHeldError) return; throw error; }
+      this.store.recover(this.now());
+      this.ownsLease = true;
+    }
     this.store.assertLease(this.now());
+    for (const run of this.store.pendingRuns()) {
+      if (this.active.size >= this.limits.concurrency) break;
+      if (this.active.has(run.id)) continue;
+      const task = this.store.get(run.taskId);
+      if (task) this.launch(task, run);
+    }
     for (const task of this.store.list()) {
       if (this.store.expire(task.id, this.now())) continue;
       if (!task.enabled || !scheduleHasStarted(task, this.now()) || task.nextRunAt > this.now()) continue;
@@ -187,11 +204,12 @@ export class Scheduler {
     }
   }
   private launch(task: ScheduledTask, run: TaskRun): void {
+    if (this.active.has(run.id)) return;
     const pending = this.execute(task, run).catch(error => console.error("[scheduler] Run persistence failed:", error));
-    this.active.add(pending);
-    void pending.finally(() => this.active.delete(pending));
+    this.active.set(run.id, pending);
+    void pending.finally(() => this.active.delete(run.id));
   }
-  async idle(): Promise<void> { await Promise.all(this.active); }
+  async idle(): Promise<void> { await Promise.all(this.active.values()); }
   private assertWithinDates(task: ScheduledTask): void {
     if (this.store.expire(task.id, this.now())) throw new ScheduleAccessError("Schedule has ended. Edit or clear its end date before resuming.");
     if (!scheduleHasStarted(task, this.now())) throw new ScheduleAccessError("Schedule has not started yet. Wait until its start date, or edit or clear the start date.");
@@ -206,8 +224,14 @@ export class Scheduler {
   private async execute(task: ScheduledTask, run: TaskRun): Promise<void> {
     try {
       this.current(task);
+      if (run.taskRevision !== task.revision) throw new ScheduleAccessError("Task was edited after this run was saved.");
       await this.adapter.authorize(task);
       this.current(task);
+      if (run.state === "queued") {
+        run.state = "running";
+        run.error = undefined;
+        this.store.saveRun(run);
+      }
       if (run.state === "running") {
         run.parts = await this.adapter.generate(task, run, this.limits.timeoutMs);
         this.current(task);
@@ -232,6 +256,7 @@ export class Scheduler {
         this.store.saveRun(run);
       }
       run.state = "succeeded";
+      run.error = undefined;
       // IDs are enough for successful history; avoid retaining large attachment payloads.
       run.parts = [];
       this.store.saveRun(run);
@@ -246,7 +271,8 @@ export class Scheduler {
       else run.state = "failed";
       this.store.saveRun(run);
       const latest = this.store.get(task.id);
-      if (latest?.revision === task.revision && (error instanceof ScheduleAccessError || run.state === "uncertain"
+      if (latest?.revision === task.revision && run.taskRevision === task.revision && (error instanceof ScheduleAccessError
+        || (error instanceof RunTimeoutError && !error.cancellationConfirmed)
         || this.store.runs(task.id).slice(0, 3).filter(previous => previous.state === "failed").length === 3)) {
         this.store.pause(task.id, run.error);
       }

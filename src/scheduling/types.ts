@@ -26,10 +26,12 @@ export interface ScheduledTask {
   /** Source-backed, model-reported values; always stale context on later runs. */
   lastVerifiedLookups?: LookupRecord[];
 }
-export type RunState = "running" | "ready" | "sending" | "succeeded" | "failed" | "delivery_failed" | "uncertain" | "cancelled";
+export type RunState = "queued" | "running" | "ready" | "sending" | "succeeded" | "failed" | "delivery_failed" | "uncertain" | "cancelled";
 export interface DeliveryPart { content: string; attachment?: { name: string; base64: string } }
 export interface TaskRun {
   id: string; taskId: string; channelId: string; taskRevision: number; occurrence: string; startedAt: number;
   state: RunState; parts: DeliveryPart[]; messageIds: string[]; error?: string;
   lookups?: LookupRecord[];
+  /** Generation restarts for this occurrence; bounds crash loops without disabling the schedule. */
+  recoveryAttempts?: number;
 }

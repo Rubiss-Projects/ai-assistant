@@ -5,6 +5,10 @@ import { randomUUID } from "node:crypto";
 import { nextOccurrences, scheduleHasEnded, scheduleHasStarted } from "./cron.js";
 import type { ScheduledTask, TaskRun } from "./types.js";
 
+export class SchedulerLeaseHeldError extends Error {}
+const LEGACY_RESTART_PAUSE = "Interrupted by restart. Inspect before resuming; execution or delivery may have occurred.";
+const LEGACY_SAVED_OUTPUT = "Output was saved before restart. Retry delivery if it is still wanted.";
+
 /** One active scheduler per database. A lease fences stale workers before external delivery. */
 export class ScheduleStore {
   private db: Database.Database;
@@ -25,7 +29,7 @@ export class ScheduleStore {
   }
   acquire(now: number): void {
     const result = this.db.prepare(`INSERT INTO scheduler_lock VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner, expires=excluded.expires WHERE scheduler_lock.expires <= ?`).run(this.owner, now + 60_000, now);
-    if (!result.changes) throw new Error("Another scheduler owns this database. Wait for its 60-second lease to expire.");
+    if (!result.changes) throw new SchedulerLeaseHeldError("Another scheduler owns this database. Wait for its 60-second lease to expire.");
   }
   renew(now: number): void {
     const result = this.db.prepare("UPDATE scheduler_lock SET expires=? WHERE owner=? AND expires>?").run(now + 60_000, this.owner, now);
@@ -83,7 +87,11 @@ export class ScheduleStore {
     this.db.prepare("UPDATE runs SET state=?, data=? WHERE id=?").run(run.state, JSON.stringify(run), run.id);
   }
   busy(taskId: string): boolean {
-    return Boolean(this.db.prepare("SELECT 1 FROM runs WHERE task_id=? AND state IN ('running','ready','sending')").get(taskId));
+    return Boolean(this.db.prepare("SELECT 1 FROM runs WHERE task_id=? AND state IN ('queued','running','ready','sending')").get(taskId));
+  }
+  pendingRuns(): TaskRun[] {
+    const rows = this.db.prepare("SELECT data FROM runs WHERE state IN ('queued','ready') ORDER BY started").all() as { data: string }[];
+    return rows.map(row => JSON.parse(row.data));
   }
   claim(taskId: string, now: number, minimumMs: number, manual = false): { task: ScheduledTask; run: TaskRun } | undefined {
     return this.db.transaction(() => {
@@ -109,15 +117,43 @@ export class ScheduleStore {
   recover(now: number): void {
     this.db.transaction(() => {
       this.assertLease(now);
-      const interrupted = this.db.prepare("SELECT data FROM runs WHERE state IN ('running','ready','sending')").all() as { data: string }[];
+      // Repair only the exact automatic pause made by older versions. A subsequent
+      // edit/user pause changes the revision or reason and must remain respected.
+      for (const task of this.list()) {
+        if (task.enabled || task.pauseReason !== LEGACY_RESTART_PAUSE || scheduleHasEnded(task, now)) continue;
+        const run = this.runs(task.id)[0];
+        if (!run || run.state !== "uncertain" || run.error !== LEGACY_RESTART_PAUSE || task.revision !== run.taskRevision + 1) continue;
+        task.enabled = true;
+        task.pauseReason = undefined;
+        task.revision++;
+        this.save(task);
+        run.taskRevision = task.revision;
+        // The old recovery code retained parts, so empty output identifies generation.
+        run.state = run.parts.length || run.messageIds.length ? "sending" : "running";
+        this.saveRun(run);
+      }
+      const interrupted = this.db.prepare(`SELECT data FROM runs WHERE state IN ('queued','running','ready','sending')
+        OR (state='delivery_failed' AND json_extract(data, '$.error')=?)`).all(LEGACY_SAVED_OUTPUT) as { data: string }[];
       for (const row of interrupted) {
         const run: TaskRun = JSON.parse(row.data);
-        const unsent = run.state === "ready";
-        run.state = unsent ? "delivery_failed" : "uncertain";
-        run.error = unsent ? "Output was saved before restart. Retry delivery if it is still wanted."
-          : "Interrupted by restart. Inspect before resuming; execution or delivery may have occurred.";
+        const task = this.get(run.taskId);
+        if (run.state === "sending") {
+          run.state = "uncertain";
+          run.error = "Delivery was interrupted by restart and may have occurred. This run will not be replayed.";
+        } else if (!task?.enabled || task.revision !== run.taskRevision || !scheduleHasStarted(task, now) || scheduleHasEnded(task, now)) {
+          run.state = "cancelled";
+          run.parts = [];
+          run.error = "Interrupted run cancelled because the schedule was paused, changed, or is outside its dates.";
+        } else if (run.state === "running") {
+          run.recoveryAttempts = (run.recoveryAttempts ?? 0) + 1;
+          run.state = run.recoveryAttempts <= 3 ? "queued" : "failed";
+          run.error = run.state === "queued" ? "Generation interrupted by restart; queued to run again."
+            : "Generation interrupted too many times. This occurrence was skipped; future occurrences continue.";
+        } else if (run.state !== "queued") {
+          run.state = "ready";
+          run.error = "Resuming saved output after restart.";
+        }
         this.saveRun(run);
-        if (!unsent) this.pause(run.taskId, run.error);
       }
       for (const task of this.list()) {
         if (this.expire(task.id, now)) continue;
