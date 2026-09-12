@@ -67,6 +67,7 @@ export const fetchEbayListing = async (raw, options) => {
         const cdp = await context.newCDPSession(page);
         const frameId = (await cdp.send("Page.getFrameTree")).frameTree.frame.id;
         let bytes = 0;
+        let navigationPermitted = false;
         const stop = (error) => { failure ??= error; close(); };
         cdp.on("Network.dataReceived", event => {
             bytes += event.dataLength;
@@ -95,8 +96,14 @@ export const fetchEbayListing = async (raw, options) => {
                             await cdp.send("Fetch.continueResponse", { requestId: event.requestId });
                     }
                 }
-                else
+                else if (!navigationPermitted) {
+                    failure ??= new PublicFetchError("policy_blocked", "eBay attempted an unrequested page navigation.");
+                    await cdp.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
+                }
+                else {
+                    navigationPermitted = false;
                     await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
+                }
             })().catch(error => { if (!signal.aborted && !failure)
                 stop(error); });
         });
@@ -104,6 +111,7 @@ export const fetchEbayListing = async (raw, options) => {
         await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }, { urlPattern: "*", requestStage: "Response" }] });
         for (let attempt = 0; attempt < 2; attempt++) {
             signal.throwIfAborted();
+            navigationPermitted = true;
             const response = await within(page.goto(url, { waitUntil: "domcontentloaded", timeout: 25_000 }));
             if (!response)
                 throw new PublicFetchError("network_error", "eBay did not return a listing response.");
