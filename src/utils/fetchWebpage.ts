@@ -1,7 +1,7 @@
 import { Parser } from "htmlparser2";
 import { setTimeout as delay } from "node:timers/promises";
 import { operationSignal } from "../common/operationSignal.js";
-import { fetchPublicResource, PublicFetchError, type PublicResource } from "./fetchArtifact.js";
+import { contentCharset, fetchPublicResource, PublicFetchError, type PublicResource } from "./fetchArtifact.js";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_TEXT = 24_000;
@@ -35,16 +35,21 @@ export function extractWebpage(html: string) {
   let title = "", text = "", structuredBytes = 0, structured = "";
   let truncated = false;
   const structuredData: string[] = [];
-  const stack: Array<{ hidden: boolean; title: boolean; json: boolean; block: boolean }> = [];
+  let titleSeen = false;
+  const stack: Array<{ name: string; hidden: boolean; title: boolean; json: boolean; block: boolean; titleScope: boolean }> = [];
   const blocks = new Set(["p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header", "footer", "ul", "ol", "table"]);
   const separator = () => { if (text.length && text.length < MAX_TEXT && !text.endsWith("\n")) text += "\n"; };
   const parser = new Parser({
     onopentag(name, attributes) {
       const parent = stack.at(-1);
+      const titleElement = name === "title" && !titleSeen && (!parent || parent.titleScope);
+      if (titleElement) titleSeen = true;
       const current = {
+        name,
         hidden: !!parent?.hidden || ["script", "style", "template", "svg", "noscript", "head"].includes(name)
           || Object.hasOwn(attributes, "hidden") || attributes["aria-hidden"] === "true",
-        title: name === "title",
+        title: titleElement,
+        titleScope: (name === "html" && !parent) || (name === "head" && (!parent || (parent.name === "html" && parent.titleScope))),
         json: name === "script" && attributes.type?.toLowerCase() === "application/ld+json",
         block: blocks.has(name),
       };
@@ -83,6 +88,26 @@ export function extractWebpage(html: string) {
   return { title: title.trim(), text: text.replace(/ *\n[\n ]*/g, "\n").trim(), structuredData, truncated };
 }
 
+/** Prefer BOM, then HTTP charset, then HTML metadata; never silently replace invalid decoded bytes. */
+export function decodeWebpage(resource: PublicResource): string {
+  const data = resource.data;
+  let charset = data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf ? "utf-8"
+    : data[0] === 0xff && data[1] === 0xfe ? "utf-16le"
+    : data[0] === 0xfe && data[1] === 0xff ? "utf-16be" : resource.charset;
+  if (!charset && ["text/html", "application/xhtml+xml"].includes(resource.contentType)) {
+    const sniff = new Parser({ onopentag(name, attributes) {
+      if (name !== "meta" || charset) return;
+      charset = attributes.charset?.trim() || (attributes["http-equiv"]?.toLowerCase() === "content-type"
+        ? contentCharset(attributes.content ?? "") : undefined);
+      // HTML metadata cannot select UTF-16 without a BOM; those labels imply UTF-8.
+      if (/^utf-16(?:le|be)?$/i.test(charset ?? "")) charset = "utf-8";
+    } });
+    sniff.end(data.subarray(0, 1024).toString("latin1"));
+  }
+  try { return new TextDecoder(charset || "utf-8", { fatal: true }).decode(data); }
+  catch { throw new PublicFetchError("unsupported", "The page could not be decoded using its declared character encoding (or UTF-8 when none is declared)."); }
+}
+
 export async function fetchWebpage(rawUrl: string, signal?: AbortSignal,
   fetchResource: typeof fetchPublicResource = fetchPublicResource): Promise<WebpageResult> {
   const operation = operationSignal(signal, 25_000);
@@ -111,9 +136,9 @@ export async function fetchWebpage(rawUrl: string, signal?: AbortSignal,
     operation.signal.throwIfAborted();
     const resource = file!;
     let page: ReturnType<typeof extractWebpage>;
-    if (["text/html", "application/xhtml+xml"].includes(resource.contentType)) page = extractWebpage(resource.data.toString("utf8"));
+    if (["text/html", "application/xhtml+xml"].includes(resource.contentType)) page = extractWebpage(decodeWebpage(resource));
     else if (["text/plain", "application/json"].includes(resource.contentType)) {
-      const text = resource.data.toString("utf8");
+      const text = decodeWebpage(resource);
       page = { title: "", text: text.slice(0, MAX_TEXT), structuredData: [], truncated: text.length > MAX_TEXT };
     } else throw new PublicFetchError("unsupported", "This URL did not return HTML, plain text, or JSON. Use fetch_artifact for files.");
     if (/^(?:pardon our interruption|just a moment|access denied|robot check|verify you are human|security check|checking your browser)\b/i.test(page.title)
