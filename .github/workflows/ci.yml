@@ -48,5 +48,5 @@ jobs:
         run: docker run --rm --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-artifacts.js
 
       - name: Verify sandboxed Chromium runtime
-        # Production uses the Docker repo's narrower namespace/chroot profile.
-        run: docker run --rm --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=unconfined --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001 --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-ebay-browser.js
+        # Exercise the same syscall profile and filesystem restrictions as Compose.
+        run: docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp.json --pids-limit 256 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001 --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-ebay-browser.js

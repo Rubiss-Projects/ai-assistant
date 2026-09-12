@@ -23,6 +23,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+      # Keep Docker syscall filtering while permitting the Chromium/Codex namespaces.
+      - seccomp=./seccomp.json
     pids_limit: 256
 
 volumes:

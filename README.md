@@ -169,8 +169,10 @@ anonymous site cookies gets one follow-up navigation. JavaScript, subresources,
 downloads, and redirects are blocked. Cookies are discarded with the session;
 bot credentials and existing browser profiles are never loaded. Chromium is
 included in the container; other installs can set `AI_ASSISTANT_BROWSER_EXECUTABLE`
-to their Chromium executable. The Linux container seccomp profile must permit
-Chromium's user namespace sandbox, including `chroot` inside that namespace.
+to their Chromium executable. The supplied `compose.yaml` uses `seccomp.json`
+to permit Chromium's user namespace sandbox, including `chroot` inside that
+namespace, while retaining syscall filtering and dropping host capabilities.
+Keep that profile beside the Compose file when deploying it elsewhere.
 Other HTTP refusals, challenge pages, private addresses, and policy failures are
 reported without retries.
 Direct access cannot guarantee that a site serves its content: HTTP 403, login,
