@@ -35,18 +35,21 @@ export function extractWebpage(html: string) {
   let title = "", text = "", structuredBytes = 0, structured = "";
   let truncated = false;
   const structuredData: string[] = [];
-  const stack: Array<{ hidden: boolean; title: boolean; json: boolean }> = [];
-  const separator = () => { if (text.length < MAX_TEXT) text += "\n"; };
+  const stack: Array<{ hidden: boolean; title: boolean; json: boolean; block: boolean }> = [];
+  const blocks = new Set(["p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header", "footer", "ul", "ol", "table"]);
+  const separator = () => { if (text.length && text.length < MAX_TEXT && !text.endsWith("\n")) text += "\n"; };
   const parser = new Parser({
     onopentag(name, attributes) {
       const parent = stack.at(-1);
-      stack.push({
+      const current = {
         hidden: !!parent?.hidden || ["script", "style", "template", "svg", "noscript", "head"].includes(name)
           || Object.hasOwn(attributes, "hidden") || attributes["aria-hidden"] === "true",
         title: name === "title",
         json: name === "script" && attributes.type?.toLowerCase() === "application/ld+json",
-      });
-      if (["p", "div", "br", "li", "tr", "h1", "h2", "h3"].includes(name)) separator();
+        block: blocks.has(name),
+      };
+      stack.push(current);
+      if (current.block && !current.hidden) separator();
     },
     ontext(value) {
       const current = stack.at(-1);
@@ -64,7 +67,8 @@ export function extractWebpage(html: string) {
       }
     },
     onclosetag() {
-      if (stack.pop()?.json) {
+      const current = stack.pop();
+      if (current?.json) {
         try {
           JSON.parse(structured);
           if (structuredData.length < 8) { structuredData.push(structured); structuredBytes += structured.length; }
@@ -72,7 +76,7 @@ export function extractWebpage(html: string) {
         } catch { /* Ignore invalid or truncated JSON-LD. */ }
         structured = "";
       }
-      separator();
+      if (current?.block && !current.hidden) separator();
     },
   }, { decodeEntities: true });
   parser.end(html);
