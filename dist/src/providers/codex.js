@@ -32,6 +32,23 @@ export function createCodexSessionTemporaryDirectory() {
     fs.chmodSync(directory, 0o700);
     return directory;
 }
+export function prepareCodexWorkingDirectory(directory) {
+    if (configuredSecurityMode() !== "shared")
+        return;
+    const codexDirectory = path.join(resolveConfiguredWorkspace(directory), ".codex");
+    // Codex 0.153.4 protects .codex even when absent. Our explicit deny rule
+    // otherwise masks that missing path as a file, colliding with its directory
+    // mount in Bubblewrap. Establish the type before resolving sandbox rules;
+    // access stays denied and no provider credentials are copied.
+    try {
+        fs.mkdirSync(codexDirectory, { mode: 0o700 });
+    }
+    catch (error) {
+        if (error.code !== "EEXIST"
+            || !fs.lstatSync(codexDirectory).isDirectory())
+            throw error;
+    }
+}
 export function codexFilesystemPermissionOverride(sitesEnabled = false) {
     const sensitiveRules = [
         ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => `${JSON.stringify(glob)}="deny"`),
@@ -329,6 +346,7 @@ export class CodexProvider {
     }
     threadOptions(key) {
         const workingDirectory = this.workingDirOverrides.get(key) ?? ensureProviderWorkingDirectory();
+        prepareCodexWorkingDirectory(workingDirectory);
         const options = {
             model: this.modelOverrides.get(key) ?? configuredCodexModel(),
             modelReasoningEffort: this.reasoningEffortOverrides.get(key) ?? configuredCodexReasoningEffort(),

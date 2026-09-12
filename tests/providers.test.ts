@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, isUnsupported } from "../src/sessionManager.js";
@@ -53,6 +53,38 @@ test("Codex provider reads the default reasoning effort from the environment", a
   } finally {
     if (previous === undefined) delete process.env.CODEX_REASONING_EFFORT;
     else process.env.CODEX_REASONING_EFFORT = previous;
+  }
+});
+
+test("Codex prepares fresh shared workspaces before starting a thread", async t => {
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const previousRoot = process.env.AI_ASSISTANT_WORKSPACE_ROOT;
+  const root = mkdtempSync(join(tmpdir(), "codex-fresh-workspace-"));
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  process.env.AI_ASSISTANT_WORKSPACE_ROOT = root;
+  const codex = new CodexProvider();
+  t.after(async () => {
+    await codex.shutdown();
+    if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+    else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+    if (previousRoot === undefined) delete process.env.AI_ASSISTANT_WORKSPACE_ROOT;
+    else process.env.AI_ASSISTANT_WORKSPACE_ROOT = previousRoot;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const internal = codex as unknown as { clients: Map<string, unknown> };
+  for (const key of ["default-workspace", "scheduled-workspace"]) {
+    const workspace = key === "default-workspace" ? root : join(root, ".scheduled-runs", "run-fresh");
+    if (key === "scheduled-workspace") {
+      mkdirSync(workspace, { recursive: true });
+      codex.setSessionWorkingDir(key, workspace);
+    }
+    assert.equal(existsSync(join(workspace, ".codex")), false);
+    internal.clients.set(key, { startThread: (options: { workingDirectory: string }) => {
+      assert.equal(options.workingDirectory, workspace);
+      assert.equal(statSync(join(workspace, ".codex")).isDirectory(), true);
+      return { run: async () => ({ finalResponse: "Ready", items: [] }) };
+    } });
+    assert.equal((await codex.sendMessage(key, "Check workspace")).content, "Ready");
   }
 });
 

@@ -41,5 +41,8 @@ jobs:
           if [ "$SANDBOX_STATUS" -ne 0 ] && ! echo "$SANDBOX_OUTPUT" | grep -q 'No permissions to create a new namespace'; then exit "$SANDBOX_STATUS"; fi
           docker run --rm --privileged --user 0:0 --tmpfs /data:rw,nosuid,nodev,size=64m --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m --entrypoint /usr/local/lib/codex/bin/codex ai-assistant-runtime-test sandbox -- /bin/true
 
+      - name: Verify fresh shared-mode Codex workspaces
+        run: docker run --rm --privileged --user 0:0 --tmpfs /data:rw,nosuid,nodev,size=64m --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-codex-workspace.js
+
       - name: Verify software transcoding and artifact MCP delivery
         run: docker run --rm --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-artifacts.js
