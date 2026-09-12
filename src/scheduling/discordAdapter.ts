@@ -12,6 +12,7 @@ import { RunTimeoutError } from "../providers/types.js";
 import { artifactMessageResolver, discordMessageLocation } from "../utils/artifactMessage.js";
 import { DeliveryRejectedError, ScheduleAccessError, type ScheduleAdapter } from "./engine.js";
 import type { DeliveryPart, ScheduledTask, TaskRun } from "./types.js";
+import { lookupNotice, previousLookupContext, SCHEDULE_LOOKUP_INSTRUCTIONS } from "./lookups.js";
 
 export class DiscordScheduleAdapter implements ScheduleAdapter {
   constructor(private client: Client, private access: AccessPolicy, private sessions: SessionManager) {}
@@ -55,6 +56,7 @@ export class DiscordScheduleAdapter implements ScheduleAdapter {
     const root = path.join(ensureProviderWorkingDirectory(), ".scheduled-runs");
     fs.mkdirSync(root, { recursive: true });
     const workspace = fs.mkdtempSync(path.join(root, "run-"));
+    run.lookups = [];
     let uncertain = false;
     try {
       await this.sessions.setSessionProvider(key, task.provider!);
@@ -77,8 +79,12 @@ export class DiscordScheduleAdapter implements ScheduleAdapter {
       }
       const resolveArtifact = artifactMessageResolver(this.client, task.ownerId, contextAuthorPolicy(this.access, this.client, task.guildId));
       const response = await this.sessions.sendMessage(key,
-        `Scheduled task at ${new Date(run.startedAt).toISOString()}. Produce the response for the saved destination channel.\n${task.content}${context}`,
-        undefined, { timeoutMs, resolveArtifactMessage: async url => {
+        `Scheduled task at ${new Date(run.startedAt).toISOString()}. Produce the response for the saved destination channel.\n${SCHEDULE_LOOKUP_INSTRUCTIONS}\n${task.content}${context}${previousLookupContext(task.lastVerifiedLookups)}`,
+        undefined, { timeoutMs, onLookup: record => {
+          const index = run.lookups!.findIndex(item => item.url === record.url);
+          if (index >= 0) run.lookups![index] = record;
+          else if (run.lookups!.length < 10) run.lookups!.push(record);
+        }, resolveArtifactMessage: async url => {
           const location = discordMessageLocation(url);
           if (location?.guild !== task.guildId || location.channel !== task.channelId) {
             throw new ScheduleAccessError("Scheduled tasks can only resolve Discord messages in their destination channel.");
@@ -86,7 +92,9 @@ export class DiscordScheduleAdapter implements ScheduleAdapter {
           await this.authorize(task);
           return resolveArtifact(url);
         } });
-      const parts: DeliveryPart[] = response.content.trim() ? chunkForDiscord(response.content).map(content => ({ content })) : [];
+      const notice = lookupNotice(run.lookups, task.lastVerifiedLookups);
+      const content = [notice, response.content.trim()].filter(Boolean).join("\n\n");
+      const parts: DeliveryPart[] = content ? chunkForDiscord(content).map(content => ({ content })) : [];
       for (const file of response.attachments) parts.push({ content: "", attachment: { name: file.displayName, base64: file.data.toString("base64") } });
       return parts;
     } catch (error) {

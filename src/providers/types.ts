@@ -1,3 +1,5 @@
+import type { LookupRecord } from "../utils/fetchWebpage.js";
+
 export const PROVIDERS = ["copilot", "codex", "opencode"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 
@@ -85,6 +87,8 @@ export interface SendMessageOptions {
   onProgress?: (update: { elapsedMs: number; message: string }) => void | Promise<void>;
   /** Host-owned, permission-checked Discord lookup; credentials never reach providers. */
   resolveArtifactMessage?: (url: string) => Promise<ArtifactMessage>;
+  /** Host-observed webpage results and source-backed summaries for scheduled lookups. */
+  onLookup?: (record: LookupRecord) => void;
 }
 
 export interface ArtifactCandidate {

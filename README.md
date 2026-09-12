@@ -151,9 +151,21 @@ The built-in `artifact_tools` MCP server is available to all three providers, in
 
 | Tool | Behavior |
 | --- | --- |
+| `fetch_webpage` | Reads public HTTP(S) pages through a controlled GET client and returns text, JSON-LD, timestamps, and explicit failure reasons. Works in shared mode without enabling shell networking. |
+| `report_lookup` | Records source-backed, model-reported facts for scheduled lookups, or reports that the requested facts were unavailable. Verification requires a successful `fetch_webpage` call in the same run. |
 | `fetch_artifact` | Downloads a public HTTP(S) file URL, or resolves a Discord message's attachments, embedded media, and links. One candidate downloads immediately; multiple candidates are returned for selection using `candidate_id`. |
 | `transcode_video` | Converts a local video to `av1`, `h264`, or `hevc` in MP4 using FFmpeg software encoding. Returns a decoded, verified local output. |
 | `attach_file` | Validates and copies a finished file, freezes its bytes, and registers it for the current Discord response. Returns `ready` or an actionable error while the agent can still correct its output. |
+
+The webpage reader uses standard HTTP(S) ports, validates and pins public DNS
+addresses on every redirect, and sends no account cookies or authentication.
+It does not execute JavaScript or load subresources. Each read is limited to
+2 MiB, 25 seconds, 24,000 text characters, and 16,000 JSON-LD characters; each
+response can read at most 10 distinct URLs. Transient connection and HTTP 5xx
+failures get one retry within the same deadline. HTTP refusals, challenge pages,
+private addresses, and other policy failures are reported without retries.
+Direct access cannot guarantee that a site serves its content: HTTP 403, login,
+JavaScript requirements, and missing data remain explicit unavailable outcomes.
 
 ### Switch providers, models, and reasoning
 
@@ -305,6 +317,18 @@ AI scheduling defaults to explicit bot administrators. Only grant
 with those same provider tools and integrations.
 Scheduled AI runs use at most `SCHEDULE_AI_TIMEOUT_MS`, or the provider's shorter
 configured inference timeout, plus its existing cancellation grace period.
+
+`/schedule inspect` separates delivery state from webpage lookup outcome. A
+delivered failure notice can have `delivery: succeeded` and `lookup: unavailable`.
+`fetched; facts not verified` means the page was read but no verified factual
+summary was reported; `not reported` means no built-in webpage lookup was recorded
+(including ordinary non-lookup tasks and hosted-web-only runs). Verification is
+a model report backed by a readable source, not an independent fact checker.
+Source failures receive a bot-generated notice. Up to 10 last verified summaries
+are retained per task and supplied to later runs as explicitly stale, untrusted
+context, with their original timestamps. Failed reads never replace those values.
+Changing the saved prompt clears the summaries. This metadata persists alongside
+the existing tasks/runs without changing their delivery/retry behavior.
 
 AI context is opt-in (`context_messages:0` by default, maximum 100 recent messages,
 40,000 characters). Only non-bot messages from the destination channel whose

@@ -31,6 +31,32 @@ function fixture(t: { after(fn: () => Promise<void>): void }, adapter: Partial<S
   }, setTime(value: number) { now = value; }, now: () => now };
 }
 
+test("lookup outcomes and last verified values survive delivery while unavailable checks preserve the old snapshot", async t => {
+  let available = true;
+  const f = fixture(t, { generate: async (_task, run) => {
+    run.lookups = [{ url: "https://example.com/auction", checkedAt: new Date(f.now()).toISOString(), status: available ? "verified" : "unavailable", summary: available ? "$42, 3 bids" : "HTTP 403" }];
+    return [{ content: available ? "$42, 3 bids" : "Lookup unavailable" }];
+  } });
+  const task = await f.scheduler.create(admin, { ...input, kind: "ai", provider: "codex", model: "test" });
+  const first = await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.equal(f.store.getRun(first)?.state, "succeeded");
+  assert.equal(f.store.getRun(first)?.lookups?.[0].status, "verified");
+  assert.deepEqual(f.store.getRun(first)?.parts, []);
+  const snapshot = f.store.get(task.id)?.lastVerifiedLookups;
+  available = false;
+  f.advance(60_000);
+  const second = await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.equal(f.store.getRun(second)?.state, "succeeded");
+  assert.equal(f.store.getRun(second)?.lookups?.[0].status, "unavailable");
+  assert.deepEqual(f.store.get(task.id)?.lastVerifiedLookups, snapshot);
+  await f.scheduler.edit(admin, task.id, { cron: "0 */2 * * *" });
+  assert.deepEqual(f.store.get(task.id)?.lastVerifiedLookups, snapshot);
+  await f.scheduler.edit(admin, task.id, { content: "Different source" });
+  assert.equal(f.store.get(task.id)?.lastVerifiedLookups, undefined);
+});
+
 for (const parseDate of [parseStartAt, parseEndAt]) test(`${parseDate.name} uses the schedule timezone or offset and rejects invalid or ambiguous times`, () => {
   for (const [value, timezone, expected] of [
     ["2026-07-01 18:30", "America/New_York", "2026-07-01T22:30:00.000Z"],

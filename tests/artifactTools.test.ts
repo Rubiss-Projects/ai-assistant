@@ -12,12 +12,41 @@ import { captureAgentArtifacts, createArtifactRun } from "../src/common/agentRes
 import { codexClientOptions } from "../src/providers/codex.js";
 import { openCodeChildEnvironment } from "../src/providers/opencode.js";
 import { createCopilotPermissionHandler } from "../src/providers/copilot.js";
+import type { LookupRecord } from "../src/utils/fetchWebpage.js";
 
 async function fixture(t: TestContext) {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "artifact-tools-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
   return workspace;
 }
+
+test("webpage tools cache within a run, report host failures, and require readable evidence for verification", async t => {
+  const workspace = await fixture(t);
+  const records: LookupRecord[] = [];
+  let calls = 0;
+  const runtime = new ArtifactTools(createArtifactRun(workspace), { onLookup: record => records.push(record) }, undefined, async url => {
+    calls++;
+    return url.endsWith("blocked")
+      ? { status: "unavailable", url, fetchedAt: "2026-09-12T22:00:00Z", errorCode: "http_error", message: "The source returned HTTP 403.", httpStatus: 403 }
+      : { status: "available", url, finalUrl: url, fetchedAt: "2026-09-12T22:00:00Z", title: "Auction", text: "$42, 3 bids", structuredData: [], truncated: false };
+  });
+  t.after(() => runtime.close());
+  const args = { run_id: runtime.id, url: "https://example.com/auction", status: "verified", summary: "$42, 3 bids" };
+  await assert.rejects(runtime.call("report_lookup", args), /fetch_webpage/);
+  await runtime.call("fetch_webpage", { run_id: runtime.id, url: args.url });
+  await runtime.call("fetch_webpage", { run_id: runtime.id, url: args.url + "#section" });
+  assert.equal(calls, 1);
+  assert.equal(records.at(-1)?.status, "fetched");
+  await runtime.call("report_lookup", args);
+  assert.equal(records.at(-1)?.status, "verified");
+  await runtime.call("fetch_webpage", { run_id: runtime.id, url: "https://example.com/blocked" });
+  assert.equal(records.at(-1)?.status, "unavailable");
+  await assert.rejects(runtime.call("report_lookup", { ...args, url: "https://example.com/blocked" }), /cannot verify/);
+  await runtime.call("report_lookup", { ...args, url: "https://example.com/blocked", status: "unavailable", summary: "Invented reason" });
+  assert.equal(records.at(-1)?.summary, "The source returned HTTP 403.");
+  await runtime.cancel();
+  await assert.rejects(runtime.call("fetch_webpage", { run_id: runtime.id, url: args.url }));
+});
 
 test("registration freezes bytes, deduplicates retries, and overrides markers and discovery", async (t) => {
   const workspace = await fixture(t);
@@ -129,7 +158,7 @@ test("real MCP stdio transport lists and calls tools, isolates sessions, and rev
   const client = new Client({ name: "artifact-test", version: "1" });
   await client.connect(new StdioClientTransport({ ...config, stderr: "pipe" }));
   t.after(() => client.close());
-  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["fetch_artifact", "attach_file", "transcode_video"]);
+  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["fetch_webpage", "report_lookup", "fetch_artifact", "attach_file", "transcode_video"]);
   let runId: string;
   const response = await captureAgentArtifacts(workspace, (run) => sessions.run("session-a", run, [], undefined, async (runtime) => {
     runId = runtime.id;
@@ -156,7 +185,7 @@ test("provider configuration enables only the host artifact bridge in shared mod
   const codex = codexClientOptions(workspace, config);
   assert.match(codex.configOverrides![0], /^mcp_servers=\{artifact_tools=/);
   assert.deepEqual([...codex.configOverrides![0].matchAll(/"([a-z_]+)"=\{approval_mode="approve"\}/g)].map((match) => match[1]),
-    ["fetch_artifact", "attach_file", "transcode_video"]);
+    ["fetch_webpage", "report_lookup", "fetch_artifact", "attach_file", "transcode_video"]);
   assert.doesNotMatch(codex.configOverrides![0], /default_tools_approval_mode/);
   assert.equal(codex.env?.AI_ARTIFACT_BRIDGE_TOKEN, undefined);
   const openCode = JSON.parse(openCodeChildEnvironment({ AI_ASSISTANT_SECURITY_MODE: "shared" }, config).OPENCODE_CONFIG_CONTENT);

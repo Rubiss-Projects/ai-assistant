@@ -16,7 +16,7 @@ try {
     execFileSync("ffmpeg", ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=128x96:rate=12", "-t", "1",
         "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", input]);
     await client.connect(new StdioClientTransport({ ...(await sessions.config("smoke")), stderr: "inherit" }));
-    assert.equal((await client.listTools()).tools.length, 3);
+    assert.equal((await client.listTools()).tools.length, 5);
     const response = await captureAgentArtifacts(workspace, (run) => sessions.run("smoke", run, [{ path: input, binary: true, kind: "file" }], undefined, async (runtime, staged) => {
         const converted = await client.callTool({ name: "transcode_video", arguments: { run_id: runtime.id, path: staged[0].path, codec: "av1" } });
         assert.ok(!converted.isError, JSON.stringify(converted));
