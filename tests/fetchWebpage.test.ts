@@ -9,6 +9,14 @@ import { PublicFetchError, type PublicResource } from "../src/utils/fetchArtifac
 
 const page = (html: string): PublicResource => ({ data: Buffer.from(html), contentType: "text/html", filename: "page", url: "https://example.com/page" });
 
+test("large hidden subtrees cannot consume the visible text budget and inline prices stay intact", () => {
+  for (const hidden of [`<svg>${"<path></path>".repeat(25_000)}</svg>`, `<template>${"<div>hidden</div>".repeat(25_000)}</template>`, `<div hidden>${"<div>hidden</div>".repeat(25_000)}</div>`]) {
+    const result = extractWebpage(`<body>${hidden}<p>Price: $<span>4</span><span>2</span></p><p>3 bids</p></body>`);
+    assert.equal(result.text, "Price: $42\n3 bids");
+    assert.equal(result.truncated, false);
+  }
+});
+
 test("webpage parsing decodes entities, retains JSON-LD and excludes scripts and hidden content", () => {
   const result = extractWebpage(`<html><head><title>Auction &amp; sale</title><script type="application/ld+json">{"offers":{"price":42}}</script><style>secret style</style></head><body><h1>Watch</h1><p>$42 &amp; 3 bids</p><script>secret code</script><div hidden>secret hidden<p>child</p></div><div aria-hidden="true">secret aria</div></body></html>`);
   assert.equal(result.title, "Auction & sale");
