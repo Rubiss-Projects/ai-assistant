@@ -251,9 +251,10 @@ not grant it.
 ```text
 /schedule create kind:message channel:#reminders content:Submit your availability cron:0 9 * * 5 timezone:America/New_York
 /schedule create kind:ai channel:#daily-updates content:Summarize the recent discussion cron:0 9 * * 1-5 timezone:America/New_York provider:codex model:<model-id> context_messages:100
+/schedule create kind:message channel:#reminders content:Check the deployment cron:0 */3 * * * timezone:America/New_York start_at:2026-12-01 09:00 end_at:2026-12-31 18:00
 ```
 
-Creation shows the interpreted schedule and the next three occurrences.
+Creation shows the interpreted schedule and up to three occurrences within its start and end dates.
 `/schedule list` shows manageable tasks in the current guild. Use
 `/schedule inspect id:<id>` for the prompt/message, ownership, saved settings,
 pause reason, recent runs, and delivered-message links. `/schedule edit`,
@@ -261,6 +262,30 @@ pause reason, recent runs, and delivered-message links. `/schedule edit`,
 the task's run history. Configuration responses are ephemeral. A guild schedule
 manager can inspect all scheduled prompts in their guild, so grant that role
 only to users trusted with those prompts.
+
+`start_at` and `end_at` are optional and can be used separately or together.
+Use `YYYY-MM-DD HH:mm` (optionally with seconds) in the schedule's timezone, or an
+ISO date-time with an explicit offset, such as `2026-12-31T18:00:00-05:00`.
+The end must be in the future and later than the start. A start in the past is
+treated as already active; missed occurrences are skipped. Local times skipped
+or repeated by a daylight-saving clock change require another time or an explicit
+offset. Add or change either date with `/schedule edit id:<id> start_at:2026-12-01 09:00 end_at:2026-12-31 18:00`;
+clear either with `start_at:none` or `end_at:none` on `/schedule edit`.
+Changing the timezone alone keeps the saved date instants; supply the dates again
+to reinterpret them in the new timezone.
+
+A task with a future start is shown as scheduled and waits until that date,
+including after a pause/resume or bot restart. Automatic runs, `run-now`, and
+delivery retries cannot start early. The first automatic run is the first cron
+occurrence at or after the start; a run exactly at the start time is included.
+
+At or after the cutoff, the schedule is marked ended: no new runs or delivery
+retries can start, and pending output is suppressed. A run exactly at the end
+time is excluded. This also applies after a bot restart. Existing tasks without
+date limits keep their current behavior. To restart an ended schedule, extend or clear
+its end date, then use `/schedule resume`. Ended tasks retain their history and
+count toward quotas until deleted. Like pausing, ending cannot recall messages
+already being sent or undo provider tool effects; active inference may still finish.
 
 Only ordinary guild text channels are supported initially; DMs, threads, forum
 containers, natural-language schedule creation, and one-time tasks are deferred.

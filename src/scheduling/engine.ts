@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AccessPolicy, AccessSubject } from "../common/accessPolicy.js";
 import { RunTimeoutError } from "../providers/types.js";
-import { validateSchedule, nextOccurrences } from "./cron.js";
+import { validateSchedule, nextOccurrences, scheduleHasStarted } from "./cron.js";
 import { ScheduleStore } from "./store.js";
 import type { DeliveryPart, ScheduledTask, TaskRun } from "./types.js";
 
@@ -70,6 +70,7 @@ export class Scheduler {
     this.validate(task);
     await this.adapter.authorize(task, subject.userId);
     this.assertAvailable();
+    this.validate(task);
     this.store.create(task, this.limits.maxOwner, this.limits.maxGuild);
     return task;
   }
@@ -78,9 +79,18 @@ export class Scheduler {
     if (!Number.isInteger(task.contextMessages) || task.contextMessages < 0 || task.contextMessages > 100) throw new Error("Context messages must be between 0 and 100.");
     if (task.kind === "message" && task.contextMessages !== 0) throw new Error("Fixed messages cannot use AI context.");
     if (task.kind === "ai" && (!task.provider || !task.model)) throw new Error("AI schedules require a saved provider and model.");
-    task.nextRunAt = validateSchedule(task.cron, task.timezone, this.limits.minimumMs, this.now());
+    if (task.startAt !== undefined && (!Number.isSafeInteger(task.startAt) || !Number.isFinite(new Date(task.startAt).getTime()))) {
+      throw new Error("The start date must be a valid date and time.");
+    }
+    if (task.endAt !== undefined && (!Number.isSafeInteger(task.endAt) || !Number.isFinite(new Date(task.endAt).getTime()) || task.endAt <= this.now())) {
+      throw new Error("The end date must be a valid date and time in the future. Edit or clear the end date to resume an ended schedule.");
+    }
+    if (task.startAt !== undefined && task.endAt !== undefined && task.endAt <= task.startAt) {
+      throw new Error("The end date must be after the start date.");
+    }
+    task.nextRunAt = validateSchedule(task.cron, task.timezone, this.limits.minimumMs, this.now(), task.startAt);
   }
-  async edit(subject: AccessSubject, id: string, patch: Partial<Pick<ScheduledTask, "channelId" | "content" | "cron" | "timezone" | "contextMessages">>): Promise<ScheduledTask> {
+  async edit(subject: AccessSubject, id: string, patch: Partial<Pick<ScheduledTask, "channelId" | "content" | "cron" | "timezone" | "contextMessages" | "startAt" | "endAt">>): Promise<ScheduledTask> {
     this.assertAvailable();
     const before = this.requireTask(subject, id);
     this.requireCreate(subject, before);
@@ -90,6 +100,7 @@ export class Scheduler {
     this.assertAvailable();
     const latest = this.store.get(id);
     if (latest?.revision !== before.revision) throw new Error("Schedule changed; try again.");
+    this.validate(task);
     task.lastStartedAt = latest.lastStartedAt;
     this.store.save(task);
     return task;
@@ -109,8 +120,8 @@ export class Scheduler {
     await this.adapter.authorize(task, subject.userId);
     this.assertAvailable();
     if (this.store.get(id)?.revision !== task.revision) throw new Error("Schedule changed; try again.");
-    this.store.save({ ...task, enabled: true, pauseReason: undefined, revision: task.revision + 1,
-      nextRunAt: validateSchedule(task.cron, task.timezone, this.limits.minimumMs, this.now()) });
+    this.validate(task);
+    this.store.save({ ...task, enabled: true, pauseReason: undefined, revision: task.revision + 1 });
   }
   private async authorizeManual(subject: AccessSubject, id: string): Promise<ScheduledTask> {
     this.assertAvailable();
@@ -122,12 +133,14 @@ export class Scheduler {
     this.assertAvailable();
     const latest = this.requireTask(subject, id);
     if (latest.revision !== task.revision) throw new Error("Schedule changed; try again.");
+    this.assertWithinDates(latest);
     return latest;
   }
   async runNow(subject: AccessSubject, id: string): Promise<string> {
     const task = await this.authorizeManual(subject, id);
     this.assertAvailable();
     if (this.store.get(id)?.revision !== task.revision) throw new Error("Schedule changed; try again.");
+    this.assertWithinDates(task);
     if (this.active.size >= this.limits.concurrency) throw new Error("Scheduler is busy; try again later.");
     const claimed = this.store.claim(id, this.now(), this.limits.minimumMs, true);
     if (!claimed) throw new Error("Task is paused, already running, or within its minimum run interval.");
@@ -138,6 +151,7 @@ export class Scheduler {
     const task = await this.authorizeManual(subject, id);
     this.assertAvailable();
     if (this.store.get(id)?.revision !== task.revision) throw new Error("Schedule changed; try again.");
+    this.assertWithinDates(task);
     const run = this.store.getRun(runId);
     if (!run || run.taskId !== id || run.state !== "delivery_failed" || run.taskRevision !== task.revision) {
       throw new Error("Only a definitely rejected delivery from the current task revision can be retried. Uncertain sends need manual inspection.");
@@ -151,7 +165,8 @@ export class Scheduler {
     if (this.stopped) return;
     this.store.assertLease(this.now());
     for (const task of this.store.list()) {
-      if (!task.enabled || task.nextRunAt > this.now()) continue;
+      if (this.store.expire(task.id, this.now())) continue;
+      if (!task.enabled || !scheduleHasStarted(task, this.now()) || task.nextRunAt > this.now()) continue;
       // Do not accumulate a backlog while all worker slots are occupied.
       if (this.active.size >= this.limits.concurrency) {
         this.store.save({ ...task, nextRunAt: nextOccurrences(task.cron, task.timezone, this.now(), 1)[0] });
@@ -167,8 +182,13 @@ export class Scheduler {
     void pending.finally(() => this.active.delete(pending));
   }
   async idle(): Promise<void> { await Promise.all(this.active); }
+  private assertWithinDates(task: ScheduledTask): void {
+    if (this.store.expire(task.id, this.now())) throw new ScheduleAccessError("Schedule has ended. Edit or clear its end date before resuming.");
+    if (!scheduleHasStarted(task, this.now())) throw new ScheduleAccessError("Schedule has not started yet. Wait until its start date, or edit or clear the start date.");
+  }
   private current(task: ScheduledTask): void {
     this.store.assertLease(this.now());
+    this.assertWithinDates(task);
     const latest = this.store.get(task.id);
     // stop() rejects new work but drains claimed runs while retaining the lease.
     if (!latest?.enabled || latest.revision !== task.revision) throw new ScheduleAccessError("Task was paused, edited, or deleted.");

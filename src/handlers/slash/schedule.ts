@@ -3,13 +3,21 @@ import type { AccessSubject } from "../../common/accessPolicy.js";
 import { chunkForDiscord } from "../../common/chunkForDiscord.js";
 import { discordTextOptions } from "../../common/discordResponse.js";
 import type { Scheduler } from "../../scheduling/engine.js";
-import { nextOccurrences, scheduleDescription } from "../../scheduling/cron.js";
+import { nextOccurrences, parseEndAt, parseStartAt, scheduleDescription, scheduleHasEnded, scheduleHasStarted } from "../../scheduling/cron.js";
 import type { ScheduledTask } from "../../scheduling/types.js";
 import { PROVIDERS, normalizeProviderName, type ProviderName } from "../../providers/types.js";
 
-export function describeTask(task: ScheduledTask): string {
-  const dates = nextOccurrences(task.cron, task.timezone).map(time => `<t:${Math.floor(time / 1000)}:F>`).join("\n");
-  return `Schedule \`${task.id}\` — ${task.enabled ? "enabled" : "paused"}\nOwner: <@${task.ownerId}> · Destination: <#${task.channelId}>\n${scheduleDescription(task.cron, task.timezone)}\nCron: \`${task.cron}\`\nNext occurrences${task.enabled ? "" : " (if resumed)"}:\n${dates}\n${task.pauseReason ?? ""}\n${task.kind === "ai" ? `AI: ${task.provider} / ${task.model}; context: ${task.contextMessages} messages\n` : ""}${task.content}`;
+function taskStatus(task: ScheduledTask, now = Date.now()): string {
+  return scheduleHasEnded(task, now) ? "ended" : !task.enabled ? "paused" : scheduleHasStarted(task, now) ? "enabled" : "scheduled";
+}
+export function describeTask(task: ScheduledTask, now = Date.now()): string {
+  const ended = scheduleHasEnded(task, now);
+  const dates = (ended ? [] : nextOccurrences(task.cron, task.timezone, now, 3, task.startAt))
+    .filter(time => task.endAt === undefined || time < task.endAt)
+    .map(time => `<t:${Math.floor(time / 1000)}:F>`).join("\n");
+  const end = task.endAt === undefined ? "No end date" : `<t:${Math.floor(task.endAt / 1000)}:F>`;
+  const start = task.startAt === undefined ? "No start date" : `<t:${Math.floor(task.startAt / 1000)}:F>`;
+  return `Schedule \`${task.id}\` — ${taskStatus(task, now)}\nOwner: <@${task.ownerId}> · Destination: <#${task.channelId}>\n${scheduleDescription(task.cron, task.timezone)}\nCron: \`${task.cron}\`\nStarts: ${start}\nEnds: ${end}\nNext occurrences${!task.enabled && !ended ? " (if resumed)" : ""}:\n${dates || "None within the schedule dates."}\n${task.pauseReason ?? ""}\n${task.kind === "ai" ? `AI: ${task.provider} / ${task.model}; context: ${task.contextMessages} messages\n` : ""}${task.content}`;
 }
 export async function handleSchedule(cmd: ChatInputCommandInteraction, scheduler: Scheduler | undefined, subject: AccessSubject): Promise<void> {
   await cmd.deferReply({ ephemeral: true });
@@ -31,10 +39,15 @@ export async function handleSchedule(cmd: ChatInputCommandInteraction, scheduler
       const reasoning = cmd.options.getString("reasoning") ?? (provider === "opencode" ? undefined : "low");
       if (kind === "ai" && !model) throw new Error("Specify a model for an AI schedule so its behavior is saved explicitly.");
       if (kind === "ai" && provider === "opencode" && reasoning) throw new Error("OpenCode does not support reasoning effort selection.");
+      const timezone = cmd.options.getString("timezone", true);
+      const startAt = cmd.options.getString("start_at");
+      const endAt = cmd.options.getString("end_at");
       const task = await scheduler.create(subject, {
         guildId: subject.guildId, channelId: cmd.options.getChannel("channel", true).id,
         kind, content: cmd.options.getString("content", true), cron: cmd.options.getString("cron", true),
-        timezone: cmd.options.getString("timezone", true), contextMessages: cmd.options.getInteger("context_messages") ?? 0,
+        timezone, contextMessages: cmd.options.getInteger("context_messages") ?? 0,
+        ...(startAt !== null ? { startAt: parseStartAt(startAt, timezone) } : {}),
+        ...(endAt !== null ? { endAt: parseEndAt(endAt, timezone) } : {}),
         ...(kind === "ai" ? { provider: provider as ProviderName, model, reasoning } : {}),
       });
       await respond(describeTask(task));
@@ -42,7 +55,7 @@ export async function handleSchedule(cmd: ChatInputCommandInteraction, scheduler
     }
     if (sub === "list") {
       const tasks = scheduler.store.list(subject.guildId).filter(task => scheduler.canManage(subject, task));
-      await respond(tasks.length ? tasks.map(task => `\`${task.id}\` · ${task.enabled ? "enabled" : "paused"} · ${task.kind} · <#${task.channelId}>`).join("\n") : "No schedules available to you.");
+      await respond(tasks.length ? tasks.map(task => `\`${task.id}\` · ${taskStatus(task)} · ${task.kind} · <#${task.channelId}>${task.startAt === undefined ? "" : ` · Starts: <t:${Math.floor(task.startAt / 1000)}:F>`}${task.endAt === undefined ? "" : ` · Ends: <t:${Math.floor(task.endAt / 1000)}:F>`}`).join("\n") : "No schedules available to you.");
       return;
     }
     const id = cmd.options.getString("id", true);
@@ -52,12 +65,16 @@ export async function handleSchedule(cmd: ChatInputCommandInteraction, scheduler
         `\`${run.id}\` · ${run.state} · <t:${Math.floor(run.startedAt / 1000)}:f>${run.error ? ` · ${run.error}` : ""}\n${run.messageIds.map(message => `https://discord.com/channels/${task.guildId}/${run.channelId}/${message}`).join("\n")}`);
       await respond(`${describeTask(task)}\n\nRecent runs:\n${runs.join("\n") || "None yet."}`);
     } else if (sub === "edit") {
-      const patch: Partial<Pick<ScheduledTask, "channelId" | "content" | "cron" | "timezone" | "contextMessages">> = {};
+      const patch: Partial<Pick<ScheduledTask, "channelId" | "content" | "cron" | "timezone" | "contextMessages" | "startAt" | "endAt">> = {};
       for (const key of ["content", "cron", "timezone"] as const) {
         const value = cmd.options.getString(key); if (value !== null) patch[key] = value;
       }
       const channel = cmd.options.getChannel("channel"); if (channel) patch.channelId = channel.id;
       const context = cmd.options.getInteger("context_messages"); if (context !== null) patch.contextMessages = context;
+      const startAt = cmd.options.getString("start_at");
+      if (startAt !== null) patch.startAt = startAt.trim().toLowerCase() === "none" ? undefined : parseStartAt(startAt, patch.timezone ?? task.timezone);
+      const endAt = cmd.options.getString("end_at");
+      if (endAt !== null) patch.endAt = endAt.trim().toLowerCase() === "none" ? undefined : parseEndAt(endAt, patch.timezone ?? task.timezone);
       if (!Object.keys(patch).length) throw new Error("Provide at least one field to edit.");
       await respond(describeTask(await scheduler.edit(subject, id, patch)));
     } else if (sub === "pause") { scheduler.pause(subject, id); await respond("Schedule paused. Any pending result will not be posted."); }

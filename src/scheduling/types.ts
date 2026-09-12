@@ -8,6 +8,10 @@ export interface ScheduledTask {
   content: string;
   cron: string;
   timezone: string;
+  /** Inclusive start, stored as an absolute Unix timestamp in milliseconds. */
+  startAt?: number;
+  /** Exclusive cutoff, stored as an absolute Unix timestamp in milliseconds. */
+  endAt?: number;
   provider?: ProviderName;
   model?: string;
   reasoning?: string;

@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { nextOccurrences } from "./cron.js";
+import { nextOccurrences, scheduleHasEnded, scheduleHasStarted } from "./cron.js";
 /** One active scheduler per database. A lease fences stale workers before external delivery. */
 export class ScheduleStore {
     db;
@@ -69,6 +69,14 @@ export class ScheduleStore {
         if (task)
             this.save({ ...task, enabled: false, revision: task.revision + 1, pauseReason: reason });
     }
+    expire(id, now) {
+        const task = this.get(id);
+        if (!task || !scheduleHasEnded(task, now))
+            return false;
+        if (task.enabled)
+            this.pause(id, "Schedule reached its end date.");
+        return true;
+    }
     runs(taskId) {
         const rows = this.db.prepare("SELECT data FROM runs WHERE task_id=? ORDER BY started DESC LIMIT 20").all(taskId);
         return rows.map(row => JSON.parse(row.data));
@@ -86,8 +94,10 @@ export class ScheduleStore {
     claim(taskId, now, minimumMs, manual = false) {
         return this.db.transaction(() => {
             this.assertLease(now);
+            if (this.expire(taskId, now))
+                return;
             const task = this.get(taskId);
-            if (!task || !task.enabled || (!manual && task.nextRunAt > now))
+            if (!task || !task.enabled || !scheduleHasStarted(task, now) || (!manual && task.nextRunAt > now))
                 return;
             if (this.busy(taskId) || (task.lastStartedAt !== undefined && now - task.lastStartedAt < minimumMs)) {
                 if (!manual) {
@@ -122,6 +132,8 @@ export class ScheduleStore {
                     this.pause(run.taskId, run.error);
             }
             for (const task of this.list()) {
+                if (this.expire(task.id, now))
+                    continue;
                 if (task.enabled && task.nextRunAt <= now) {
                     task.nextRunAt = nextOccurrences(task.cron, task.timezone, now, 1)[0];
                     this.save(task);

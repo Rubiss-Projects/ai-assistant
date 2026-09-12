@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createAccessPolicy, parseGrants, slashCommandCapability } from "../src/common/accessPolicy.js";
-import { nextOccurrences, validateSchedule } from "../src/scheduling/cron.js";
+import { nextOccurrences, parseEndAt, parseStartAt, validateSchedule } from "../src/scheduling/cron.js";
 import { ScheduleStore } from "../src/scheduling/store.js";
 import { Scheduler, ScheduleAccessError, DeliveryRejectedError, type ScheduleAdapter } from "../src/scheduling/engine.js";
 import { RunTimeoutError } from "../src/providers/types.js";
@@ -26,8 +26,214 @@ function fixture(t: { after(fn: () => Promise<void>): void }, adapter: Partial<S
   }, limits, () => now);
   scheduler.start();
   t.after(() => scheduler.stop());
-  return { scheduler, store, sent, advance(ms: number) { now += ms; store.renew(now - ms); /* Short jumps in these tests. */ }, setTime(value: number) { now = value; }, now: () => now };
+  return { scheduler, store, sent, advance(ms: number) {
+    while (ms > 0) { const step = Math.min(ms, 30_000); now += step; store.renew(now); ms -= step; }
+  }, setTime(value: number) { now = value; }, now: () => now };
 }
+
+for (const parseDate of [parseStartAt, parseEndAt]) test(`${parseDate.name} uses the schedule timezone or offset and rejects invalid or ambiguous times`, () => {
+  for (const [value, timezone, expected] of [
+    ["2026-07-01 18:30", "America/New_York", "2026-07-01T22:30:00.000Z"],
+    ["2026-12-01T18:30:15", "America/New_York", "2026-12-01T23:30:15.000Z"],
+    ["2026-07-01 18:30", "Asia/Kathmandu", "2026-07-01T12:45:00.000Z"],
+    ["2026-07-01T18:30:00Z", "America/New_York", "2026-07-01T18:30:00.000Z"],
+    ["2026-07-01T18:30:00.125+02:00", "UTC", "2026-07-01T16:30:00.125Z"],
+    ["2026-11-01T01:30:00-04:00", "America/New_York", "2026-11-01T05:30:00.000Z"],
+    ["2026-11-01T01:30:00-05:00", "America/New_York", "2026-11-01T06:30:00.000Z"],
+  ]) assert.equal(new Date(parseDate(value, timezone)).toISOString(), expected);
+  for (const value of ["", "tomorrow", "2026-12-01", "2026-02-30 12:00", "2026-02-30T12:00:00Z", "2026-01-01 24:00", "2026-01-01T10:00+25:00", "2026-01-01 12:60"]) {
+    assert.throws(() => parseDate(value, "UTC"), /valid .* date and time/, value);
+  }
+  assert.throws(() => parseDate("2026-03-08 02:30", "America/New_York"), /does not exist/);
+  assert.throws(() => parseDate("2026-11-01 01:30", "America/New_York"), /occurs twice/);
+  assert.throws(() => parseDate("2026-12-01 18:30", "not/a-zone"));
+});
+
+test("start dates can be added, moved, preserved or cleared, and ends must follow starts", async t => {
+  const f = fixture(t);
+  const task = await f.scheduler.create(admin, input);
+  for (const startAt of [NaN, Infinity, 8.64e15 + 1, f.now() + 0.5]) {
+    await assert.rejects(f.scheduler.create(admin, { ...input, startAt }), /start date/);
+    await assert.rejects(f.scheduler.edit(admin, task.id, { startAt }), /start date/);
+  }
+  for (const endAt of [f.now() + 30_000, f.now() + 60_000]) {
+    const dates = { startAt: f.now() + 60_000, endAt };
+    await assert.rejects(f.scheduler.create(admin, { ...input, ...dates }), /after the start date/);
+    await assert.rejects(f.scheduler.edit(admin, task.id, dates), /after the start date/);
+  }
+  const startAt = f.now() + 3_600_000;
+  await f.scheduler.edit(admin, task.id, { startAt });
+  await f.scheduler.edit(admin, task.id, { content: "Updated" });
+  assert.equal(f.store.get(task.id)?.startAt, startAt);
+  assert.equal(f.store.get(task.id)?.nextRunAt, startAt);
+  await f.scheduler.edit(admin, task.id, { startAt: startAt + 1 });
+  assert.equal(f.store.get(task.id)?.nextRunAt, startAt + 3_600_000);
+  await f.scheduler.edit(admin, task.id, { startAt: undefined });
+  assert.equal(f.store.get(task.id)?.startAt, undefined);
+  await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.deepEqual(f.sent, ["Updated"]);
+  // Historical starts are already active and do not block later edits or resumes.
+  await f.scheduler.edit(admin, task.id, { startAt: f.now() - 1 });
+  f.scheduler.pause(admin, task.id);
+  await f.scheduler.resume(admin, task.id);
+  assert.equal(f.store.get(task.id)?.enabled, true);
+});
+
+test("a future start blocks manual runs and delivery retries, and is honored by resume", async t => {
+  const f = fixture(t);
+  const startAt = f.now() + 30_000;
+  const task = await f.scheduler.create(admin, { ...input, startAt });
+  await assert.rejects(f.scheduler.runNow(admin, task.id), /not started yet/);
+  await assert.rejects(f.scheduler.retryDelivery(admin, task.id, "run"), /not started yet/);
+  assert.equal(f.store.claim(task.id, f.now(), limits.minimumMs, true), undefined);
+  f.scheduler.pause(admin, task.id);
+  await f.scheduler.resume(admin, task.id);
+  assert.equal(f.store.get(task.id)?.enabled, true);
+  assert.equal(f.store.get(task.id)?.nextRunAt, Date.UTC(2026, 0, 1, 1));
+  await assert.rejects(f.scheduler.runNow(admin, task.id), /not started yet/);
+  f.advance(30_000);
+  await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.deepEqual(f.sent, ["Reminder"]);
+});
+
+test("create and edit validate cutoffs, and editing can add, change, preserve or clear them", async t => {
+  const f = fixture(t);
+  const task = await f.scheduler.create(admin, input);
+  for (const endAt of [NaN, Infinity, 8.64e15 + 1, f.now() - 1, f.now(), f.now() + 0.5]) {
+    await assert.rejects(f.scheduler.create(admin, { ...input, endAt }), /end date/);
+    await assert.rejects(f.scheduler.edit(admin, task.id, { endAt }), /end date/);
+  }
+  await f.scheduler.edit(admin, task.id, { endAt: f.now() + 30_000 });
+  assert.equal(f.store.get(task.id)?.endAt, f.now() + 30_000);
+  await f.scheduler.edit(admin, task.id, { content: "Updated" });
+  assert.equal(f.store.get(task.id)?.endAt, f.now() + 30_000);
+  await f.scheduler.edit(admin, task.id, { endAt: f.now() + 45_000 });
+  assert.equal(f.store.get(task.id)?.endAt, f.now() + 45_000);
+  await f.scheduler.edit(admin, task.id, { endAt: undefined });
+  assert.equal(f.store.get(task.id)?.endAt, undefined);
+  await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.deepEqual(f.sent, ["Updated"]);
+});
+
+for (const hours of [1, 3]) test(`every-${hours}-hour tasks include the exact start and exclude the exact end`, async t => {
+  const f = fixture(t);
+  const interval = hours * 3_600_000;
+  const startAt = f.now() + 2 * interval;
+  const task = await f.scheduler.create(admin, { ...input, cron: `0 */${hours} * * *`, startAt, endAt: f.now() + 4 * interval });
+  assert.equal(task.nextRunAt, startAt);
+  for (let i = 0; i < 4; i++) {
+    f.advance(interval);
+    f.scheduler.tick();
+    await f.scheduler.idle();
+    assert.equal(f.sent.length, Math.min(i, 2));
+  }
+  assert.deepEqual(f.sent, ["Reminder", "Reminder"]);
+  assert.equal(f.store.get(task.id)?.enabled, false);
+  assert.match(f.store.get(task.id)?.pauseReason ?? "", /end date/);
+  assert.equal(f.store.runs(task.id).length, 2);
+  await assert.rejects(f.scheduler.runNow(admin, task.id), /ended/);
+  await assert.rejects(f.scheduler.resume(admin, task.id), /end date/);
+});
+
+test("cutoffs between occurrences expire even when the next run is still in the future", async t => {
+  const f = fixture(t);
+  const task = await f.scheduler.create(admin, { ...input, endAt: f.now() + 30_000 });
+  f.advance(30_000);
+  f.scheduler.tick();
+  const ended = f.store.get(task.id)!;
+  assert.equal(ended.enabled, false);
+  f.scheduler.tick();
+  assert.equal(f.store.get(task.id)?.revision, ended.revision);
+  await f.scheduler.edit(admin, task.id, { endAt: f.now() + 45_000 });
+  assert.equal(f.store.get(task.id)?.enabled, false);
+  await f.scheduler.resume(admin, task.id);
+  assert.equal(f.store.get(task.id)?.enabled, true);
+  f.advance(45_000);
+  f.scheduler.tick();
+  await f.scheduler.edit(admin, task.id, { endAt: undefined });
+  await f.scheduler.resume(admin, task.id);
+  await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.deepEqual(f.sent, ["Reminder"]);
+});
+
+test("an expired task cannot be claimed automatically or manually before the next tick", async t => {
+  const f = fixture(t);
+  const task = await f.scheduler.create(admin, { ...input, endAt: f.now() + 30_000 });
+  f.advance(30_000);
+  assert.equal(f.store.claim(task.id, f.now(), limits.minimumMs, true), undefined);
+  assert.equal(f.store.claim(task.id, f.now(), limits.minimumMs), undefined);
+  assert.equal(f.store.get(task.id)?.enabled, false);
+  assert.deepEqual(f.store.runs(task.id), []);
+});
+
+test("a cutoff reached during generation suppresses the pending output without waiting for a tick", async t => {
+  const gate = deferred();
+  const f = fixture(t, { generate: async () => { await gate.promise; return [{ content: "Too late" }]; } });
+  t.after(async () => { gate.resolve(); });
+  const task = await f.scheduler.create(admin, { ...input, kind: "ai", provider: "codex", model: "test", endAt: f.now() + 30_000 });
+  const runId = await f.scheduler.runNow(admin, task.id);
+  await new Promise(resolve => setImmediate(resolve));
+  f.advance(30_000);
+  gate.resolve();
+  await f.scheduler.idle();
+  assert.deepEqual(f.sent, []);
+  assert.equal(f.store.getRun(runId)?.state, "cancelled");
+  assert.equal(f.store.get(task.id)?.enabled, false);
+});
+
+test("the final send check blocks delivery when the cutoff passes during channel lookup", async t => {
+  let sends = 0;
+  const f = fixture(t, { send: async (_task, _part, _nonce, beforeSend) => {
+    f.advance(30_000);
+    beforeSend();
+    sends++;
+    return "message";
+  } });
+  const task = await f.scheduler.create(admin, { ...input, endAt: f.now() + 30_000 });
+  const runId = await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.equal(sends, 0);
+  assert.equal(f.store.getRun(runId)?.state, "cancelled");
+});
+
+test("failed delivery cannot be retried at or after the cutoff", async t => {
+  const f = fixture(t, { send: async () => { throw new DeliveryRejectedError("Rejected"); } });
+  const task = await f.scheduler.create(admin, { ...input, endAt: f.now() + 30_000 });
+  const runId = await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  f.advance(30_000);
+  await assert.rejects(f.scheduler.retryDelivery(admin, task.id, runId), /ended/);
+  assert.equal(f.store.getRun(runId)?.state, "delivery_failed");
+  assert.equal(f.store.get(task.id)?.enabled, false);
+});
+
+test("schedule dates survive restart, expire before the next run, and leave legacy tasks enabled", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ended-schedule-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "schedules.sqlite");
+  const now = Date.UTC(2026, 0, 1);
+  const first = new ScheduleStore(file);
+  const task: ScheduledTask = { ...input, id: "ended", ownerId: "100", revision: 1, createdAt: now, nextRunAt: now + 3_600_000, enabled: true, endAt: now + 30_000 };
+  first.save(task);
+  first.save({ ...task, id: "legacy", endAt: undefined });
+  first.save({ ...task, id: "future", startAt: now + 3_600_000, endAt: now + 7_200_000 });
+  first.close();
+  const second = new ScheduleStore(file);
+  t.after(() => second.close());
+  second.acquire(now + 30_000);
+  second.recover(now + 30_000);
+  assert.equal(second.get("ended")?.endAt, now + 30_000);
+  assert.equal(second.get("ended")?.enabled, false);
+  assert.equal(second.get("legacy")?.enabled, true);
+  assert.equal(second.get("future")?.enabled, true);
+  assert.equal(second.get("future")?.startAt, now + 3_600_000);
+  assert.equal(second.get("future")?.nextRunAt, now + 3_600_000);
+  assert.equal(second.claim("future", now + 30_000, limits.minimumMs, true), undefined);
+});
 
 test("schedule rights never inherit legacy open-admin fallback", () => {
   const policy = createAccessPolicy({});
@@ -84,6 +290,16 @@ test("cron validates format, timezone, frequency and weekday local time across D
 test("all registered slash command payloads serialize", () => {
   const serialized = commands.map(command => command.toJSON());
   assert.equal(serialized.filter(command => command.name === "schedule").length, 1);
+  const schedule = serialized.find(command => command.name === "schedule")!;
+  for (const name of ["create", "edit"]) {
+    const sub = schedule.options?.find(option => option.name === name);
+    assert.ok(sub && "options" in sub);
+    for (const field of ["start_at", "end_at"]) {
+      const date = sub.options?.find(option => option.name === field);
+      assert.equal(date?.type, 3);
+      assert.ok(!date?.required);
+    }
+  }
   for (const command of serialized.filter(c => c.name !== "schedule")) {
     const subs = command.options?.filter(option => option.type === 1) ?? [];
     for (const request of subs.length ? subs.map(sub => ({ commandName: command.name, subcommand: sub.name })) : [{ commandName: command.name }]) {

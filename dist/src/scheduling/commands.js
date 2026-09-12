@@ -3,7 +3,13 @@ const fields = (sub, required) => sub
     .addChannelOption(opt => opt.setName("channel").setDescription("Destination text channel").addChannelTypes(ChannelType.GuildText).setRequired(required))
     .addStringOption(opt => opt.setName("content").setDescription("Exact message text, or the AI prompt to run").setMaxLength(6000).setRequired(required))
     .addStringOption(opt => opt.setName("cron").setDescription("Five-field cron, for example 0 9 * * 1-5").setMaxLength(100).setRequired(required))
-    .addStringOption(opt => opt.setName("timezone").setDescription("IANA timezone, for example America/New_York or UTC").setMaxLength(100).setRequired(required));
+    .addStringOption(opt => opt.setName("timezone").setDescription("IANA timezone, for example America/New_York or UTC").setMaxLength(100).setRequired(required))
+    .addStringOption(opt => opt.setName("start_at").setDescription(required
+    ? "Start at YYYY-MM-DD HH:mm in the schedule timezone, or an ISO date-time with offset"
+    : "Start at YYYY-MM-DD HH:mm in the schedule timezone, or ISO with offset; none clears it").setMaxLength(100))
+    .addStringOption(opt => opt.setName("end_at").setDescription(required
+    ? "Stop at YYYY-MM-DD HH:mm in the schedule timezone, or an ISO date-time with offset"
+    : "Stop at YYYY-MM-DD HH:mm in the schedule timezone, or ISO with offset; none clears it").setMaxLength(100));
 const context = (sub) => sub.addIntegerOption(opt => opt.setName("context_messages")
     .setDescription("AI only: recent destination messages to include (default 0)").setMinValue(0).setMaxValue(100));
 const id = (sub) => sub.addStringOption(opt => opt.setName("id").setDescription("Schedule ID").setRequired(true));
