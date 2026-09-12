@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ChannelType, PermissionFlagsBits, type Client } from "discord.js";
+import { ChannelType, MessageFlags, PermissionFlagsBits, type Client } from "discord.js";
 import { createAccessPolicy } from "../src/common/accessPolicy.js";
 import { DiscordScheduleAdapter } from "../src/scheduling/discordAdapter.js";
 import type { ScheduledTask, TaskRun } from "../src/scheduling/types.js";
@@ -58,6 +58,28 @@ for (const kind of ["message", "ai"] as const) test(`${kind} scheduled sends all
   assert.deepEqual(f.sent[0].allowedMentions, { parse: ["users", "roles", "everyone"], repliedUser: false });
   assert.equal(f.sent[0].nonce, f.sent[1].nonce);
   assert.equal(f.sent[0].enforceNonce, true);
+});
+
+for (const kind of ["message", "ai"] as const) test(`${kind} schedules honor the embed setting without changing mentions or attachments`, async t => {
+  const previous = process.env.DISCORD_SUPPRESS_EMBEDS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.DISCORD_SUPPRESS_EMBEDS;
+    else process.env.DISCORD_SUPPRESS_EMBEDS = previous;
+  });
+  const f = discordMock();
+  const adapter = new DiscordScheduleAdapter(f.client, createAccessPolicy({}), {} as SessionManager);
+  const part = { content: "@everyone https://example.com/one https://example.org/two", attachment: { base64: Buffer.from("file").toString("base64"), name: "result.txt" } };
+  for (const enabled of [false, true]) {
+    process.env.DISCORD_SUPPRESS_EMBEDS = String(enabled);
+    await adapter.send({ ...task, kind }, part, "run:0");
+    const sent = f.sent.at(-1);
+    assert.equal(sent.flags, enabled ? MessageFlags.SuppressEmbeds : undefined);
+    assert.equal(sent.content, part.content);
+    assert.deepEqual(sent.files, [{ attachment: Buffer.from("file"), name: "result.txt" }]);
+    assert.deepEqual(sent.allowedMentions, { parse: ["users", "roles", "everyone"], repliedUser: false });
+    assert.equal(sent.enforceNonce, true);
+  }
+  assert.equal(f.sent[0].nonce, f.sent[1].nonce);
 });
 
 test("AI scheduling isolates sessions and workspaces, filters context, binds lookups, and forwards timeout", async t => {

@@ -1,4 +1,5 @@
 import { chunkForDiscord } from "../../common/chunkForDiscord.js";
+import { discordTextOptions } from "../../common/discordResponse.js";
 import { nextOccurrences, scheduleDescription } from "../../scheduling/cron.js";
 import { PROVIDERS, normalizeProviderName } from "../../providers/types.js";
 export function describeTask(task) {
@@ -9,9 +10,9 @@ export async function handleSchedule(cmd, scheduler, subject) {
     await cmd.deferReply({ ephemeral: true });
     const respond = async (text) => {
         const chunks = chunkForDiscord(text);
-        await cmd.editReply({ content: chunks[0], allowedMentions: { parse: [] } });
+        await cmd.editReply({ ...discordTextOptions(chunks[0]), allowedMentions: { parse: [] } });
         for (const content of chunks.slice(1))
-            await cmd.followUp({ content, ephemeral: true, allowedMentions: { parse: [] } });
+            await cmd.followUp({ ...discordTextOptions(content), ephemeral: true, allowedMentions: { parse: [] } });
     };
     try {
         if (!scheduler)

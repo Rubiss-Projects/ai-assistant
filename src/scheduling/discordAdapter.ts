@@ -5,6 +5,7 @@ import path from "node:path";
 import type { AccessPolicy } from "../common/accessPolicy.js";
 import { discordSubject, contextAuthorPolicy } from "../common/discordAccess.js";
 import { chunkForDiscord } from "../common/chunkForDiscord.js";
+import { discordEmbedOptions } from "../common/discordResponse.js";
 import { ensureProviderWorkingDirectory } from "../common/providerSecurity.js";
 import type { SessionManager } from "../sessionManager.js";
 import { RunTimeoutError } from "../providers/types.js";
@@ -104,6 +105,7 @@ export class DiscordScheduleAdapter implements ScheduleAdapter {
     try {
       beforeSend();
       const result = await channel.send({
+        ...discordEmbedOptions(),
         content: part.content || undefined,
         files: part.attachment ? [{ attachment: Buffer.from(part.attachment.base64, "base64"), name: part.attachment.name }] : [],
         allowedMentions: { parse: ["users", "roles", "everyone"], repliedUser: false },

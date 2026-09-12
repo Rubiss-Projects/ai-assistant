@@ -1,3 +1,4 @@
+import { discordTextOptions } from "../../common/discordResponse.js";
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager, chunkForDiscord, unsupportedMessage } from "../../sessionManager.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
@@ -18,17 +19,17 @@ export async function handleWorkspace(
       } else {
         const list = files.map((f, i) => `${i + 1}. \`${f}\``).join("\n");
         const chunks = chunkForDiscord(`📁 **Workspace files:**\n${list}`);
-        await interaction.editReply(chunks[0]);
+        await interaction.editReply(discordTextOptions(chunks[0]));
         for (const chunk of chunks.slice(1)) {
-          await interaction.followUp({ ephemeral: true, content: chunk });
+          await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
         }
       }
     } else if (sub === "read") {
       const content = await sessions.readWorkspaceFile(sessionKey, path);
       const chunks = chunkForDiscord(`📄 **\`${path}\`:**\n\`\`\`\n${content}\n\`\`\``);
-      await interaction.editReply(chunks[0]);
+      await interaction.editReply(discordTextOptions(chunks[0]));
       for (const chunk of chunks.slice(1)) {
-        await interaction.followUp({ ephemeral: true, content: chunk });
+        await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
       }
     } else if (sub === "create") {
       const content = interaction.options.getString("content", true);
