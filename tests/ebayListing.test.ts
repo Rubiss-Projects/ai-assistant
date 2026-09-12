@@ -8,7 +8,7 @@ import { fetchWebpage } from "../src/utils/fetchWebpage.js";
 
 const url = "https://www.ebay.com/itm/168671555854";
 const html = '<title>Synology NAS | eBay</title><h1>Synology NAS</h1><p>US $910.00</p><p>3 bids</p><p>Ends in 1d 19h</p><a>Place bid</a><script type="application/ld+json">{"@type":"Product","offers":{"price":"910.0","priceCurrency":"USD"}}</script>';
-type Reply = { status?: number; cookies?: boolean; location?: string; length?: number; streamedBytes?: number; body?: string };
+type Reply = { status?: number; cookies?: boolean; location?: string; length?: number; streamedBytes?: number; body?: string; refresh?: boolean };
 
 function browserFixture(t: TestContext, replies: Reply[]) {
   const navigations: string[] = [], launches: any[] = [], contexts: any[] = [], calls: Array<{ method: string; args: any }> = [];
@@ -41,6 +41,7 @@ function browserFixture(t: TestContext, replies: Reply[]) {
         ...(reply.location ? [{ name: "Location", value: reply.location }] : []),
         ...(reply.length === undefined ? [] : [{ name: "Content-Length", value: String(reply.length) }]),
       ] });
+      if (reply.refresh) await pause({});
       // Neither subresources nor embedded frames may reach their destinations.
       await assert.rejects(pause({ resourceType: "Image", request: { url: "http://127.0.0.1/private", method: "GET" } }));
       await assert.rejects(pause({ frameId: "child", request: { url, method: "GET" } }));
@@ -118,6 +119,13 @@ test("private DNS prevents browser startup", async t => {
   const result = await fetchWebpage(url);
   assert.equal(result.status === "unavailable" && result.errorCode, "policy_blocked");
   assert.equal(fixture.launches.length, 0);
+});
+
+test("page-triggered refreshes cannot add navigations beyond the explicit read", async t => {
+  const fixture = browserFixture(t, [{ refresh: true }]);
+  const result = await fetchWebpage(url);
+  assert.equal(result.status === "unavailable" && result.errorCode, "policy_blocked");
+  assert.equal(fixture.calls.filter(call => call.method === "Fetch.continueRequest").length, 1);
 });
 
 test("declared and streamed body limits close the browser", async t => {
