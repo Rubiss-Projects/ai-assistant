@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -29,6 +29,7 @@ import {
   codexFilesystemPermissionOverride,
   codexThreadSecurityOptions,
   createCodexSessionTemporaryDirectory,
+  prepareCodexWorkingDirectory,
 } from "../src/providers/codex.js";
 import {
   openCodeBaseRunArguments,
@@ -247,6 +248,39 @@ test("Codex shared sessions receive distinct private temporary directories", () 
     if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
     else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
   }
+});
+
+test("Codex workspace preparation preserves existing state and rejects file or symlink collisions", t => {
+  const root = mkdtempSync(join(tmpdir(), "codex-workspace-preparation-"));
+  const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const previousRoot = process.env.AI_ASSISTANT_WORKSPACE_ROOT;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  process.env.AI_ASSISTANT_WORKSPACE_ROOT = root;
+  t.after(() => {
+    if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
+    else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+    if (previousRoot === undefined) delete process.env.AI_ASSISTANT_WORKSPACE_ROOT;
+    else process.env.AI_ASSISTANT_WORKSPACE_ROOT = previousRoot;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const directory = join(root, ".codex");
+  prepareCodexWorkingDirectory(root);
+  writeFileSync(join(directory, "existing.txt"), "preserve");
+  prepareCodexWorkingDirectory(root);
+  assert.equal(readFileSync(join(directory, "existing.txt"), "utf8"), "preserve");
+  rmSync(directory, { recursive: true });
+  writeFileSync(directory, "preserve file");
+  assert.throws(() => prepareCodexWorkingDirectory(root), /EEXIST/);
+  assert.equal(readFileSync(directory, "utf8"), "preserve file");
+  rmSync(directory);
+  const target = join(root, "target");
+  mkdirSync(target);
+  symlinkSync(target, directory, "junction");
+  assert.throws(() => prepareCodexWorkingDirectory(root), /EEXIST/);
+  rmSync(directory);
+  process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
+  prepareCodexWorkingDirectory(root);
+  assert.equal(existsSync(directory), false);
 });
 
 test("Codex can explicitly enable Sites without enabling other connected apps", () => {
