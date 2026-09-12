@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { discordSubject, contextAuthorPolicy } from "../common/discordAccess.js";
 import { chunkForDiscord } from "../common/chunkForDiscord.js";
+import { discordEmbedOptions } from "../common/discordResponse.js";
 import { ensureProviderWorkingDirectory } from "../common/providerSecurity.js";
 import { RunTimeoutError } from "../providers/types.js";
 import { artifactMessageResolver, discordMessageLocation } from "../utils/artifactMessage.js";
@@ -115,6 +116,7 @@ export class DiscordScheduleAdapter {
         try {
             beforeSend();
             const result = await channel.send({
+                ...discordEmbedOptions(),
                 content: part.content || undefined,
                 files: part.attachment ? [{ attachment: Buffer.from(part.attachment.base64, "base64"), name: part.attachment.name }] : [],
                 allowedMentions: { parse: ["users", "roles", "everyone"], repliedUser: false },

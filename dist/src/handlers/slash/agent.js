@@ -1,3 +1,4 @@
+import { discordTextOptions } from "../../common/discordResponse.js";
 import { chunkForDiscord, unsupportedMessage } from "../../sessionManager.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export async function handleAgent(interaction, sessions) {
@@ -13,9 +14,9 @@ export async function handleAgent(interaction, sessions) {
             }
             const lines = agents.map((a, i) => `${i + 1}. **${a.displayName}** (\`${a.name}\`) — ${a.description}`);
             const chunks = chunkForDiscord(`**Available agents:**\n${lines.join("\n")}`);
-            await interaction.editReply(chunks[0]);
+            await interaction.editReply(discordTextOptions(chunks[0]));
             for (const chunk of chunks.slice(1)) {
-                await interaction.followUp({ ephemeral: true, content: chunk });
+                await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
             }
         }
         else if (sub === "current") {
@@ -25,7 +26,7 @@ export async function handleAgent(interaction, sessions) {
                 await interaction.editReply("No agent selected (using default).");
                 return;
             }
-            await interaction.editReply(`**${agent.displayName}** (\`${agent.name}\`)\n> ${agent.description}`);
+            await interaction.editReply(discordTextOptions(`**${agent.displayName}** (\`${agent.name}\`)\n> ${agent.description}`));
         }
         else if (sub === "select") {
             const name = interaction.options.getString("name", true);

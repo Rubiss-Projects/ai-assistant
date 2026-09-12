@@ -143,6 +143,8 @@ Mentions and free-channel messages include nearby conversation. A reply mentioni
 
 Long tasks send periodic “still working” messages (every minute by default). Each provider has a one-hour hard timeout by default. At that limit, the bot cancels or terminates the run and waits up to five seconds for cancellation confirmation.
 
+To keep messages with links compact, set `DISCORD_SUPPRESS_EMBEDS=true` and restart the bot. This hides automatic link previews in text replies (including mentions, DMs, chat threads, and slash-command output) and scheduled messages while keeping URLs clickable. The default is `false`; existing messages are not changed, and uploaded files are still delivered.
+
 ### Artifact and media tools
 
 The built-in `artifact_tools` MCP server is available to all three providers, including in shared mode.
@@ -370,6 +372,7 @@ For a longer prompt, set `AI_ASSISTANT_SYSTEM_PROMPT_FILE` to a file readable by
 | `DISCORD_APP_ID` | Required for registration | Discord Application ID whose slash commands are registered. |
 | `DISCORD_GUILD_ID` | Required for registration | Server ID receiving the guild slash commands. The registration script does not fall back to global registration. |
 | `DISCORD_FREE_CHANNELS` | Empty; comma-separated channel IDs | Channels where allowed users can chat without mentioning the bot. |
+| `DISCORD_SUPPRESS_EMBEDS` | `false`; set `true` to enable | Hides automatic link previews in bot text replies and scheduled messages without changing link text. Restart after changes; existing messages are unaffected. |
 | `DISCORD_ALLOWED_USERS` | Empty; comma-separated user IDs | Restricts ordinary messages and public slash actions. Empty allows everyone; explicit admins can also invoke public slash actions. |
 | `DISCORD_ADMIN_USERS` | Falls back to `DISCORD_ALLOWED_USERS` | Comma-separated user IDs allowed to invoke administrative slash actions. If both lists are empty, everyone has admin access. Does not by itself grant access to ordinary messages. |
 | `DISCORD_ATTACHMENT_MODE` | `native`; accepts `native`, `text` | `native` stages attachments in the turn's workspace and supplies file paths; binary files are never inlined as text. `text` embeds text/code uploads as untrusted text and deletes temporary uploads before the provider runs; binary uploads and video processing are unavailable. Images remain vision inputs in both modes. |

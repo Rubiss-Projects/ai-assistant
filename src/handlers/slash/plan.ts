@@ -1,3 +1,4 @@
+import { discordTextOptions } from "../../common/discordResponse.js";
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager, chunkForDiscord, unsupportedMessage } from "../../sessionManager.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
@@ -17,9 +18,9 @@ export async function handlePlan(
       } else {
         const planText = `📋 **Session Plan:**\n\`\`\`\n${result.content}\n\`\`\`${result.path ? `\n*Stored at: ${result.path}*` : ""}`;
         const chunks = chunkForDiscord(planText);
-        await interaction.editReply(chunks[0]);
+        await interaction.editReply(discordTextOptions(chunks[0]));
         for (const chunk of chunks.slice(1)) {
-          await interaction.followUp({ ephemeral: true, content: chunk });
+          await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
         }
       }
     } else if (sub === "update") {

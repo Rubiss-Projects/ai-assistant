@@ -1,3 +1,4 @@
+import { discordTextOptions } from "../../common/discordResponse.js";
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager, chunkForDiscord } from "../../sessionManager.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
@@ -42,9 +43,9 @@ export async function handleHistory(
     });
 
     const chunks = chunkForDiscord(lines.join("\n\n"));
-    await interaction.editReply(chunks[0]);
+    await interaction.editReply(discordTextOptions(chunks[0]));
     for (const chunk of chunks.slice(1)) {
-      await interaction.followUp({ ephemeral: true, content: chunk });
+      await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
     }
   } catch (err) {
     console.error("[/history] Error:", err);

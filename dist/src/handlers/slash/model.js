@@ -1,3 +1,4 @@
+import { discordTextOptions } from "../../common/discordResponse.js";
 import { chunkForDiscord } from "../../sessionManager.js";
 import { interactionSessionKey, interactionSessionLabel } from "../../common/discordSessionKey.js";
 export async function handleModel(interaction, sessions) {
@@ -13,9 +14,9 @@ export async function handleModel(interaction, sessions) {
             }
             const lines = models.map((m) => `\`${m.id}\` — ${m.name}`);
             const chunks = chunkForDiscord(`**Available models:**\n${lines.join("\n")}`);
-            await interaction.editReply(chunks[0]);
+            await interaction.editReply(discordTextOptions(chunks[0]));
             for (const chunk of chunks.slice(1)) {
-                await interaction.followUp({ ephemeral: true, content: chunk });
+                await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
             }
         }
         else if (sub === "set") {

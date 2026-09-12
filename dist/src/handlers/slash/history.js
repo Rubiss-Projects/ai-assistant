@@ -1,3 +1,4 @@
+import { discordTextOptions } from "../../common/discordResponse.js";
 import { chunkForDiscord } from "../../sessionManager.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export async function handleHistory(interaction, sessions) {
@@ -28,9 +29,9 @@ export async function handleHistory(interaction, sessions) {
             }
         });
         const chunks = chunkForDiscord(lines.join("\n\n"));
-        await interaction.editReply(chunks[0]);
+        await interaction.editReply(discordTextOptions(chunks[0]));
         for (const chunk of chunks.slice(1)) {
-            await interaction.followUp({ ephemeral: true, content: chunk });
+            await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
         }
     }
     catch (err) {

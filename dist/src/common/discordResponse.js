@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
+import { MessageFlags } from "discord.js";
+/** Hide link previews without rewriting URLs or changing notification behavior. */
+export function discordEmbedOptions() {
+    return process.env.DISCORD_SUPPRESS_EMBEDS?.trim().toLowerCase() === "true"
+        ? { flags: MessageFlags.SuppressEmbeds }
+        : {};
+}
 export function discordTextOptions(content) {
-    return { content, files: [] };
+    return { content, files: [], ...discordEmbedOptions() };
 }
 /** Send artifacts separately so a rejected upload can never suppress the text response. */
 export async function deliverDiscordAttachments(send, attachments) {
