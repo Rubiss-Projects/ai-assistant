@@ -88,13 +88,20 @@ export function extractWebpage(html: string) {
   return { title: title.trim(), text: text.replace(/ *\n[\n ]*/g, "\n").trim(), structuredData, truncated };
 }
 
-/** Prefer BOM, then HTTP charset, then HTML metadata; never silently replace invalid decoded bytes. */
+/** Prefer BOM, HTTP charset, then the document's declaration; never silently replace invalid bytes. */
 export function decodeWebpage(resource: PublicResource): string {
   const data = resource.data;
   let charset = data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf ? "utf-8"
     : data[0] === 0xff && data[1] === 0xfe ? "utf-16le"
     : data[0] === 0xfe && data[1] === 0xff ? "utf-16be" : resource.charset;
-  if (!charset && ["text/html", "application/xhtml+xml"].includes(resource.contentType)) {
+  if (!charset && resource.contentType === "application/xhtml+xml") {
+    // XML declarations precede the root element. UTF-16 signatures allow reading
+    // declarations even when the response omits both the BOM and HTTP charset.
+    charset = data.subarray(0, 4).equals(Buffer.from([0x00, 0x3c, 0x00, 0x3f])) ? "utf-16be"
+      : data.subarray(0, 4).equals(Buffer.from([0x3c, 0x00, 0x3f, 0x00])) ? "utf-16le"
+      : data.subarray(0, 1024).toString("latin1").match(/^<\?xml\s+[^?]*\bencoding\s*=\s*(["'])([^"']+)\1/i)?.[2];
+  }
+  if (!charset && resource.contentType === "text/html") {
     const sniff = new Parser({ onopentag(name, attributes) {
       if (name !== "meta" || charset) return;
       charset = attributes.charset?.trim() || (attributes["http-equiv"]?.toLowerCase() === "content-type"

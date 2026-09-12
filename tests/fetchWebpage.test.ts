@@ -33,6 +33,20 @@ test("HTTP charset, HTML metadata, and Unicode BOMs preserve currency and names"
   assert.throws(() => decodeWebpage({ ...http, charset: "not-a-real-charset" }), /character encoding/);
 });
 
+test("XHTML honors XML encoding declarations with HTTP and BOM precedence", async () => {
+  const xml = '<?xml version="1.0" encoding="windows-1252"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Café</title></head><body><p>£42</p></body></html>';
+  const resource = { ...page(""), data: Buffer.from(xml, "latin1"), contentType: "application/xhtml+xml" };
+  const result = await fetchWebpage("https://example.com", undefined, async () => resource);
+  assert.equal(result.status, "available");
+  if (result.status === "available") { assert.equal(result.title, "Café"); assert.equal(result.text, "£42"); }
+  assert.equal(decodeWebpage({ ...resource, data: Buffer.from(xml), charset: "utf-8" }), xml);
+  assert.equal(decodeWebpage({ ...resource, data: Buffer.from("\ufeff" + xml, "utf16le"), charset: "utf-8" }), xml);
+  const utf16xml = xml.replace("windows-1252", "UTF-16");
+  for (const data of [Buffer.from(utf16xml, "utf16le"), Buffer.from(utf16xml, "utf16le").swap16()]) {
+    assert.equal(decodeWebpage({ ...resource, data }), utf16xml);
+  }
+});
+
 test("large hidden subtrees cannot consume the visible text budget and inline prices stay intact", () => {
   for (const hidden of [`<svg>${"<path></path>".repeat(25_000)}</svg>`, `<template>${"<div>hidden</div>".repeat(25_000)}</template>`, `<div hidden>${"<div>hidden</div>".repeat(25_000)}</div>`]) {
     const result = extractWebpage(`<body>${hidden}<p>Price: $<span>4</span><span>2</span></p><p>3 bids</p></body>`);
