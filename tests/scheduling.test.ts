@@ -160,6 +160,38 @@ test("cutoffs between occurrences expire even when the next run is still in the 
   assert.deepEqual(f.sent, ["Reminder"]);
 });
 
+for (const action of ["clear", "extend"] as const) test(`${action} an elapsed end date before the next tick keeps the schedule paused`, async t => {
+  const f = fixture(t);
+  const task = await f.scheduler.create(admin, { ...input, endAt: f.now() + 30_000 });
+  f.advance(30_000);
+  assert.equal(f.store.get(task.id)?.enabled, true);
+  const edited = await f.scheduler.edit(admin, task.id, { endAt: action === "clear" ? undefined : f.now() + 60_000 });
+  assert.equal(edited.enabled, false);
+  assert.match(edited.pauseReason ?? "", /end date/);
+  await assert.rejects(f.scheduler.runNow(admin, task.id), /paused/);
+  assert.deepEqual(f.store.runs(task.id), []);
+  await f.scheduler.resume(admin, task.id);
+  await f.scheduler.runNow(admin, task.id);
+  await f.scheduler.idle();
+  assert.deepEqual(f.sent, ["Reminder"]);
+});
+
+test("a cutoff that elapses while an edit authorizes also requires explicit resume", async t => {
+  const gate = deferred();
+  let block = false;
+  const f = fixture(t, { authorize: async (_task, actorId) => { if (block && actorId) await gate.promise; } });
+  const task = await f.scheduler.create(admin, { ...input, endAt: f.now() + 30_000 });
+  block = true;
+  const pending = f.scheduler.edit(admin, task.id, { endAt: undefined });
+  await new Promise(resolve => setImmediate(resolve));
+  f.advance(30_000);
+  gate.resolve();
+  const edited = await pending;
+  assert.equal(edited.enabled, false);
+  assert.match(edited.pauseReason ?? "", /end date/);
+  assert.equal(edited.endAt, undefined);
+});
+
 test("an expired task cannot be claimed automatically or manually before the next tick", async t => {
   const f = fixture(t);
   const task = await f.scheduler.create(admin, { ...input, endAt: f.now() + 30_000 });
