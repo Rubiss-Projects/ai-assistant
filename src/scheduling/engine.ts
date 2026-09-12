@@ -4,6 +4,7 @@ import { RunTimeoutError } from "../providers/types.js";
 import { validateSchedule, nextOccurrences, scheduleHasStarted } from "./cron.js";
 import { ScheduleStore } from "./store.js";
 import type { DeliveryPart, ScheduledTask, TaskRun } from "./types.js";
+import { retainVerifiedLookups } from "./lookups.js";
 
 export interface ScheduleLimits { minimumMs: number; maxOwner: number; maxGuild: number; concurrency: number; timeoutMs: number }
 export function scheduleLimits(env = process.env): ScheduleLimits {
@@ -110,6 +111,7 @@ export class Scheduler {
       task.revision = ended.revision + 1;
     }
     task.lastStartedAt = latest.lastStartedAt;
+    task.lastVerifiedLookups = task.content === before.content ? latest.lastVerifiedLookups : undefined;
     this.store.save(task);
     return task;
   }
@@ -210,6 +212,11 @@ export class Scheduler {
         run.parts = await this.adapter.generate(task, run, this.limits.timeoutMs);
         this.current(task);
         if (!run.parts.length || JSON.stringify(run.parts).length > 20_000_000) throw new Error("Scheduled output is empty or exceeds the 20 MB run limit.");
+        if (run.lookups?.some(record => record.status === "verified")) {
+          const latest = this.store.get(task.id)!;
+          latest.lastVerifiedLookups = retainVerifiedLookups(latest.lastVerifiedLookups, run.lookups);
+          this.store.save(latest);
+        }
         run.state = "ready";
         this.store.saveRun(run);
       }

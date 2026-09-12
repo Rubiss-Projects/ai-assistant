@@ -1,6 +1,7 @@
 import { chunkForDiscord } from "../../common/chunkForDiscord.js";
 import { discordTextOptions } from "../../common/discordResponse.js";
 import { nextOccurrences, parseEndAt, parseStartAt, scheduleDescription, scheduleHasEnded, scheduleHasStarted } from "../../scheduling/cron.js";
+import { lookupStatus } from "../../scheduling/lookups.js";
 import { PROVIDERS, normalizeProviderName } from "../../providers/types.js";
 function taskStatus(task, now = Date.now()) {
     return scheduleHasEnded(task, now) ? "ended" : !task.enabled ? "paused" : scheduleHasStarted(task, now) ? "enabled" : "scheduled";
@@ -62,7 +63,7 @@ export async function handleSchedule(cmd, scheduler, subject) {
         const id = cmd.options.getString("id", true);
         const task = scheduler.requireTask(subject, id);
         if (sub === "inspect") {
-            const runs = scheduler.store.runs(id).slice(0, 10).map(run => `\`${run.id}\` · ${run.state} · <t:${Math.floor(run.startedAt / 1000)}:f>${run.error ? ` · ${run.error}` : ""}\n${run.messageIds.map(message => `https://discord.com/channels/${task.guildId}/${run.channelId}/${message}`).join("\n")}`);
+            const runs = scheduler.store.runs(id).slice(0, 10).map(run => `\`${run.id}\` · delivery: ${run.state}${task.kind === "ai" ? ` · lookup: ${lookupStatus(run.lookups)}` : ""} · <t:${Math.floor(run.startedAt / 1000)}:f>${run.error ? ` · ${run.error}` : ""}\n${run.messageIds.map(message => `https://discord.com/channels/${task.guildId}/${run.channelId}/${message}`).join("\n")}`);
             await respond(`${describeTask(task)}\n\nRecent runs:\n${runs.join("\n") || "None yet."}`);
         }
         else if (sub === "edit") {

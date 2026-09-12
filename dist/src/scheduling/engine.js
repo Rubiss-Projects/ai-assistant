@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { RunTimeoutError } from "../providers/types.js";
 import { validateSchedule, nextOccurrences, scheduleHasStarted } from "./cron.js";
+import { retainVerifiedLookups } from "./lookups.js";
 export function scheduleLimits(env = process.env) {
     const number = (key, fallback, min, max) => {
         const value = env[key] === undefined || env[key] === "" ? fallback : Number(env[key]);
@@ -135,6 +136,7 @@ export class Scheduler {
             task.revision = ended.revision + 1;
         }
         task.lastStartedAt = latest.lastStartedAt;
+        task.lastVerifiedLookups = task.content === before.content ? latest.lastVerifiedLookups : undefined;
         this.store.save(task);
         return task;
     }
@@ -253,6 +255,11 @@ export class Scheduler {
                 this.current(task);
                 if (!run.parts.length || JSON.stringify(run.parts).length > 20_000_000)
                     throw new Error("Scheduled output is empty or exceeds the 20 MB run limit.");
+                if (run.lookups?.some(record => record.status === "verified")) {
+                    const latest = this.store.get(task.id);
+                    latest.lastVerifiedLookups = retainVerifiedLookups(latest.lastVerifiedLookups, run.lookups);
+                    this.store.save(latest);
+                }
                 run.state = "ready";
                 this.store.saveRun(run);
             }

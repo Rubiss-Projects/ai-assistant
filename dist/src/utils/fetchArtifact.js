@@ -23,18 +23,43 @@ export function isPublicAddress(address) {
 export function artifactFilename(value) {
     return path.basename(value.replace(/\\/g, "/")).replace(/[^a-zA-Z0-9._ -]/g, "_").replace(/^\.+/, "_").slice(0, 120) || "download.bin";
 }
-/** DNS is validated AND pinned to the connection, including every redirect. */
+export class PublicFetchError extends Error {
+    code;
+    status;
+    constructor(code, message, status) {
+        super(message);
+        this.code = code;
+        this.status = status;
+    }
+}
 export async function fetchPublicArtifact(rawUrl, signal) {
-    const operation = operationSignal(signal, 30_000);
+    const file = await fetchPublicResource(rawUrl, { signal, maxBytes: inputByteLimit() });
+    if (file.contentType === "text/html" || /^\s*(?:<!doctype html|<html[\s>])/i.test(file.data.subarray(0, 512).toString())) {
+        throw new Error("This URL returned a webpage, not a file. Use fetch_webpage for webpage content or a direct media/download URL for files.");
+    }
+    return { data: file.data, filename: file.filename, contentType: file.contentType };
+}
+/** DNS is validated AND pinned to the connection, including every redirect. */
+export async function fetchPublicResource(rawUrl, options) {
+    const operation = operationSignal(options.signal, options.timeoutMs ?? 30_000);
     const combined = operation.signal;
     try {
-        const maxBytes = inputByteLimit();
-        let url = new URL(rawUrl);
+        const maxBytes = options.maxBytes;
+        let url;
+        try {
+            url = new URL(rawUrl);
+        }
+        catch {
+            throw new PublicFetchError("policy_blocked", "Provide a valid public HTTP(S) URL.");
+        }
         for (let hop = 0; hop <= 5; hop++) {
             combined.throwIfAborted();
             if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-                throw new Error("Only public HTTP(S) file URLs without embedded credentials are supported.");
+                throw new PublicFetchError("policy_blocked", "Only public HTTP(S) URLs without embedded credentials are supported.");
             }
+            if (options.standardPortsOnly && url.port)
+                throw new PublicFetchError("policy_blocked", "Webpages must use the standard HTTP(S) ports.");
+            url.hash = "";
             const hostname = url.hostname.replace(/^\[|\]$/g, "");
             // Race DNS against the same deadline; the eventual DNS answer has no side effects.
             const addresses = await new Promise((resolve, reject) => {
@@ -46,7 +71,7 @@ export async function fetchPublicArtifact(rawUrl, signal) {
                     abort();
             });
             if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) {
-                throw new Error("Artifact URLs must resolve only to public internet addresses.");
+                throw new PublicFetchError("policy_blocked", "URLs must resolve only to public internet addresses.");
             }
             const address = addresses.find((candidate) => candidate.family === 4) ?? addresses[0];
             const result = await new Promise((resolve, reject) => {
@@ -64,21 +89,24 @@ export async function fetchPublicArtifact(rawUrl, signal) {
                         const redirect = response.headers.location;
                         response.destroy();
                         if (!redirect)
-                            reject(new Error("Redirect has no destination."));
+                            reject(new PublicFetchError("network_error", "Redirect has no destination."));
                         else
                             resolve({ redirect });
                         return;
                     }
                     if (status !== 200) {
                         response.destroy();
-                        reject(new Error(status === 401 || status === 403
-                            ? "The file URL is expired or requires authentication. Provide a fresh public URL or its Discord message link."
-                            : `File download failed (HTTP ${status}).`));
+                        reject(new PublicFetchError("http_error", `The source returned HTTP ${status}.`, status));
                         return;
                     }
                     if (Number(response.headers["content-length"] ?? 0) > maxBytes) {
                         response.destroy();
-                        reject(new Error(`Input exceeds the ${maxBytes}-byte limit.`));
+                        reject(new PublicFetchError("too_large", `Input exceeds the ${maxBytes}-byte limit.`));
+                        return;
+                    }
+                    if (response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity") {
+                        response.destroy();
+                        reject(new PublicFetchError("unsupported", "The source ignored the requested identity encoding."));
                         return;
                     }
                     const chunks = [];
@@ -86,31 +114,33 @@ export async function fetchPublicArtifact(rawUrl, signal) {
                     response.on("data", (chunk) => {
                         bytes += chunk.length;
                         if (bytes > maxBytes) {
-                            response.destroy(new Error(`Input exceeds the ${maxBytes}-byte limit.`));
+                            response.destroy(new PublicFetchError("too_large", `Input exceeds the ${maxBytes}-byte limit.`));
                         }
                         else
                             chunks.push(chunk);
                     });
                     response.on("error", reject);
+                    response.on("aborted", () => reject(new PublicFetchError("network_error", "The source closed the response before it completed.")));
                     response.on("end", () => {
                         const data = Buffer.concat(chunks);
                         const contentType = (response.headers["content-type"] ?? "application/octet-stream").split(";")[0].trim().toLowerCase();
-                        if (contentType === "text/html" || /^\s*(?:<!doctype html|<html[\s>])/i.test(data.subarray(0, 512).toString())) {
-                            reject(new Error("This URL returned a webpage, not a file. Use a direct media/download URL."));
-                            return;
-                        }
                         const disposition = response.headers["content-disposition"];
                         const name = disposition?.match(/filename="([^"]+)"/i)?.[1] ?? path.basename(url.pathname);
-                        resolve({ file: { data, filename: artifactFilename(name), contentType } });
+                        resolve({ file: { data, filename: artifactFilename(name), contentType, url: url.href } });
                     });
                 });
                 request.on("error", reject);
             });
             if (result.file)
                 return result.file;
-            url = new URL(result.redirect, url);
+            try {
+                url = new URL(result.redirect, url);
+            }
+            catch {
+                throw new PublicFetchError("policy_blocked", "The source returned an invalid redirect URL.");
+            }
         }
-        throw new Error("Too many download redirects (maximum 5).");
+        throw new PublicFetchError("policy_blocked", "Too many download redirects (maximum 5).");
     }
     finally {
         operation.dispose();

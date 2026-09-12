@@ -9,6 +9,7 @@ import { DiscordScheduleAdapter } from "../src/scheduling/discordAdapter.js";
 import type { ScheduledTask, TaskRun } from "../src/scheduling/types.js";
 import type { SessionManager } from "../src/sessionManager.js";
 import type { SendMessageOptions } from "../src/providers/types.js";
+import { lookupStatus } from "../src/scheduling/lookups.js";
 import { describeTask, handleSchedule } from "../src/handlers/slash/schedule.js";
 
 const task: ScheduledTask = { id: "task", ownerId: "100", guildId: "200", channelId: "300", kind: "ai", content: "Summarize discussion",
@@ -182,6 +183,7 @@ test("AI scheduling isolates sessions and workspaces, filters context, binds loo
       assert.equal(options.timeoutMs, 1234);
       assert.match(prompt, /Visible discussion/);
       assert.doesNotMatch(prompt, /Excluded author|Old AI output/);
+      assert.match(prompt, /fetch_webpage/);
       await assert.rejects(options.resolveArtifactMessage!("https://discord.com/channels/200/999/1"), /destination channel/);
       return { content: "Summary", attachments: [] };
     },
@@ -194,6 +196,38 @@ test("AI scheduling isolates sessions and workspaces, filters context, binds loo
   assert.notEqual(workspaces[0], workspaces[1]);
   assert.equal(fs.existsSync(workspaces[0]), false);
   assert.deepEqual(settings, ["codex", "model", "low", "codex", "model", "low"]);
+});
+
+test("scheduled source failures remain separate from delivery and explicitly label previous values stale", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "scheduled-lookups-"));
+  const oldMode = process.env.AI_ASSISTANT_SECURITY_MODE, oldRoot = process.env.AI_ASSISTANT_WORKSPACE_ROOT;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  process.env.AI_ASSISTANT_WORKSPACE_ROOT = root;
+  t.after(() => {
+    if (oldMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE; else process.env.AI_ASSISTANT_SECURITY_MODE = oldMode;
+    if (oldRoot === undefined) delete process.env.AI_ASSISTANT_WORKSPACE_ROOT; else process.env.AI_ASSISTANT_WORKSPACE_ROOT = oldRoot;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const f = discordMock();
+  const url = "https://example.com/auction";
+  const scheduled = { ...task, contextMessages: 0, lastVerifiedLookups: [{ url, status: "verified" as const, checkedAt: "2026-09-12T19:00:00Z", summary: "$42, 3 bids" }] };
+  const sessions = {
+    setSessionProvider: async () => {}, setSessionWorkingDir: () => {}, setModel: async () => {}, setReasoningEffort: async () => {}, forgetSession: async () => {},
+    sendMessage: async (_key: string, prompt: string, _files: unknown, options: SendMessageOptions) => {
+      assert.match(prompt, /NOT current facts/);
+      assert.match(prompt, /\$42, 3 bids/);
+      options.onLookup!({ url, status: "unavailable", checkedAt: "2026-09-12T22:00:00Z", summary: "The source returned HTTP 403.", errorCode: "http_error" });
+      return { content: "Could not check the listing.", attachments: [] };
+    },
+  } as unknown as SessionManager;
+  const adapter = new DiscordScheduleAdapter(f.client, createAccessPolicy({}), sessions);
+  const current = { ...run };
+  const parts = await adapter.generate(scheduled, current, 1000);
+  assert.match(parts[0].content, /HTTP 403/);
+  assert.match(parts[0].content, /Last verified 2026-09-12T19:00:00Z \(stale\): \$42, 3 bids/);
+  assert.equal(lookupStatus(current.lookups), "unavailable");
+  assert.equal(lookupStatus([]), "not reported");
+  assert.equal(lookupStatus([{ url, checkedAt: "now", status: "fetched" }]), "fetched; facts not verified");
 });
 
 test("fixed messages never invoke a provider", async () => {

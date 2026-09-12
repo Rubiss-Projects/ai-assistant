@@ -7,12 +7,14 @@ import { pathIsWithin, workspacePathIsAllowed } from "./providerSecurity.js";
 import { artifactFilename, fetchPublicArtifact, inputByteLimit } from "../utils/fetchArtifact.js";
 import { discordMessageLocation } from "../utils/artifactMessage.js";
 import { transcodeVideo } from "./mediaTranscode.js";
+import { fetchWebpage, lookupUrl } from "../utils/fetchWebpage.js";
 import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 export { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 export class ArtifactTools {
     run;
     options;
     download;
+    readWebpage;
     id;
     controller = new AbortController();
     queue = Promise.resolve();
@@ -26,11 +28,13 @@ export class ArtifactTools {
     normalizedExtensions = new Map();
     transientFiles = new Set();
     retained = 0;
+    webpages = new Map();
     providerSourceRoot;
-    constructor(run, options, download = fetchPublicArtifact) {
+    constructor(run, options, download = fetchPublicArtifact, readWebpage = fetchWebpage) {
         this.run = run;
         this.options = options;
         this.download = download;
+        this.readWebpage = readWebpage;
         this.id = path.basename(run.directory);
         run.cleanup = () => this.close();
     }
@@ -65,6 +69,10 @@ export class ArtifactTools {
             for (const value of Object.values(args))
                 if (typeof value !== "string" || value.length > 8192)
                     throw new Error("Tool arguments must be short strings.");
+            if (name === "fetch_webpage")
+                return this.webpage(String(args.url));
+            if (name === "report_lookup")
+                return this.reportLookup(args);
             if (name === "fetch_artifact")
                 return this.fetch(args);
             if (name === "attach_file")
@@ -79,6 +87,39 @@ export class ArtifactTools {
         });
         this.queue = operation;
         return operation;
+    }
+    async webpage(rawUrl) {
+        const url = lookupUrl(rawUrl);
+        const cached = this.webpages.get(url);
+        if (cached)
+            return cached;
+        if (this.webpages.size >= 10)
+            throw new Error("Only 10 distinct webpage URLs can be read per response.");
+        const result = await this.readWebpage(url, this.controller.signal);
+        this.controller.signal.throwIfAborted();
+        this.webpages.set(url, result);
+        this.options?.onLookup?.({ url, checkedAt: result.fetchedAt,
+            status: result.status === "available" ? "fetched" : "unavailable",
+            ...(result.status === "unavailable" ? { errorCode: result.errorCode, summary: result.message } : {}) });
+        return result;
+    }
+    reportLookup(args) {
+        if (!this.options?.onLookup)
+            throw new Error("Lookup reporting is only available for scheduled runs.");
+        if (!["verified", "unavailable"].includes(String(args.status)))
+            throw new Error("Use verified or unavailable.");
+        const url = lookupUrl(String(args.url));
+        const page = this.webpages.get(url);
+        if (!page)
+            throw new Error("Call fetch_webpage for this URL before reporting its result.");
+        if (args.status === "verified" && page.status !== "available")
+            throw new Error("An unavailable page cannot verify a lookup.");
+        const summary = String(args.summary).trim();
+        if (summary.length > 2000)
+            throw new Error("Keep lookup summaries within 2000 characters.");
+        this.options.onLookup({ url, checkedAt: page.fetchedAt, status: args.status, summary: page.status === "unavailable" ? page.message : summary,
+            ...(args.status === "unavailable" ? { errorCode: page.status === "unavailable" ? page.errorCode : "missing_data" } : {}) });
+        return { status: "recorded" };
     }
     /** Give every provider an accessible workspace copy, including binary inputs. */
     async stageInputs(files) {

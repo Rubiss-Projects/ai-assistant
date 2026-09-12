@@ -1,4 +1,5 @@
 import type { ProviderName } from "../providers/types.js";
+import type { LookupRecord } from "../utils/fetchWebpage.js";
 export interface ScheduledTask {
   id: string;
   guildId: string;
@@ -22,10 +23,13 @@ export interface ScheduledTask {
   createdAt: number;
   lastStartedAt?: number;
   pauseReason?: string;
+  /** Source-backed, model-reported values; always stale context on later runs. */
+  lastVerifiedLookups?: LookupRecord[];
 }
 export type RunState = "running" | "ready" | "sending" | "succeeded" | "failed" | "delivery_failed" | "uncertain" | "cancelled";
 export interface DeliveryPart { content: string; attachment?: { name: string; base64: string } }
 export interface TaskRun {
   id: string; taskId: string; channelId: string; taskRevision: number; occurrence: string; startedAt: number;
   state: RunState; parts: DeliveryPart[]; messageIds: string[]; error?: string;
+  lookups?: LookupRecord[];
 }
