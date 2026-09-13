@@ -1,5 +1,7 @@
 import { PublicFetchError } from "./fetchArtifact.js";
-const MAX_BROWSERS = 2;
+// Chromium counts threads against the container PID limit. Two instances reached
+// the shipped 256-task bound in a concurrent auction/news check on Docker Desktop.
+const MAX_BROWSERS = 1;
 let active = 0;
 const waiting = new Set();
 /** One admission limit shared by all providers, responses, and both browser readers. */

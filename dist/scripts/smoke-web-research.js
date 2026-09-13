@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import dns from "node:dns/promises";
+import fs from "node:fs";
 import { createBrowserWorker, requireBrowserMemoryLimit } from "../src/browserWorker.js";
 import { fetchBrowserResource } from "../src/utils/browserClient.js";
 import { extractWebpage } from "../src/utils/fetchWebpage.js";
@@ -79,12 +80,16 @@ http.request = ((url, options, callback) => {
     return originalRequest(url, { ...options, port, lookup: (_host, _options, done) => done(null, "127.0.0.1", 4) }, callback);
 });
 try {
-    const resource = await read("http://research-fixture.test/", { maxBytes: 8 * 1024 * 1024 });
+    const [resource, concurrent] = await Promise.all([
+        read("http://research-fixture.test/", { maxBytes: 8 * 1024 * 1024 }),
+        read("http://research-fixture.test/tamper", { maxBytes: 1024 * 1024 }),
+    ]);
+    assert.equal(extractWebpage(concurrent.data.toString()).text, "Real article");
     const page = extractWebpage(resource.data.toString());
     assert.match(page.text, /New panel details 2026-09-12T22:30:00Z/);
     assert.doesNotMatch(page.text, /WORKER_RAN/);
     assert.ok(seen.includes("GET /data"));
-    assert.ok(seen.every(value => value === "GET /" || value === "GET /data" || value === "GET /favicon.ico"), JSON.stringify(seen));
+    assert.ok(seen.every(value => value === "GET /" || value === "GET /data" || value === "GET /tamper" || value === "GET /favicon.ico"), JSON.stringify(seen));
     await assert.rejects(read("http://research-fixture.test/redirect", { maxBytes: 1024 * 1024 }), /public internet|HTTP 502|anonymous browser/);
     await assert.rejects(read("http://research-fixture.test/redirect-loopback", { maxBytes: 1024 * 1024 }), /standard ports|HTTP 502|anonymous browser/);
     await assert.rejects(read("http://research-fixture.test/script-redirect", { maxBytes: 1024 * 1024 }), /HTTP 404/);
@@ -93,6 +98,7 @@ try {
     const untampered = await read("http://research-fixture.test/tamper", { maxBytes: 1024 * 1024 });
     assert.equal(extractWebpage(untampered.data.toString()).text, "Real article");
     assert.ok(!seen.some(value => /private|write|meta-data|socket/.test(value)));
+    assert.match(fs.readFileSync("/sys/fs/cgroup/pids.events", "utf8"), /^max 0$/m, "Browser reads must not exhaust the container PID/thread budget");
     console.log("Memory-limited worker renders public JavaScript/JSON through its API; private-network, write and blob-worker attempts are blocked. Oversized DOM/text is rejected before transfer, snapshot intrinsics resist page tampering, and final navigation status is checked.");
 }
 finally {

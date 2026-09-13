@@ -141,7 +141,7 @@ export const fetchEbayListing = async (raw, options) => {
             throw failure;
         if (error instanceof PublicFetchError)
             throw error;
-        throw new PublicFetchError("unsupported", "The eBay browser reader could not complete. Chromium and its sandbox must be available.");
+        throw new PublicFetchError("network_error", "The eBay browser could not complete this read. Try again or use another source.");
     }
     finally {
         signal.removeEventListener("abort", close);

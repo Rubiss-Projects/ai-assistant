@@ -121,6 +121,17 @@ test("private DNS prevents browser startup", async t => {
   assert.equal(fixture.launches.length, 0);
 });
 
+test("browser failures do not falsely diagnose a missing Chromium sandbox", async t => {
+  browserFixture(t, []);
+  t.mock.method(chromium, "launch", async () => { throw new Error("Resource temporarily unavailable"); });
+  const result = await fetchWebpage(url, undefined, fetchEbayListing);
+  assert.equal(result.status, "unavailable");
+  if (result.status === "unavailable") {
+    assert.equal(result.errorCode, "network_error");
+    assert.doesNotMatch(result.message, /sandbox|must be available|unsupported/i);
+  }
+});
+
 test("page-triggered refreshes cannot add navigations beyond the explicit read", async t => {
   const fixture = browserFixture(t, [{ refresh: true }]);
   const result = await fetchWebpage(url, undefined, fetchEbayListing);

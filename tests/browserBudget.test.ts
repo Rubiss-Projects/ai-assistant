@@ -5,7 +5,6 @@ import { acquireBrowserSlot, closeBrowserAndRelease } from "../src/utils/browser
 test("browser admission bounds concurrent readers and removes cancelled waiters", async () => {
   const signal = new AbortController().signal;
   const first = await acquireBrowserSlot(signal);
-  const second = await acquireBrowserSlot(signal);
   const cancelled = new AbortController();
   const abandoned = acquireBrowserSlot(cancelled.signal);
   const rejected = assert.rejects(abandoned, /cancelled/);
@@ -21,13 +20,12 @@ test("browser admission bounds concurrent readers and removes cancelled waiters"
   const fourth = acquireBrowserSlot(signal).then(release => { fourthAdmitted = true; return release; });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(fourthAdmitted, false);
-  second(); third(); (await fourth)();
+  third(); (await fourth)();
 });
 
 test("a late cancelled launch holds its admission until the browser closes", async () => {
   const signal = new AbortController().signal;
   const first = await acquireBrowserSlot(signal);
-  const second = await acquireBrowserSlot(signal);
   let complete!: (browser: any) => void;
   const launch = new Promise<any>(resolve => { complete = resolve; });
   await closeBrowserAndRelease(undefined, launch, first);
@@ -38,5 +36,5 @@ test("a late cancelled launch holds its admission until the browser closes", asy
   complete({ close: async () => { closed = true; } });
   const third = await waiting;
   assert.equal(closed, true);
-  second(); third();
+  third();
 });

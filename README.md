@@ -190,7 +190,8 @@ budgets. Anonymous cookies are discarded afterward; a first HTTP 403 establishin
 cookies permits one follow-up navigation. Login requirements and human-verification
 challenges remain unavailable; use other public coverage when needed.
 
-Both browser readers share a two-browser admission limit; queued reads retain
+Both browser readers share a single-browser admission limit to stay within the
+256-process/thread container budget; overlapping reads queue and retain
 their original deadlines. General rendering monitors a 50,000-node DOM budget
 and limits the JavaScript heap to 128 MiB. Worker/SharedWorker constructors are
 disabled before document scripts run; the service memory limit also contains
