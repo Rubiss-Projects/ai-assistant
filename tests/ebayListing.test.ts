@@ -68,7 +68,7 @@ test("only HTTPS eBay item URLs select the browser, with tracking removed", () =
 test("fetch_webpage recovers the anonymous session and returns auction facts without exposing cookies", async t => {
   const fixture = browserFixture(t, [{ status: 403, cookies: true }, {}, { status: 403, cookies: true }, {}]);
   for (let run = 0; run < 2; run++) {
-    const result = await fetchWebpage(url);
+    const result = await fetchWebpage(url, undefined, fetchEbayListing);
     assert.equal(result.status, "available");
     if (result.status === "available") {
       assert.match(result.text, /US \$910\.00/);
@@ -97,7 +97,7 @@ test("fetch_webpage recovers the anonymous session and returns auction facts wit
 test("browser session setup is bounded to two navigations and requires source cookies", async t => {
   const fixture = browserFixture(t, [{ status: 403 }, { status: 403, cookies: true }, { status: 403, cookies: true }]);
   for (let run = 0; run < 2; run++) {
-    const result = await fetchWebpage(url);
+    const result = await fetchWebpage(url, undefined, fetchEbayListing);
     assert.equal(result.status === "unavailable" && result.httpStatus, 403);
   }
   assert.equal(fixture.navigations.length, 3);
@@ -106,7 +106,7 @@ test("browser session setup is bounded to two navigations and requires source co
 test("response interception stops redirects before private or alternate destinations are followed", async t => {
   const fixture = browserFixture(t, [{ status: 302, location: "http://169.254.169.254/latest/meta-data" }, { status: 307, location: "https://www.ebay.com/splashui/challenge" }]);
   for (let run = 0; run < 2; run++) {
-    const result = await fetchWebpage(url);
+    const result = await fetchWebpage(url, undefined, fetchEbayListing);
     assert.equal(result.status === "unavailable" && result.errorCode, "http_error");
   }
   assert.deepEqual(fixture.navigations, [url, url]);
@@ -116,14 +116,14 @@ test("response interception stops redirects before private or alternate destinat
 test("private DNS prevents browser startup", async t => {
   const fixture = browserFixture(t, []);
   t.mock.method(dns, "lookup", async () => [{ address: "127.0.0.1", family: 4 }]);
-  const result = await fetchWebpage(url);
+  const result = await fetchWebpage(url, undefined, fetchEbayListing);
   assert.equal(result.status === "unavailable" && result.errorCode, "policy_blocked");
   assert.equal(fixture.launches.length, 0);
 });
 
 test("page-triggered refreshes cannot add navigations beyond the explicit read", async t => {
   const fixture = browserFixture(t, [{ refresh: true }]);
-  const result = await fetchWebpage(url);
+  const result = await fetchWebpage(url, undefined, fetchEbayListing);
   assert.equal(result.status === "unavailable" && result.errorCode, "policy_blocked");
   assert.equal(fixture.calls.filter(call => call.method === "Fetch.continueRequest").length, 1);
 });

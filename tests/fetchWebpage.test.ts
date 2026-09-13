@@ -9,6 +9,13 @@ import { PublicFetchError, type PublicResource } from "../src/utils/fetchArtifac
 
 const page = (html: string): PublicResource => ({ data: Buffer.from(html), contentType: "text/html", filename: "page", url: "https://example.com/page" });
 
+test("source links honor the first active document base and ignore template bases", async () => {
+  const result = await fetchWebpage("https://example.com/page", undefined, async () => page('<html><head><template><base href="https://wrong.test/"></template><base href="/news/"><base href="https://wrong.test/"></head><body><a href="story">Article</a></body></html>'));
+  assert.equal(result.status, "available");
+  if (result.status === "available") assert.deepEqual(result.links, ["https://example.com/news/story"]);
+  assert.throws(() => extractWebpage("<div>".repeat(513)), /nesting limit/);
+});
+
 test("RSS and Atom provide linked entries and publication timestamps", async () => {
   for (const [contentType, xml] of [
     ["application/rss+xml", '<rss version="2.0"><channel><title>News</title><item><title>Panel update</title><link>https://example.com/news</link><pubDate>Sat, 12 Sep 2026 22:30:00 GMT</pubDate><description>&lt;p&gt;New details&lt;/p&gt;</description></item></channel></rss>'],
@@ -26,9 +33,9 @@ test("large news pages and continuation offsets retain article text beyond the f
   const first = await fetchWebpage("https://example.com/page", undefined, read);
   assert.equal(first.status, "available");
   if (first.status !== "available") return;
-  assert.equal(first.nextOffset, 24_000);
+  assert.equal(first.nextOffset, "24000");
   assert.ok(first.links?.includes("https://example.com/news"));
-  const next = await fetchWebpage("https://example.com/page", undefined, read, { offset: first.nextOffset });
+  const next = await fetchWebpage("https://example.com/page", undefined, read, { offset: Number(first.nextOffset) });
   assert.equal(next.status, "available");
   if (next.status === "available") { assert.match(next.text, /Final announcement/); assert.equal(next.nextOffset, undefined); }
 });

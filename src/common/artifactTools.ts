@@ -85,7 +85,7 @@ export class ArtifactTools {
     const cached = this.webpageReads.get(key);
     const chunk = (result: WebpageResult): WebpageResult => {
       if (result.status !== "available") return result;
-      const nextOffset = offset + 24_000 < result.text.length ? offset + 24_000 : undefined;
+      const nextOffset = offset + 24_000 < result.text.length ? String(offset + 24_000) : undefined;
       return { ...result, text: result.text.slice(offset, offset + 24_000), nextOffset, truncated: result.truncated || nextOffset !== undefined };
     };
     if (cached) return chunk(cached);

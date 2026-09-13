@@ -2,8 +2,8 @@ import { Parser, parseFeed } from "htmlparser2";
 import { setTimeout as delay } from "node:timers/promises";
 import { operationSignal } from "../common/operationSignal.js";
 import { contentCharset, fetchPublicResource, PublicFetchError } from "./fetchArtifact.js";
-import { ebayListingUrl, fetchEbayListing } from "./fetchEbayListing.js";
-import { fetchBrowserWebpage } from "./fetchBrowserWebpage.js";
+import { ebayListingUrl } from "./fetchEbayListing.js";
+import { fetchBrowserResource } from "./browserClient.js";
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT = 24_000;
 const MAX_DOCUMENT_TEXT = 192_000;
@@ -21,6 +21,7 @@ export function extractWebpage(html, maxText = MAX_TEXT) {
     let truncated = false;
     const structuredData = [];
     const links = [];
+    let baseHref;
     let titleSeen = false;
     const stack = [];
     const blocks = new Set(["p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header", "footer", "ul", "ol", "table"]);
@@ -28,6 +29,8 @@ export function extractWebpage(html, maxText = MAX_TEXT) {
         text += "\n"; };
     const parser = new Parser({
         onopentag(name, attributes) {
+            if (stack.length >= 512)
+                throw new PublicFetchError("too_large", "The page exceeds the HTML nesting limit.");
             const parent = stack.at(-1);
             // Head text is invisible, but its metadata is active. Templates, foreign
             // SVG content and explicitly hidden subtrees must not supply lookup facts.
@@ -40,12 +43,15 @@ export function extractWebpage(html, maxText = MAX_TEXT) {
                 name,
                 hidden: inert || !!parent?.hidden || ["script", "head"].includes(name),
                 inert,
+                baseInert: !!parent?.baseInert || ["template", "svg", "noscript"].includes(name),
                 title: titleElement,
                 titleScope: (name === "html" && !parent) || (name === "head" && (!parent || (parent.name === "html" && parent.titleScope))),
                 json: name === "script" && !inert && attributes.type?.toLowerCase() === "application/ld+json",
                 block: blocks.has(name),
             };
             stack.push(current);
+            if (name === "base" && !current.baseInert && baseHref === undefined && attributes.href !== undefined)
+                baseHref = attributes.href;
             // Web components also expose article destinations through href attributes.
             if (!current.hidden && attributes.href && links.length < 120)
                 links.push(attributes.href);
@@ -90,7 +96,7 @@ export function extractWebpage(html, maxText = MAX_TEXT) {
         },
     }, { decodeEntities: true });
     parser.end(html);
-    return { title: title.trim(), text: text.replace(/ *\n[\n ]*/g, "\n").trim(), structuredData, truncated, links };
+    return { title: title.trim(), text: text.replace(/ *\n[\n ]*/g, "\n").trim(), structuredData, truncated, links, baseHref };
 }
 /** Prefer BOM, HTTP charset, then the document's declaration; never silently replace invalid bytes. */
 export function decodeWebpage(resource) {
@@ -124,7 +130,7 @@ export function decodeWebpage(resource) {
         throw new PublicFetchError("unsupported", "The page could not be decoded using its declared character encoding (or UTF-8 when none is declared).");
     }
 }
-export const fetchWebpageResource = (url, options) => ebayListingUrl(url) ? fetchEbayListing(url, options) : fetchPublicResource(url, options);
+export const fetchWebpageResource = (url, options) => ebayListingUrl(url) ? fetchBrowserResource("ebay")(url, options) : fetchPublicResource(url, options);
 export async function fetchWebpage(rawUrl, signal, fetchResource = fetchWebpageResource, options = {}) {
     const operation = operationSignal(signal, 45_000);
     const fetchedAt = () => new Date().toISOString();
@@ -145,7 +151,7 @@ export async function fetchWebpage(rawUrl, signal, fetchResource = fetchWebpageR
             throw new PublicFetchError("unsupported", "Invalid text chunk size.");
         let file;
         let reader = options.mode === "browser" ? "browser" : "http";
-        const browserReader = options.browserReader ?? fetchBrowserWebpage;
+        const browserReader = options.browserReader ?? fetchBrowserResource("general");
         const canRender = !!options.browserReader || fetchResource === fetchWebpageResource;
         for (let attempt = 0; attempt < 2; attempt++) {
             operation.signal.throwIfAborted();
@@ -183,14 +189,14 @@ export async function fetchWebpage(rawUrl, signal, fetchResource = fetchWebpageR
         }
         else if (["text/plain", "application/json"].includes(resource.contentType)) {
             const text = decodeWebpage(resource);
-            page = { title: "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: [] };
+            page = { title: "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: [], baseHref: undefined };
         }
         else if (["application/rss+xml", "application/atom+xml", "application/xml", "text/xml"].includes(resource.contentType)) {
             const feed = parseFeed(decodeWebpage(resource));
             if (!feed)
                 throw new PublicFetchError("unsupported", "The XML document is not an RSS or Atom feed.");
             const text = feed.items.map(item => [item.title, item.link, item.pubDate && Number.isFinite(item.pubDate.getTime()) ? item.pubDate.toISOString() : "", extractWebpage(item.description ?? "").text.slice(0, 2000)].filter(Boolean).join("\n")).join("\n\n");
-            page = { title: feed.title ?? "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: feed.items.flatMap(item => item.link ? [item.link] : []).slice(0, 120) };
+            page = { title: feed.title ?? "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: feed.items.flatMap(item => item.link ? [item.link] : []).slice(0, 120), baseHref: undefined };
         }
         else
             throw new PublicFetchError("unsupported", "This URL did not return a webpage, text, JSON, RSS, or Atom. Use fetch_artifact for files.");
@@ -200,8 +206,14 @@ export async function fetchWebpage(rawUrl, signal, fetchResource = fetchWebpageR
         }
         if (!page.text && !page.structuredData.length)
             return { status: "unavailable", url, fetchedAt: fetchedAt(), errorCode: "unreadable", message: "The page has no readable content; it may require JavaScript or authentication." };
+        let baseUrl = resource.url;
+        try {
+            if (page.baseHref !== undefined)
+                baseUrl = new URL(page.baseHref, resource.url).href;
+        }
+        catch { /* Invalid base URLs use the document URL. */ }
         const links = [...new Set(page.links.flatMap(link => { try {
-                const target = new URL(link, resource.url);
+                const target = new URL(link, baseUrl);
                 return ["http:", "https:"].includes(target.protocol) && !target.username && !target.password ? [target.href] : [];
             }
             catch {
@@ -210,7 +222,7 @@ export async function fetchWebpage(rawUrl, signal, fetchResource = fetchWebpageR
         const nextOffset = offset + textLimit < page.text.length ? offset + textLimit : undefined;
         return { status: "available", url, finalUrl: resource.url, fetchedAt: fetchedAt(), ...page, links, reader: ebayListingUrl(url) && fetchResource === fetchWebpageResource ? "browser" : reader,
             text: page.text.slice(offset, offset + textLimit), truncated: page.truncated || nextOffset !== undefined,
-            ...(nextOffset !== undefined ? { nextOffset } : {}) };
+            ...(nextOffset !== undefined ? { nextOffset: String(nextOffset) } : {}) };
     }
     catch (error) {
         if (signal?.aborted)

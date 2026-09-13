@@ -45,6 +45,16 @@ export const fetchBrowserWebpage: typeof fetchPublicResource = async (raw, optio
       userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36`,
       javaScriptEnabled: true, serviceWorkers: "block", acceptDownloads: false,
     });
+    // Applied before page scripts in every document/frame. The worker cgroup is
+    // the hard resource boundary even if a future browser exposes another realm.
+    await context.addInitScript(() => {
+      for (const name of ["Worker", "SharedWorker"]) {
+        Object.defineProperty(globalThis, name, {
+          value: class { constructor() { throw new DOMException("Workers are disabled for public reading", "SecurityError"); } },
+          writable: false, configurable: false,
+        });
+      }
+    });
     await context.routeWebSocket("**/*", route => route.close());
     let requests = 0, attemptedRequests = 0, navigations = 0, bytes = 0;
     let documentStatus: number | undefined;

@@ -168,8 +168,16 @@ snapshot, with up to 16,000 JSON-LD characters. Continuations reuse the same sna
 A response can read 24 URL/mode combinations within the 80-call tool budget.
 Transient connection and HTTP 5xx failures get one retry within the deadline.
 
-The general browser runs sandboxed Chromium in a fresh anonymous context, without
-bot credentials, saved account cookies or existing profiles. JavaScript, styles and
+The supplied Compose setup runs both browser readers in a separate `browser`
+service with a hard 1 GiB memory limit (including swap and every child process).
+It has no bot credentials or data volumes and exposes no host port. Its control
+network is private to the bot; a separate network provides public internet access.
+`AI_ASSISTANT_BROWSER_URL` selects this operator-configured service. Other installs
+must provide the same bounded worker; there is no in-process browser fallback.
+The worker refuses startup without a cgroup memory limit of at most 1 GiB.
+
+The general reader runs sandboxed Chromium in a fresh anonymous context, without
+saved account cookies or existing profiles. JavaScript, styles and
 public GET/HEAD data requests can render articles. Every destination connection
 passes through an authenticated local proxy that validates and pins public DNS,
 including redirects and subresources. Loopback bypass and non-proxied WebRTC UDP
@@ -183,7 +191,9 @@ challenges remain unavailable; use other public coverage when needed.
 
 Both browser readers share a two-browser admission limit; queued reads retain
 their original deadlines. General rendering monitors a 50,000-node DOM budget
-and limits the JavaScript heap to 128 MiB. An isolated-world traversal checks node,
+and limits the JavaScript heap to 128 MiB. Worker/SharedWorker constructors are
+disabled before document scripts run; the service memory limit also contains
+ArrayBuffer, Wasm, native DOM allocations and any child processes. An isolated-world traversal checks node,
 depth and serialized-byte limits before returning HTML to the bot; it never
 materializes an unbounded `page.content()` result.
 
