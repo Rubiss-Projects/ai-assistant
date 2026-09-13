@@ -19,6 +19,15 @@ const fixture = http.createServer((request, response) => {
         response.end();
         return;
     }
+    if (request.url === "/script-redirect") {
+        response.end('<script>setTimeout(()=>location.href="/not-found",100)</script>');
+        return;
+    }
+    if (request.url === "/not-found") {
+        response.writeHead(404);
+        response.end("Not found");
+        return;
+    }
     if (request.url === "/data") {
         response.setHeader("Content-Type", "application/json");
         response.end('{"headline":"New panel details","published":"2026-09-12T22:30:00Z"}');
@@ -56,6 +65,7 @@ try {
     assert.ok(seen.every(value => value === "GET /" || value === "GET /data" || value === "GET /favicon.ico"), JSON.stringify(seen));
     await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/redirect", { maxBytes: 1024 * 1024 }), /public internet|HTTP 502|anonymous browser/);
     await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/redirect-loopback", { maxBytes: 1024 * 1024 }), /standard ports|HTTP 502|anonymous browser/);
+    await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/script-redirect", { maxBytes: 1024 * 1024 }), /HTTP 404/);
     assert.ok(!seen.some(value => /private|write|meta-data|socket/.test(value)));
     console.log("General browser renders JavaScript and public JSON; POST, WebSocket, private-IP, private-DNS and redirect requests cannot reach the fixture.");
 }
