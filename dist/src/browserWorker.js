@@ -1,20 +1,10 @@
-import fs from "node:fs";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { fetchBrowserWebpage } from "./utils/fetchBrowserWebpage.js";
 import { fetchEbayListing } from "./utils/fetchEbayListing.js";
 import { PublicFetchError } from "./utils/fetchArtifact.js";
-export function requireBrowserMemoryLimit() {
-    for (const file of ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"]) {
-        try {
-            const value = fs.readFileSync(file, "utf8").trim();
-            if (/^\d+$/.test(value) && BigInt(value) > 0n && BigInt(value) <= 1073741824n)
-                return;
-        }
-        catch { /* Try the other cgroup version. */ }
-    }
-    throw new Error("Browser worker requires a cgroup memory limit of at most 1 GiB. Use the supplied Compose browser service.");
-}
+import { requireBrowserMemoryLimit } from "./utils/browserMemory.js";
+export { requireBrowserMemoryLimit } from "./utils/browserMemory.js";
 /** Control API belongs on a private network shared only with the bot; never publish its port. */
 export function createBrowserWorker(readers = { general: fetchBrowserWebpage, ebay: fetchEbayListing }) {
     return http.createServer(async (request, response) => {

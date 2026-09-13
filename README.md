@@ -174,7 +174,8 @@ It has no bot credentials or data volumes and exposes no host port. Its control
 network is private to the bot; a separate network provides public internet access.
 `AI_ASSISTANT_BROWSER_URL` selects this operator-configured service. Other installs
 must provide the same bounded worker; there is no in-process browser fallback.
-The worker refuses startup without a cgroup memory limit of at most 1 GiB.
+The worker resolves its cgroup v1/v2 membership and effective ancestor limits,
+and refuses startup unless memory plus swap is capped at most 1 GiB.
 
 The general reader runs sandboxed Chromium in a fresh anonymous context, without
 saved account cookies or existing profiles. JavaScript, styles and
