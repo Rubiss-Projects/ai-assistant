@@ -1,17 +1,56 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import fs from "node:fs";
 import { createBrowserWorker, requireBrowserMemoryLimit } from "../src/browserWorker.js";
 import { fetchBrowserResource } from "../src/utils/browserClient.js";
 import { PublicFetchError } from "../src/utils/fetchArtifact.js";
 
-test("worker startup requires a hard cgroup bound", t => {
+const fixtureReader = (files: Record<string, string>) => (file: string) => {
+  if (!(file in files)) throw new Error("ENOENT");
+  return files[file];
+};
+const v2Root = {
+  "/proc/self/cgroup": "0::/",
+  "/proc/self/mountinfo": "29 23 0:26 / /sys/fs/cgroup ro - cgroup2 cgroup rw",
+  "/sys/fs/cgroup/memory.max": "1073741824",
+  "/sys/fs/cgroup/memory.swap.max": "0",
+};
+test("worker startup requires a hard memory plus swap bound", () => {
+  assert.doesNotThrow(() => requireBrowserMemoryLimit(fixtureReader(v2Root)));
   for (const value of ["max", "9223372036854771712", "2147483648", "0"]) {
-    t.mock.method(fs, "readFileSync", () => value);
-    assert.throws(() => requireBrowserMemoryLimit(), /cgroup memory limit/);
+    assert.throws(() => requireBrowserMemoryLimit(fixtureReader({ ...v2Root, "/sys/fs/cgroup/memory.max": value })), /cgroup memory and swap limit/);
   }
-  t.mock.method(fs, "readFileSync", () => "1073741824");
-  assert.doesNotThrow(() => requireBrowserMemoryLimit());
+  for (const value of ["max", "1", "1073741824"]) {
+    assert.throws(() => requireBrowserMemoryLimit(fixtureReader({ ...v2Root, "/sys/fs/cgroup/memory.swap.max": value })), /cgroup memory and swap limit/);
+  }
+  const missing = { ...v2Root };
+  delete (missing as Record<string, string>)["/sys/fs/cgroup/memory.swap.max"];
+  assert.throws(() => requireBrowserMemoryLimit(fixtureReader(missing)), /cgroup memory and swap limit/);
+});
+test("host-namespace v1 uses the process path and ancestor combined memory/swap limits", () => {
+  const files = {
+    "/proc/self/cgroup": "7:cpu,cpuacct:/docker/worker\n6:memory:/docker/worker",
+    "/proc/self/mountinfo": "29 23 0:26 / /sys/fs/cgroup/memory ro - cgroup cgroup rw,memory",
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes": "9223372036854771712",
+    "/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes": "9223372036854771712",
+    "/sys/fs/cgroup/memory/docker/memory.limit_in_bytes": "1073741824",
+    "/sys/fs/cgroup/memory/docker/memory.memsw.limit_in_bytes": "1073741824",
+    "/sys/fs/cgroup/memory/docker/memory.use_hierarchy": "1",
+    "/sys/fs/cgroup/memory/docker/worker/memory.limit_in_bytes": "9223372036854771712",
+    "/sys/fs/cgroup/memory/docker/worker/memory.memsw.limit_in_bytes": "9223372036854771712",
+  };
+  assert.doesNotThrow(() => requireBrowserMemoryLimit(fixtureReader(files)));
+  assert.throws(() => requireBrowserMemoryLimit(fixtureReader({ ...files, "/sys/fs/cgroup/memory/docker/memory.memsw.limit_in_bytes": "2147483648" })), /cgroup memory and swap limit/);
+  assert.throws(() => requireBrowserMemoryLimit(fixtureReader({ ...files, "/sys/fs/cgroup/memory/docker/memory.use_hierarchy": "0" })), /cgroup memory and swap limit/);
+});
+test("v2 subtree mounts resolve membership and inherited memory/swap limits", () => {
+  assert.doesNotThrow(() => requireBrowserMemoryLimit(fixtureReader({
+    "/proc/self/cgroup": "0::/docker/worker/child",
+    "/proc/self/mountinfo": "29 23 0:26 /docker/worker /sys/fs/cgroup ro - cgroup2 cgroup rw",
+    "/sys/fs/cgroup/memory.max": "805306368",
+    "/sys/fs/cgroup/memory.swap.max": "268435456",
+    "/sys/fs/cgroup/child/memory.max": "max",
+    "/sys/fs/cgroup/child/memory.swap.max": "max",
+  })));
 });
 
 test("worker API preserves page results/errors and rejects oversized read budgets", async t => {
