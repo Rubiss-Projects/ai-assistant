@@ -12,7 +12,7 @@ import { RunTimeoutError } from "../providers/types.js";
 import { artifactMessageResolver, discordMessageLocation } from "../utils/artifactMessage.js";
 import { DeliveryRejectedError, ScheduleAccessError, type ScheduleAdapter } from "./engine.js";
 import type { DeliveryPart, ScheduledTask, TaskRun } from "./types.js";
-import { lookupNotice, previousLookupContext, SCHEDULE_LOOKUP_INSTRUCTIONS } from "./lookups.js";
+import { previousLookupContext, SCHEDULE_LOOKUP_INSTRUCTIONS } from "./lookups.js";
 
 export class DiscordScheduleAdapter implements ScheduleAdapter {
   constructor(private client: Client, private access: AccessPolicy, private sessions: SessionManager) {}
@@ -83,7 +83,7 @@ export class DiscordScheduleAdapter implements ScheduleAdapter {
         undefined, { timeoutMs, onLookup: record => {
           const index = run.lookups!.findIndex(item => item.url === record.url);
           if (index >= 0) run.lookups![index] = record;
-          else if (run.lookups!.length < 10) run.lookups!.push(record);
+          else if (run.lookups!.length < 24) run.lookups!.push(record);
         }, resolveArtifactMessage: async url => {
           const location = discordMessageLocation(url);
           if (location?.guild !== task.guildId || location.channel !== task.channelId) {
@@ -92,8 +92,7 @@ export class DiscordScheduleAdapter implements ScheduleAdapter {
           await this.authorize(task);
           return resolveArtifact(url);
         } });
-      const notice = lookupNotice(run.lookups, task.lastVerifiedLookups);
-      const content = [notice, response.content.trim()].filter(Boolean).join("\n\n");
+      const content = response.content.trim();
       const parts: DeliveryPart[] = content ? chunkForDiscord(content).map(content => ({ content })) : [];
       for (const file of response.attachments) parts.push({ content: "", attachment: { name: file.displayName, base64: file.data.toString("base64") } });
       return parts;

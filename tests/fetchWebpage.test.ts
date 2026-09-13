@@ -9,6 +9,46 @@ import { PublicFetchError, type PublicResource } from "../src/utils/fetchArtifac
 
 const page = (html: string): PublicResource => ({ data: Buffer.from(html), contentType: "text/html", filename: "page", url: "https://example.com/page" });
 
+test("RSS and Atom provide linked entries and publication timestamps", async () => {
+  for (const [contentType, xml] of [
+    ["application/rss+xml", '<rss version="2.0"><channel><title>News</title><item><title>Panel update</title><link>https://example.com/news</link><pubDate>Sat, 12 Sep 2026 22:30:00 GMT</pubDate><description>&lt;p&gt;New details&lt;/p&gt;</description></item></channel></rss>'],
+    ["application/atom+xml", '<feed xmlns="http://www.w3.org/2005/Atom"><title>News</title><entry><title>Panel update</title><link href="https://example.com/news"/><updated>2026-09-12T22:30:00Z</updated><summary>New details</summary></entry></feed>'],
+  ]) {
+    const result = await fetchWebpage("https://example.com/feed", undefined, async () => ({ ...page(xml), contentType }));
+    assert.equal(result.status, "available");
+    if (result.status === "available") { assert.match(result.text, /Panel update/); assert.match(result.text, /2026-09-12T22:30:00/); assert.ok(result.links?.includes("https://example.com/news")); }
+  }
+});
+
+test("large news pages and continuation offsets retain article text beyond the first chunk", async () => {
+  const html = `<!--${"x".repeat(3 * 1024 * 1024)}--><p>${"a".repeat(25_000)}</p><p>Final announcement</p><a href="/news">Read more</a>`;
+  const read = async (_url: string, options: { maxBytes: number }) => { assert.ok(options.maxBytes > Buffer.byteLength(html)); return page(html); };
+  const first = await fetchWebpage("https://example.com/page", undefined, read);
+  assert.equal(first.status, "available");
+  if (first.status !== "available") return;
+  assert.equal(first.nextOffset, 24_000);
+  assert.ok(first.links?.includes("https://example.com/news"));
+  const next = await fetchWebpage("https://example.com/page", undefined, read, { offset: first.nextOffset });
+  assert.equal(next.status, "available");
+  if (next.status === "available") { assert.match(next.text, /Final announcement/); assert.equal(next.nextOffset, undefined); }
+});
+
+test("generic browser fallback handles sparse script pages and refusals without retrying policy blocks", async () => {
+  for (const response of [page('<title>News</title><script>render()</script><p>Loading</p>'), new PublicFetchError("http_error", "HTTP 403", 403)]) {
+    let calls = 0;
+    const result = await fetchWebpage("https://example.com/news", undefined, async () => { if (response instanceof Error) throw response; return response; }, {
+      browserReader: async () => { calls++; return page("<article>Fresh rendered announcement</article>"); },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.status === "available" && result.reader, "browser");
+    assert.equal(result.status === "available" && result.text, "Fresh rendered announcement");
+  }
+  const result = await fetchWebpage("https://private.test", undefined, async () => { throw new PublicFetchError("policy_blocked", "Private DNS"); }, {
+    browserReader: async () => { throw new Error("Must not run"); },
+  });
+  assert.equal(result.status === "unavailable" && result.errorCode, "policy_blocked");
+});
+
 test("inert structured data cannot supply facts or exhaust active JSON-LD budgets", () => {
   const stale = '<script type="application/ld+json">{"price":"stale"}</script>'.repeat(12);
   const oversized = `<script type="application/ld+json">${JSON.stringify({ stale: "x".repeat(30_000) })}</script>`;
