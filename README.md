@@ -181,6 +181,12 @@ budgets. Anonymous cookies are discarded afterward; a first HTTP 403 establishin
 cookies permits one follow-up navigation. Login requirements and human-verification
 challenges remain unavailable; use other public coverage when needed.
 
+Both browser readers share a two-browser admission limit; queued reads retain
+their original deadlines. General rendering monitors a 50,000-node DOM budget
+and limits the JavaScript heap to 128 MiB. An isolated-world traversal checks node,
+depth and serialized-byte limits before returning HTML to the bot; it never
+materializes an unbounded `page.content()` result.
+
 HTTPS eBay item URLs retain their tested, smaller browser path: only the canonical
 listing is read, with scripts, subresources and redirects disabled. Chromium is
 included in the container; other installs can set `AI_ASSISTANT_BROWSER_EXECUTABLE`.

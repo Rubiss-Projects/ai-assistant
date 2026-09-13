@@ -3,12 +3,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import { operationSignal } from "../common/operationSignal.js";
 import { PublicFetchError } from "./fetchArtifact.js";
 import { createPublicBrowserProxy, publicBrowserAddress, publicBrowserUrl } from "./publicBrowserProxy.js";
+import { acquireBrowserSlot, closeBrowserAndRelease } from "./browserBudget.js";
+import { boundedBrowserDocument, MAX_BROWSER_DOM_NODES } from "./browserDocument.js";
 /** General anonymous renderer. The proxy is the network boundary; routing limits page actions. */
 export const fetchBrowserWebpage = async (raw, options) => {
     const url = publicBrowserUrl(raw);
     const operation = operationSignal(options.signal, options.timeoutMs ?? 35_000);
     const signal = operation.signal;
     let browser;
+    let launch;
+    let releaseBrowser;
+    let monitor;
     let proxy;
     let failure;
     const close = () => { void browser?.close().catch(() => { }); };
@@ -29,16 +34,15 @@ export const fetchBrowserWebpage = async (raw, options) => {
     signal.addEventListener("abort", close, { once: true });
     try {
         await within(publicBrowserAddress(url.hostname));
+        releaseBrowser = await acquireBrowserSlot(signal);
         proxy = await createPublicBrowserProxy(signal);
-        const launch = chromium.launch({
+        launch = chromium.launch({
             executablePath: process.env.AI_ASSISTANT_BROWSER_EXECUTABLE || "/usr/bin/chromium",
             headless: true, chromiumSandbox: true, timeout: 25_000,
             env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/tmp", LANG: "C.UTF-8" },
             proxy: { server: proxy.server, username: proxy.username, password: proxy.password },
-            args: ["--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", "--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
+            args: ["--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", "--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--js-flags=--max-old-space-size=128"],
         });
-        void launch.then(value => { if (signal.aborted)
-            void value.close().catch(() => { }); }, () => { });
         browser = await within(launch);
         const context = await browser.newContext({
             userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36`,
@@ -80,7 +84,7 @@ export const fetchBrowserWebpage = async (raw, options) => {
             // hostile scripts that repeatedly attempt requests rejected by routing.
             if (++attemptedRequests > 1024)
                 stop("Browser attempted-request budget exceeded.");
-            if (request.isNavigationRequest() && ++navigations > 8)
+            if (request.isNavigationRequest() && request.frame() === page.mainFrame() && ++navigations > 8)
                 stop("Browser navigation budget exceeded.");
         });
         page.on("response", response => {
@@ -96,6 +100,16 @@ export const fetchBrowserWebpage = async (raw, options) => {
         });
         const cdp = await context.newCDPSession(page);
         await cdp.send("Network.enable");
+        let monitoring = false;
+        monitor = setInterval(() => {
+            if (monitoring)
+                return;
+            monitoring = true;
+            void cdp.send("Memory.getDOMCounters").then(value => {
+                if (value.nodes > MAX_BROWSER_DOM_NODES)
+                    stop("Browser DOM node budget exceeded.");
+            }).catch(() => { }).finally(() => { monitoring = false; });
+        }, 250);
         cdp.on("Network.dataReceived", event => {
             bytes += event.dataLength;
             if (bytes > 64 * 1024 * 1024)
@@ -121,7 +135,7 @@ export const fetchBrowserWebpage = async (raw, options) => {
             throw documentFailure;
         if (documentStatus !== 200)
             throw new PublicFetchError("http_error", `The source returned HTTP ${documentStatus}.`, documentStatus);
-        const html = await within(page.content());
+        const html = await within(boundedBrowserDocument(cdp, options.maxBytes));
         if (failure)
             throw failure;
         const data = Buffer.from(html);
@@ -142,8 +156,9 @@ export const fetchBrowserWebpage = async (raw, options) => {
     }
     finally {
         signal.removeEventListener("abort", close);
+        clearInterval(monitor);
         operation.dispose();
-        await browser?.close().catch(() => { });
         await proxy?.close();
+        await closeBrowserAndRelease(browser, launch, releaseBrowser);
     }
 };
