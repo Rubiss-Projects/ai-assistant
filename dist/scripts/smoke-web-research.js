@@ -28,6 +28,18 @@ const fixture = http.createServer((request, response) => {
         response.end("Not found");
         return;
     }
+    if (request.url === "/huge-text") {
+        response.end('<body><script>document.body.append("x".repeat(9*1024*1024))</script></body>');
+        return;
+    }
+    if (request.url === "/huge-dom") {
+        response.end('<body><script>for(let i=0;i<60000;i++)document.body.append(document.createElement("span"))</script></body>');
+        return;
+    }
+    if (request.url === "/tamper") {
+        response.end('<body><p>Real article</p><script>window.TextEncoder=class {encode(){return {byteLength:0}}};Array.prototype.join=()=>"Fabricated text";</script></body>');
+        return;
+    }
     if (request.url === "/data") {
         response.setHeader("Content-Type", "application/json");
         response.end('{"headline":"New panel details","published":"2026-09-12T22:30:00Z"}');
@@ -40,6 +52,8 @@ const fixture = http.createServer((request, response) => {
     fetch('http://private-fixture.test/private').catch(()=>{});
     fetch('http://169.254.169.254/latest/meta-data/').catch(()=>{});
     try { new WebSocket('ws://research-fixture.test/socket'); } catch {}
+    for(let i=0;i<150;i++){const image=new Image();image.src='/blocked-image/'+i;document.body.append(image);}
+    for(let i=0;i<12;i++){const frame=document.createElement('iframe');frame.src='/blocked-frame/'+i;document.body.append(frame);}
   </script></body></html>`);
 });
 await new Promise(resolve => fixture.listen(0, "127.0.0.1", resolve));
@@ -66,8 +80,12 @@ try {
     await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/redirect", { maxBytes: 1024 * 1024 }), /public internet|HTTP 502|anonymous browser/);
     await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/redirect-loopback", { maxBytes: 1024 * 1024 }), /standard ports|HTTP 502|anonymous browser/);
     await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/script-redirect", { maxBytes: 1024 * 1024 }), /HTTP 404/);
+    await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/huge-text", { maxBytes: 8 * 1024 * 1024 }), /DOM|serialized-content/);
+    await assert.rejects(fetchBrowserWebpage("http://research-fixture.test/huge-dom", { maxBytes: 8 * 1024 * 1024 }), /DOM|serialized-content/);
+    const untampered = await fetchBrowserWebpage("http://research-fixture.test/tamper", { maxBytes: 1024 * 1024 });
+    assert.equal(extractWebpage(untampered.data.toString()).text, "Real article");
     assert.ok(!seen.some(value => /private|write|meta-data|socket/.test(value)));
-    console.log("General browser renders JavaScript and public JSON; POST, WebSocket, private-IP, private-DNS and redirect requests cannot reach the fixture.");
+    console.log("General browser renders public JavaScript/JSON; private-network and write attempts are blocked. Oversized DOM/text is rejected before transfer, snapshot intrinsics resist page tampering, and final navigation status is checked.");
 }
 finally {
     dns.lookup = originalLookup;

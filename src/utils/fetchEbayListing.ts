@@ -2,6 +2,7 @@ import dns from "node:dns/promises";
 import { chromium, type Browser } from "playwright-core";
 import { operationSignal } from "../common/operationSignal.js";
 import { contentCharset, isPublicAddress, PublicFetchError, type fetchPublicResource, type PublicResource } from "./fetchArtifact.js";
+import { acquireBrowserSlot, closeBrowserAndRelease } from "./browserBudget.js";
 
 /** Only canonical, public eBay item pages can use the browser transport. */
 export function ebayListingUrl(raw: string): string | undefined {
@@ -19,6 +20,8 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
   const operation = operationSignal(options.signal, options.timeoutMs ?? 25_000);
   const signal = operation.signal;
   let browser: Browser | undefined;
+  let launch: Promise<Browser> | undefined;
+  let releaseBrowser: (() => void) | undefined;
   let failure: Error | undefined;
   const close = () => { void browser?.close().catch(() => {}); };
   signal.addEventListener("abort", close, { once: true });
@@ -38,14 +41,15 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
     if (!addresses.length || addresses.some(item => !isPublicAddress(item.address))) throw new PublicFetchError("policy_blocked", "eBay must resolve only to public internet addresses.");
     const address = addresses.find(item => item.family === 4) ?? addresses[0];
     const pinned = address.family === 6 ? `[${address.address}]` : address.address;
-    const launch = chromium.launch({
+    releaseBrowser = await acquireBrowserSlot(signal);
+    signal.throwIfAborted();
+    launch = chromium.launch({
       executablePath: process.env.AI_ASSISTANT_BROWSER_EXECUTABLE || "/usr/bin/chromium",
       headless: true, chromiumSandbox: true, timeout: 25_000,
       // Do not inherit bot credentials or proxy/account configuration.
       env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/tmp", LANG: "C.UTF-8" },
       args: [`--host-resolver-rules=MAP www.ebay.com ${pinned}, MAP * ~NOTFOUND`, "--disable-quic", "--no-proxy-server"],
     });
-    void launch.then(value => { if (signal.aborted) void value.close().catch(() => {}); }, () => {});
     browser = await within(launch);
     signal.throwIfAborted();
     const context = await browser.newContext({
@@ -113,6 +117,6 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
   } finally {
     signal.removeEventListener("abort", close);
     operation.dispose();
-    await browser?.close().catch(() => {});
+    await closeBrowserAndRelease(browser, launch, releaseBrowser);
   }
 };
