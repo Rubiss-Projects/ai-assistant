@@ -9,7 +9,7 @@ import { ensureProviderWorkingDirectory } from "../common/providerSecurity.js";
 import { RunTimeoutError } from "../providers/types.js";
 import { artifactMessageResolver, discordMessageLocation } from "../utils/artifactMessage.js";
 import { DeliveryRejectedError, ScheduleAccessError } from "./engine.js";
-import { lookupNotice, previousLookupContext, SCHEDULE_LOOKUP_INSTRUCTIONS } from "./lookups.js";
+import { previousLookupContext, SCHEDULE_LOOKUP_INSTRUCTIONS } from "./lookups.js";
 export class DiscordScheduleAdapter {
     client;
     access;
@@ -92,7 +92,7 @@ export class DiscordScheduleAdapter {
                     const index = run.lookups.findIndex(item => item.url === record.url);
                     if (index >= 0)
                         run.lookups[index] = record;
-                    else if (run.lookups.length < 10)
+                    else if (run.lookups.length < 24)
                         run.lookups.push(record);
                 }, resolveArtifactMessage: async (url) => {
                     const location = discordMessageLocation(url);
@@ -102,8 +102,7 @@ export class DiscordScheduleAdapter {
                     await this.authorize(task);
                     return resolveArtifact(url);
                 } });
-            const notice = lookupNotice(run.lookups, task.lastVerifiedLookups);
-            const content = [notice, response.content.trim()].filter(Boolean).join("\n\n");
+            const content = response.content.trim();
             const parts = content ? chunkForDiscord(content).map(content => ({ content })) : [];
             for (const file of response.attachments)
                 parts.push({ content: "", attachment: { name: file.displayName, base64: file.data.toString("base64") } });

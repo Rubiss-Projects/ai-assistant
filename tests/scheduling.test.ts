@@ -11,10 +11,38 @@ import { RunTimeoutError } from "../src/providers/types.js";
 import { providerTimeout } from "../src/common/runLifecycle.js";
 import { commands } from "../src/commands.js";
 import type { ScheduledTask } from "../src/scheduling/types.js";
+import { DiscordScheduleAdapter } from "../src/scheduling/discordAdapter.js";
 
 const admin = { userId: "100", guildId: "200" };
 const input = { guildId: "200", channelId: "300", kind: "message" as const, content: "Reminder", cron: "0 * * * *", timezone: "UTC", contextMessages: 0 };
 const limits = { minimumMs: 60_000, maxOwner: 2, maxGuild: 3, concurrency: 2, timeoutMs: 1000 };
+
+test("failed research sources remain diagnostic while a useful sourced update is delivered", async t => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "schedule-research-"));
+  const old = process.env.AI_ASSISTANT_WORKSPACE_ROOT;
+  const mode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  process.env.AI_ASSISTANT_WORKSPACE_ROOT = workspace;
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  t.after(() => {
+    if (old === undefined) delete process.env.AI_ASSISTANT_WORKSPACE_ROOT; else process.env.AI_ASSISTANT_WORKSPACE_ROOT = old;
+    if (mode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE; else process.env.AI_ASSISTANT_SECURITY_MODE = mode;
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+  const content = "Panel update: new gameplay details. [Source](https://example.com/article)";
+  const sessions = {
+    setSessionProvider: async () => {}, setSessionWorkingDir: () => {}, setModel: async () => {}, forgetSession: async () => {},
+    sendMessage: async (_key: string, prompt: string, _attachments: unknown, options: any) => {
+      assert.match(prompt, /hosted web search and article opening/);
+      options.onLookup({ url: "https://blocked.example", status: "unavailable", checkedAt: new Date().toISOString(), summary: "HTTP 403" });
+      return { content, attachments: [] };
+    },
+  };
+  const adapter = new DiscordScheduleAdapter({} as any, createAccessPolicy({}), sessions as any);
+  const task = { ...input, id: "research", kind: "ai", provider: "codex", model: "test" } as ScheduledTask;
+  const run = { id: "run", startedAt: Date.now() } as any;
+  assert.deepEqual(await adapter.generate(task, run, 1000), [{ content }]);
+  assert.equal(run.lookups[0].status, "unavailable");
+});
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; }
 function fixture(t: { after(fn: () => Promise<void>): void }, adapter: Partial<ScheduleAdapter> = {}, env = { DISCORD_ADMIN_USERS: "100" }) {
   let now = Date.UTC(2026, 0, 1);

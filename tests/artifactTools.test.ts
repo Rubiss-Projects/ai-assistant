@@ -48,6 +48,26 @@ test("webpage tools cache within a run, report host failures, and require readab
   await assert.rejects(runtime.call("fetch_webpage", { run_id: runtime.id, url: args.url }));
 });
 
+test("news continuation uses the same snapshot and browser mode can replace an HTTP-only read", async t => {
+  const workspace = await fixture(t);
+  let calls = 0;
+  const runtime = new ArtifactTools(createArtifactRun(workspace), undefined, undefined, async (url, _signal, _reader, options) => {
+    calls++;
+    return { status: "available", url, finalUrl: url, fetchedAt: "2026-09-12T22:00:00Z", title: "News", text: options?.mode === "browser" ? "Rendered article" : "x".repeat(25_000) + "Final story", structuredData: [], truncated: false };
+  });
+  t.after(() => runtime.close());
+  const args = { run_id: runtime.id, url: "https://example.com/news" };
+  const first = await runtime.call("fetch_webpage", args) as any;
+  assert.equal(first.text.length, 24_000);
+  const next = await runtime.call("fetch_webpage", { ...args, offset: String(first.nextOffset) }) as any;
+  assert.match(next.text, /Final story/);
+  assert.equal(next.fetchedAt, first.fetchedAt);
+  assert.equal(calls, 1);
+  const rendered = await runtime.call("fetch_webpage", { ...args, mode: "browser" }) as any;
+  assert.equal(rendered.text, "Rendered article");
+  assert.equal(calls, 2);
+});
+
 test("registration freezes bytes, deduplicates retries, and overrides markers and discovery", async (t) => {
   const workspace = await fixture(t);
   const response = await captureAgentArtifacts(workspace, async (run) => {

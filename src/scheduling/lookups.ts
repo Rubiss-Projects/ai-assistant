@@ -1,6 +1,6 @@
 import type { LookupRecord } from "../utils/fetchWebpage.js";
 
-export const SCHEDULE_LOOKUP_INSTRUCTIONS = "For external webpage lookups, use fetch_webpage for each requested source, then report_lookup with verified only if the returned content supports the requested facts; report unavailable when facts are missing. Never guess current values or treat a successful page fetch as verification. If a source is unavailable, clearly report it and label any previous values as stale. Non-lookup tasks do not need report_lookup.";
+export const SCHEDULE_LOOKUP_INSTRUCTIONS = "Research using hosted web search and article opening when available, with fetch_webpage as an additional reader. Use alternate public sources when a page is inaccessible; a failed source does not invalidate evidence obtained elsewhere. Do not require fetch_webpage or report_lookup for hosted-web evidence. For direct fetch_webpage lookups, report_lookup may retain a concise verified summary only when the content supports the requested facts. Produce a concise useful update with source links. For news, distinguish publication/reporting time from announcement time; label recent coverage of earlier events accordingly. Keep individual fetch errors and tool limits out of the post. If coverage is materially incomplete, include one short caveat; if no useful evidence is available, say so briefly without claiming nothing happened. Never invent current values, and label previous values as stale.";
 
 export function previousLookupContext(records: LookupRecord[] = []): string {
   if (!records.length) return "";
@@ -12,15 +12,6 @@ export function lookupStatus(records: LookupRecord[] | undefined): string {
   if (records.some(record => record.status === "unavailable")) return "unavailable";
   if (records.some(record => record.status === "fetched")) return "fetched; facts not verified";
   return "verified (source-backed model report)";
-}
-
-/** Host-generated notice prevents failed lookups being presented solely as successful AI output. */
-export function lookupNotice(records: LookupRecord[], previous: LookupRecord[] = []): string {
-  return records.filter(record => record.status !== "verified").map(record => {
-    const description = record.status === "fetched" ? "Page fetched, but the requested facts were not verified." : record.summary ?? record.errorCode ?? "Source unavailable.";
-    const last = previous.find(item => item.url === record.url && item.status === "verified");
-    return `Lookup unavailable — <${record.url}>: ${description}${last ? `\nLast verified ${last.checkedAt} (stale): ${last.summary}` : "\nNo previously verified values are available."}`;
-  }).join("\n\n");
 }
 
 export function retainVerifiedLookups(previous: LookupRecord[] = [], current: LookupRecord[] = []): LookupRecord[] {

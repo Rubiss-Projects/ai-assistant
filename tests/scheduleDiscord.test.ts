@@ -198,7 +198,7 @@ test("AI scheduling isolates sessions and workspaces, filters context, binds loo
   assert.deepEqual(settings, ["codex", "model", "low", "codex", "model", "low"]);
 });
 
-test("scheduled source failures remain separate from delivery and explicitly label previous values stale", async t => {
+test("scheduled source failures stay in diagnostics and previous values remain stale context", async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "scheduled-lookups-"));
   const oldMode = process.env.AI_ASSISTANT_SECURITY_MODE, oldRoot = process.env.AI_ASSISTANT_WORKSPACE_ROOT;
   process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
@@ -223,8 +223,8 @@ test("scheduled source failures remain separate from delivery and explicitly lab
   const adapter = new DiscordScheduleAdapter(f.client, createAccessPolicy({}), sessions);
   const current = { ...run };
   const parts = await adapter.generate(scheduled, current, 1000);
-  assert.match(parts[0].content, /HTTP 403/);
-  assert.match(parts[0].content, /Last verified 2026-09-12T19:00:00Z \(stale\): \$42, 3 bids/);
+  assert.equal(parts[0].content, "Could not check the listing.");
+  assert.equal(current.lookups?.[0].summary, "The source returned HTTP 403.");
   assert.equal(lookupStatus(current.lookups), "unavailable");
   assert.equal(lookupStatus([]), "not reported");
   assert.equal(lookupStatus([{ url, checkedAt: "now", status: "fetched" }]), "fetched; facts not verified");

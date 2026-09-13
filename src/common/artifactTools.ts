@@ -28,6 +28,7 @@ export class ArtifactTools {
   private transientFiles = new Set<string>();
   private retained = 0;
   private webpages = new Map<string, WebpageResult>();
+  private webpageReads = new Map<string, WebpageResult>();
   providerSourceRoot?: () => string | undefined;
 
   constructor(readonly run: ArtifactRun, readonly options?: SendMessageOptions,
@@ -55,12 +56,12 @@ export class ArtifactTools {
     const operation = this.queue.catch(() => {}).then(async () => {
       this.controller.signal.throwIfAborted();
       if (args.run_id !== this.id) throw new Error("This artifact run has expired or belongs to another response.");
-      if (++this.calls > 40) throw new Error("Artifact tool call limit reached for this response.");
+      if (++this.calls > 80) throw new Error("Artifact tool call limit reached for this response.");
       const schema = ARTIFACT_TOOLS.find((tool) => tool.name === name)?.inputSchema;
       if (!schema || Object.keys(args).some((key) => !Object.hasOwn(schema.properties, key))) throw new Error("Invalid artifact tool arguments.");
       for (const key of schema.required) if (typeof args[key] !== "string" || !(args[key] as string).trim()) throw new Error(`Missing ${key}.`);
       for (const value of Object.values(args)) if (typeof value !== "string" || value.length > 8192) throw new Error("Tool arguments must be short strings.");
-      if (name === "fetch_webpage") return this.webpage(String(args.url));
+      if (name === "fetch_webpage") return this.webpage(args);
       if (name === "report_lookup") return this.reportLookup(args);
       if (name === "fetch_artifact") return this.fetch(args);
       if (name === "attach_file") return this.attach(String(args.path), args.filename as string | undefined);
@@ -74,18 +75,31 @@ export class ArtifactTools {
     return operation;
   }
 
-  private async webpage(rawUrl: string): Promise<WebpageResult> {
-    const url = lookupUrl(rawUrl);
-    const cached = this.webpages.get(url);
-    if (cached) return cached;
-    if (this.webpages.size >= 10) throw new Error("Only 10 distinct webpage URLs can be read per response.");
-    const result = await this.readWebpage(url, this.controller.signal);
+  private async webpage(args: Record<string, unknown>): Promise<WebpageResult> {
+    const url = lookupUrl(String(args.url));
+    const mode = args.mode ?? "auto";
+    const offset = args.offset === undefined ? 0 : Number(args.offset);
+    if (mode !== "auto" && mode !== "browser") throw new Error("Use auto or browser mode.");
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= 192_000) throw new Error("Text offset must be between 0 and 191999.");
+    const key = JSON.stringify([url, mode]);
+    const cached = this.webpageReads.get(key);
+    const chunk = (result: WebpageResult): WebpageResult => {
+      if (result.status !== "available") return result;
+      const nextOffset = offset + 24_000 < result.text.length ? offset + 24_000 : undefined;
+      return { ...result, text: result.text.slice(offset, offset + 24_000), nextOffset, truncated: result.truncated || nextOffset !== undefined };
+    };
+    if (cached) return chunk(cached);
+    if (this.webpageReads.size >= 24) throw new Error("The 24-page read budget is exhausted. Use hosted article reading or the evidence already collected.");
+    // Keep one bounded document snapshot: continuation reads neither refetch changing
+    // news nor spend another browser launch or source slot.
+    const result = await this.readWebpage(url, this.controller.signal, undefined, { mode, textLimit: 192_000 });
     this.controller.signal.throwIfAborted();
+    this.webpageReads.set(key, result);
     this.webpages.set(url, result);
     this.options?.onLookup?.({ url, checkedAt: result.fetchedAt,
       status: result.status === "available" ? "fetched" : "unavailable",
       ...(result.status === "unavailable" ? { errorCode: result.errorCode, summary: result.message } : {}) });
-    return result;
+    return chunk(result);
   }
 
   private reportLookup(args: Record<string, unknown>): unknown {

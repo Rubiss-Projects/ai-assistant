@@ -151,32 +151,41 @@ The built-in `artifact_tools` MCP server is available to all three providers, in
 
 | Tool | Behavior |
 | --- | --- |
-| `fetch_webpage` | Reads public HTTP(S) pages through a controlled GET client and returns text, JSON-LD, timestamps, and explicit failure reasons. Works in shared mode without enabling shell networking. |
-| `report_lookup` | Records source-backed, model-reported facts for scheduled lookups, or reports that the requested facts were unavailable. Verification requires a successful `fetch_webpage` call in the same run. |
+| `fetch_webpage` | Reads public pages, JSON, RSS and Atom; returns text, links, JSON-LD and timestamps. Automatically tries an anonymous browser for sparse script-rendered pages or HTTP 403. Use `mode: "browser"` to render explicitly and string `offset` from `nextOffset` for more text. Works in shared mode without shell networking. |
+| `report_lookup` | Optionally retains source-backed, model-reported facts for a scheduled direct lookup. Verification requires a successful `fetch_webpage` call in the same run. Hosted search/article evidence does not require either tool. |
 | `fetch_artifact` | Downloads a public HTTP(S) file URL, or resolves a Discord message's attachments, embedded media, and links. One candidate downloads immediately; multiple candidates are returned for selection using `candidate_id`. |
 | `transcode_video` | Converts a local video to `av1`, `h264`, or `hevc` in MP4 using FFmpeg software encoding. Returns a decoded, verified local output. |
 | `attach_file` | Validates and copies a finished file, freezes its bytes, and registers it for the current Discord response. Returns `ready` or an actionable error while the agent can still correct its output. |
 
-The webpage reader uses standard HTTP(S) ports, validates and pins public DNS
-addresses on every redirect, and sends no account cookies or authentication.
-It does not execute JavaScript or load subresources. Each read is limited to
-2 MiB, 25 seconds, 24,000 text characters, and 16,000 JSON-LD characters; each
-response can read at most 10 distinct URLs. Transient connection and HTTP 5xx
-failures get one retry within the same deadline. HTTPS item URLs on `ebay.com`
-and `www.ebay.com` use a fresh sandboxed Chromium session, restricted to the
-canonical listing URL with pinned public DNS. A first HTTP 403 that establishes
-anonymous site cookies gets one follow-up navigation. JavaScript, subresources,
-downloads, and redirects are blocked. Cookies are discarded with the session;
-bot credentials and existing browser profiles are never loaded. Chromium is
-included in the container; other installs can set `AI_ASSISTANT_BROWSER_EXECUTABLE`
-to their Chromium executable. The supplied `compose.yaml` uses `seccomp.json`
-to permit Chromium's user namespace sandbox, including `chroot` inside that
-namespace, while retaining syscall filtering and dropping host capabilities.
-Keep that profile beside the Compose file when deploying it elsewhere.
-Other HTTP refusals, challenge pages, private addresses, and policy failures are
-reported without retries.
-Direct access cannot guarantee that a site serves its content: HTTP 403, login,
-JavaScript requirements, and missing data remain explicit unavailable outcomes.
+Public research can use hosted web search and article opening, the direct reader,
+and alternative sources. A direct-reader failure does not invalidate evidence
+obtained through another reader. No per-domain configuration is required.
+
+The direct reader validates and pins public DNS addresses on every redirect and
+uses standard HTTP(S) ports. Each read has an 8 MiB document limit and a 45-second
+deadline. Text is returned in 24,000-character chunks from a bounded 192,000-character
+snapshot, with up to 16,000 JSON-LD characters. Continuations reuse the same snapshot.
+A response can read 24 URL/mode combinations within the 80-call tool budget.
+Transient connection and HTTP 5xx failures get one retry within the deadline.
+
+The general browser runs sandboxed Chromium in a fresh anonymous context, without
+bot credentials, saved account cookies or existing profiles. JavaScript, styles and
+public GET/HEAD data requests can render articles. Every destination connection
+passes through an authenticated local proxy that validates and pins public DNS,
+including redirects and subresources. Loopback bypass and non-proxied WebRTC UDP
+are disabled. Page POST requests, WebSockets, service workers, embedded frames,
+popups, media downloads and images/fonts are blocked. Browser reads are limited
+to 128 requests/connections, eight navigations, and 64 MiB transfer/decoded-content
+budgets. Anonymous cookies are discarded afterward; a first HTTP 403 establishing
+cookies permits one follow-up navigation. Login requirements and human-verification
+challenges remain unavailable; use other public coverage when needed.
+
+HTTPS eBay item URLs retain their tested, smaller browser path: only the canonical
+listing is read, with scripts, subresources and redirects disabled. Chromium is
+included in the container; other installs can set `AI_ASSISTANT_BROWSER_EXECUTABLE`.
+The supplied `compose.yaml` uses `seccomp.json` to permit Chromium's user namespace
+sandbox while retaining syscall filtering and dropping host capabilities. Keep
+that profile beside the Compose file when deploying it elsewhere.
 
 ### Switch providers, models, and reasoning
 
@@ -335,7 +344,9 @@ delivered failure notice can have `delivery: succeeded` and `lookup: unavailable
 summary was reported; `not reported` means no built-in webpage lookup was recorded
 (including ordinary non-lookup tasks and hosted-web-only runs). Verification is
 a model report backed by a readable source, not an independent fact checker.
-Source failures receive a bot-generated notice. Up to 10 last verified summaries
+Individual source failures remain in run diagnostics and are not prepended to
+Discord posts. Scheduled updates contain supported findings and a short coverage
+caveat only when needed. Up to 10 last verified summaries
 are retained per task and supplied to later runs as explicitly stale, untrusted
 context, with their original timestamps. Failed reads never replace those values.
 Changing the saved prompt clears the summaries. This metadata persists alongside
