@@ -102,7 +102,7 @@ export class ArtifactTools {
         const chunk = (result) => {
             if (result.status !== "available")
                 return result;
-            const nextOffset = offset + 24_000 < result.text.length ? offset + 24_000 : undefined;
+            const nextOffset = offset + 24_000 < result.text.length ? String(offset + 24_000) : undefined;
             return { ...result, text: result.text.slice(offset, offset + 24_000), nextOffset, truncated: result.truncated || nextOffset !== undefined };
         };
         if (cached)

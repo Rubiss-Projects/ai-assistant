@@ -52,4 +52,4 @@ jobs:
         run: docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp.json --pids-limit 256 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001 --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-ebay-browser.js
 
       - name: Verify general web research and private-network isolation
-        run: docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp.json --pids-limit 256 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001 --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-web-research.js
+        run: docker run --rm --memory 1g --memory-swap 1g --read-only --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp.json --pids-limit 256 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001 --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-web-research.js

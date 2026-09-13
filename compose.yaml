@@ -15,6 +15,13 @@ services:
       # Provider tools can access this directory, but not the adjacent login state under /data.
       AI_ASSISTANT_WORKSPACE_ROOT: /data/workspaces
       REGISTER_COMMANDS_ON_START: ${REGISTER_COMMANDS_ON_START:-true}
+      AI_ASSISTANT_BROWSER_URL: http://browser:3123
+    depends_on:
+      browser:
+        condition: service_healthy
+    networks:
+      - default
+      - browser-control
     volumes:
       # Named volume only: no part of the host filesystem is exposed to the agent.
       - assistant-data:/data
@@ -29,5 +36,38 @@ services:
       - seccomp=./seccomp.json
     pids_limit: 256
 
+  browser:
+    image: ghcr.io/rubiss-projects/ai-assistant:latest
+    build:
+      context: .
+    entrypoint: ["node", "/app/dist/src/browserWorker.js"]
+    restart: unless-stopped
+    init: true
+    # A separate cgroup contains native DOM, ArrayBuffer/Wasm and every child process.
+    # No bot credentials, provider state or data volumes enter this service.
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp.json
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3123/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - browser-control
+      - browser-egress
+
 volumes:
   assistant-data:
+
+networks:
+  browser-control:
+    internal: true
+  browser-egress:

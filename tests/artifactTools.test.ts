@@ -59,7 +59,7 @@ test("news continuation uses the same snapshot and browser mode can replace an H
   const args = { run_id: runtime.id, url: "https://example.com/news" };
   const first = await runtime.call("fetch_webpage", args) as any;
   assert.equal(first.text.length, 24_000);
-  const next = await runtime.call("fetch_webpage", { ...args, offset: String(first.nextOffset) }) as any;
+  const next = await runtime.call("fetch_webpage", { ...args, offset: first.nextOffset }) as any;
   assert.match(next.text, /Final story/);
   assert.equal(next.fetchedAt, first.fetchedAt);
   assert.equal(calls, 1);
