@@ -1,7 +1,9 @@
 import type { Browser } from "playwright-core";
 import { PublicFetchError } from "./fetchArtifact.js";
 
-const MAX_BROWSERS = 2;
+// Chromium counts threads against the container PID limit. Two instances reached
+// the shipped 256-task bound in a concurrent auction/news check on Docker Desktop.
+const MAX_BROWSERS = 1;
 let active = 0;
 type Waiter = { signal: AbortSignal; resolve: (release: () => void) => void; reject: (error: unknown) => void; abort: () => void };
 const waiting = new Set<Waiter>();
