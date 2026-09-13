@@ -45,7 +45,9 @@ export const fetchBrowserWebpage = async (raw, options) => {
             javaScriptEnabled: true, serviceWorkers: "block", acceptDownloads: false,
         });
         await context.routeWebSocket("**/*", route => route.close());
-        let requests = 0, navigations = 0, bytes = 0;
+        let requests = 0, attemptedRequests = 0, navigations = 0, bytes = 0;
+        let documentStatus;
+        let documentFailure;
         const page = await context.newPage();
         context.on("page", extra => { if (extra !== page)
             void extra.close().catch(() => { }); });
@@ -62,6 +64,11 @@ export const fetchBrowserWebpage = async (raw, options) => {
                     await route.abort();
                     return;
                 }
+                if (++requests > 128) {
+                    stop("Browser request budget exceeded.");
+                    await route.abort();
+                    return;
+                }
                 await route.continue();
             }
             catch {
@@ -69,10 +76,23 @@ export const fetchBrowserWebpage = async (raw, options) => {
             }
         });
         context.on("request", request => {
-            if (++requests > 128)
-                stop("Browser request budget exceeded.");
+            // Blocked images/ads do not spend the useful page-read budget. Still bound
+            // hostile scripts that repeatedly attempt requests rejected by routing.
+            if (++attemptedRequests > 1024)
+                stop("Browser attempted-request budget exceeded.");
             if (request.isNavigationRequest() && ++navigations > 8)
                 stop("Browser navigation budget exceeded.");
+        });
+        page.on("response", response => {
+            if (response.request().isNavigationRequest() && response.request().frame() === page.mainFrame()) {
+                documentStatus = response.status();
+                documentFailure = undefined;
+            }
+        });
+        page.on("requestfailed", request => {
+            if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+                documentFailure = proxy?.error ?? new PublicFetchError("network_error", "The final page navigation failed.");
+            }
         });
         const cdp = await context.newCDPSession(page);
         await cdp.send("Network.enable");
@@ -96,6 +116,11 @@ export const fetchBrowserWebpage = async (raw, options) => {
         await within(page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => { }));
         await delay(500, undefined, { signal });
         publicBrowserUrl(page.url());
+        // Client-side navigation may replace the initial HTTP 200 after DOMContentLoaded.
+        if (documentFailure)
+            throw documentFailure;
+        if (documentStatus !== 200)
+            throw new PublicFetchError("http_error", `The source returned HTTP ${documentStatus}.`, documentStatus);
         const html = await within(page.content());
         if (failure)
             throw failure;

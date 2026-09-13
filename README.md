@@ -175,7 +175,8 @@ passes through an authenticated local proxy that validates and pins public DNS,
 including redirects and subresources. Loopback bypass and non-proxied WebRTC UDP
 are disabled. Page POST requests, WebSockets, service workers, embedded frames,
 popups, media downloads and images/fonts are blocked. Browser reads are limited
-to 128 requests/connections, eight navigations, and 64 MiB transfer/decoded-content
+to 128 permitted requests/connections, 1,024 attempted requests, eight navigations,
+and 64 MiB transfer/decoded-content
 budgets. Anonymous cookies are discarded afterward; a first HTTP 403 establishing
 cookies permits one follow-up navigation. Login requirements and human-verification
 challenges remain unavailable; use other public coverage when needed.
