@@ -1,4 +1,5 @@
 import type { LookupRecord } from "../utils/fetchWebpage.js";
+import type { AccessPolicy, AccessSubject } from "../common/accessPolicy.js";
 
 export const PROVIDERS = ["copilot", "codex", "opencode"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
@@ -89,6 +90,12 @@ export interface SendMessageOptions {
   resolveArtifactMessage?: (url: string) => Promise<ArtifactMessage>;
   /** Host-observed webpage results and source-backed summaries for scheduled lookups. */
   onLookup?: (record: LookupRecord) => void;
+  /** Host-captured Discord permissions for ruleset tool calls. Never supplied by the model. */
+  rulesetContext?: {
+    requester: AccessSubject;
+    access: AccessPolicy;
+    guildId?: string | null;
+  };
 }
 
 export interface ArtifactCandidate {

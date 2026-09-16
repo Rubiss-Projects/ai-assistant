@@ -3,12 +3,12 @@ import path from "node:path";
 import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
 export const CAPABILITIES = [
     "chat.use", "ask.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
-    "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
+    "ruleset.manage", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
 ];
 const PRESETS = {
     member: ["chat.use"],
     scheduler: ["chat.use", "schedule.message.create", "schedule.manage.own"],
-    "server-admin": ["chat.use", "schedule.message.create", "schedule.manage.own", "schedule.manage.guild"],
+    "server-admin": ["chat.use", "ruleset.manage", "schedule.message.create", "schedule.manage.own", "schedule.manage.guild"],
     "bot-admin": [...CAPABILITIES],
 };
 function ids(value) { return new Set((value ?? "").split(",").map(x => x.trim()).filter(Boolean)); }
@@ -103,6 +103,8 @@ export function slashCommandCapability({ commandName: command, subcommand: sub, 
         return "workspace.manage";
     if (command === "mcp" && ["list", "enable", "disable", "workspace"].includes(sub ?? ""))
         return "mcp.manage";
+    if (command === "ruleset" && ["get", "list", "set", "append", "delete", "clear", "enable", "disable", "preview"].includes(sub ?? ""))
+        return "ruleset.manage";
     return undefined;
 }
 export function slashCommandRequiresAdmin(request) {

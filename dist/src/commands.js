@@ -165,4 +165,54 @@ export const commands = [
         .setDescription("Create or overwrite a file in the session workspace")
         .addStringOption((opt) => opt.setName("path").setDescription("Relative file path").setRequired(true))
         .addStringOption((opt) => opt.setName("content").setDescription("File content").setRequired(true))),
+    new SlashCommandBuilder()
+        .setName("ruleset")
+        .setDescription("Manage Discord user instruction rulesets")
+        .addSubcommand((sub) => sub
+        .setName("list")
+        .setDescription("List rulesets for a user")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addBooleanOption((opt) => opt.setName("include_disabled").setDescription("Include disabled rulesets")))
+        .addSubcommand((sub) => sub
+        .setName("get")
+        .setDescription("Show a named ruleset for a user")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("Ruleset name").setRequired(true)))
+        .addSubcommand((sub) => sub
+        .setName("set")
+        .setDescription("Create or replace a ruleset for a user")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addStringOption((opt) => opt.setName("instructions").setDescription("Ruleset instructions").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("Ruleset name"))
+        .addIntegerOption((opt) => opt.setName("priority").setDescription("Priority, lower applies first")))
+        .addSubcommand((sub) => sub
+        .setName("append")
+        .setDescription("Append to an existing ruleset")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("Ruleset name").setRequired(true))
+        .addStringOption((opt) => opt.setName("instructions").setDescription("Instructions to append").setRequired(true)))
+        .addSubcommand((sub) => sub
+        .setName("delete")
+        .setDescription("Delete a named ruleset")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("Ruleset name").setRequired(true)))
+        .addSubcommand((sub) => sub
+        .setName("clear")
+        .setDescription("Delete all rulesets for a user")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true)))
+        .addSubcommand((sub) => sub
+        .setName("enable")
+        .setDescription("Enable a named ruleset")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("Ruleset name").setRequired(true)))
+        .addSubcommand((sub) => sub
+        .setName("disable")
+        .setDescription("Disable a named ruleset")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addStringOption((opt) => opt.setName("name").setDescription("Ruleset name").setRequired(true)))
+        .addSubcommand((sub) => sub
+        .setName("preview")
+        .setDescription("Preview the injected instruction block")
+        .addUserOption((opt) => opt.setName("user").setDescription("Discord user").setRequired(true))
+        .addBooleanOption((opt) => opt.setName("include_disabled").setDescription("Include disabled rulesets"))),
 ];

@@ -6,6 +6,7 @@ import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
+import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
@@ -40,7 +41,7 @@ export function createCopilotPermissionHandler(workingDirectory) {
                     ? { kind: "approve-once" }
                     : reject("Writes are limited to non-sensitive files in the assigned workspace.");
             case "mcp":
-                return request.serverName === "artifact_tools" || request.readOnly
+                return request.serverName === "artifact_tools" || request.serverName === "ruleset_tools" || request.readOnly
                     ? { kind: "approve-once" }
                     : reject("Mutating connector and MCP tools are disabled for Discord sessions.");
             case "url":
@@ -155,6 +156,7 @@ async function sendUntilIdle(session, message, options) {
  */
 export class CopilotProvider {
     artifactTools = new ArtifactToolSessions();
+    rulesetTools = new RulesetToolSessions();
     name = "copilot";
     displayName = "GitHub Copilot";
     client;
@@ -194,6 +196,7 @@ export class CopilotProvider {
         // would execute repository-controlled code before the permission handler can intervene.
         const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
         mcpServers.artifact_tools = { ...(await this.artifactTools.config(key)), type: "local", tools: ["*"], timeout: 960_000 };
+        mcpServers.ruleset_tools = { ...(await this.rulesetTools.config(key)), type: "local", tools: ["*"], timeout: 120_000 };
         const configuredPrompt = providerSystemPrompt();
         const sessionConfig = shared
             ? {
@@ -302,13 +305,13 @@ export class CopilotProvider {
                     const workingDirectory = this.sessionWorkingDirectories.get(userId)
                         ?? this.workingDirOverrides.get(userId)
                         ?? ensureProviderWorkingDirectory();
-                    return await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
+                    return await this.rulesetTools.run(userId, options, async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
                         const attachments = staged.filter((file) => !file.binary).map((file) => ({ type: "file", path: file.path, displayName: file.displayName }));
                         return sendUntilIdle(session, {
-                            prompt: withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun),
+                            prompt: rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun), rulesetRuntime),
                             ...(attachments?.length ? { attachments } : {}),
                         }, options);
-                    }));
+                    })));
                 }
                 catch (error) {
                     if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
@@ -464,6 +467,7 @@ export class CopilotProvider {
     }
     async resetSession(key) {
         await this.artifactTools.reset(key);
+        await this.rulesetTools.reset(key);
         const session = this.sessions.get(key);
         const storedSessionId = this.store.get(key);
         this.sessions.delete(key);
@@ -548,6 +552,7 @@ export class CopilotProvider {
     }
     async shutdown() {
         await this.artifactTools.shutdown();
+        await this.rulesetTools.shutdown();
         const allSessions = Array.from(this.sessions.values());
         this.sessions.clear();
         this.sessionWorkingDirectories.clear();

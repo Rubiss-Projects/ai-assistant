@@ -23,6 +23,7 @@ import { handleFleet } from "./handlers/slash/fleet.js";
 import { handlePlan } from "./handlers/slash/plan.js";
 import { handleWorkspace } from "./handlers/slash/workspace.js";
 import { handleMcp } from "./handlers/slash/mcp.js";
+import { handleRuleset } from "./handlers/slash/ruleset.js";
 import { ChatParticipation, participationMode, parseParticipationDecision } from "./common/chatParticipation.js";
 import { participationEvaluatorConfig } from "./common/participationEvaluator.js";
 import { participationEmojis, reactWithParticipationEmoji, assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext, participationAttachments } from "./common/discordParticipation.js";
@@ -84,7 +85,10 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
       if (!subject || !access.canMessage(target.author.id, subject)) return;
       await handleMention(target, client, sessions, target.channelId,
         contextAuthorPolicy(access, client, target.guildId),
-        { context: participationReplyContext(context, requests.map(message => message.id)), requests, attachments: participationAttachments(context) });
+        {
+          participation: { context: participationReplyContext(context, requests.map(message => message.id)), requests, attachments: participationAttachments(context) },
+          rulesetContext: { access, requester: subject, guildId: target.guildId },
+        });
     },
     react: async (target, emoji) => {
       await reactWithParticipationEmoji(target, emoji);
@@ -150,7 +154,7 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
 
     switch (cmd.commandName) {
       case "ask":
-        await handleAsk(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId));
+        await handleAsk(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId), { access, requester: subject, guildId: cmd.guildId });
         break;
       case "chat":
         await handleChat(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId),
@@ -163,7 +167,8 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
                 content: cmd.options.getString("message", true),
               });
             return context;
-          });
+          },
+          { access, requester: subject, guildId: cmd.guildId });
         break;
       case "reset":
         await handleReset(cmd, sessions);
@@ -210,6 +215,9 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
       case "mcp":
         await handleMcp(cmd, sessions);
         break;
+      case "ruleset":
+        await handleRuleset(cmd, subject);
+        break;
       default:
         console.warn(`Unknown command: ${cmd.commandName}`);
     }
@@ -234,11 +242,13 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
       return;
     }
     if (ownedThread) {
-      await handleMention(message, client, sessions, message.channelId, contextAuthorPolicy(access, client, message.guildId));
+      await handleMention(message, client, sessions, message.channelId, contextAuthorPolicy(access, client, message.guildId),
+        { rulesetContext: { access, requester: subject, guildId: message.guildId } });
       return;
     }
 
-    await handleMention(message, client, sessions, undefined, contextAuthorPolicy(access, client, message.guildId));
+    await handleMention(message, client, sessions, undefined, contextAuthorPolicy(access, client, message.guildId),
+      { rulesetContext: { access, requester: subject, guildId: message.guildId } });
   });
 
   return Object.assign(client, { stopScheduler: async () => { await Promise.all([scheduler?.stop(), participation.stop()]); } });
