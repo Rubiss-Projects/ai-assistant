@@ -8,7 +8,9 @@ import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
-import { ArtifactToolSessions, artifactInputPrompt, codexArtifactMcpOverride } from "../common/artifactToolBridge.js";
+import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
+import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
+import { codexHostMcpOverride, codexHostMcpOverrides } from "../common/hostMcpConfig.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
@@ -80,7 +82,7 @@ function shellEnvironment(workingDirectory, childEnvironment) {
     return result;
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions(temporaryDirectory, artifacts) {
+export function codexClientOptions(temporaryDirectory, artifacts, rulesets) {
     const systemPrompt = providerSystemPrompt();
     if (configuredSecurityMode() === "unrestricted") {
         return {
@@ -90,7 +92,7 @@ export function codexClientOptions(temporaryDirectory, artifacts) {
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
             ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
             config: { developer_instructions: systemPrompt },
-            ...(artifacts ? { configOverrides: [codexArtifactMcpOverride(artifacts, false)] } : {}),
+            ...(artifacts || rulesets ? { configOverrides: codexHostMcpOverrides(artifacts, rulesets, false) } : {}),
         };
     }
     if (!temporaryDirectory) {
@@ -158,7 +160,7 @@ export function codexClientOptions(temporaryDirectory, artifacts) {
             },
         },
         configOverrides: [
-            artifacts ? codexArtifactMcpOverride(artifacts) : "mcp_servers={}",
+            codexHostMcpOverride(artifacts, rulesets),
             codexFilesystemPermissionOverride(sitesEnabled),
             sitesEnabled
                 ? `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,domains={"${CODEX_SITES_GIT_HOST}"="allow"}}`
@@ -319,6 +321,7 @@ async function runCodexCapturingEvents(thread, input, signal) {
 export class CodexProvider {
     participationProcesses = new ParticipationProcessRunner();
     artifactTools = new ArtifactToolSessions();
+    rulesetTools = new RulesetToolSessions();
     name = "codex";
     displayName = "OpenAI Codex";
     clients = new Map();
@@ -333,7 +336,7 @@ export class CodexProvider {
     modelOverrides = new Map();
     reasoningEffortOverrides = new Map();
     mcpToolOverrides = new Map();
-    clientFor(key, artifacts) {
+    clientFor(key, artifacts, rulesets) {
         const existing = this.clients.get(key);
         if (existing)
             return existing;
@@ -342,7 +345,7 @@ export class CodexProvider {
             temporaryDirectory = createCodexSessionTemporaryDirectory();
             this.temporaryDirectories.set(key, temporaryDirectory);
         }
-        const client = new Codex(codexClientOptions(temporaryDirectory, artifacts));
+        const client = new Codex(codexClientOptions(temporaryDirectory, artifacts, rulesets));
         this.clients.set(key, client);
         return client;
     }
@@ -367,7 +370,7 @@ export class CodexProvider {
         if (inFlight)
             return inFlight;
         const storedThreadId = this.store.get(key);
-        const client = this.clientFor(key, await this.artifactTools.config(key));
+        const client = this.clientFor(key, await this.artifactTools.config(key), await this.rulesetTools.config(key));
         const creation = Promise.resolve(storedThreadId
             ? client.resumeThread(storedThreadId, this.threadOptions(key))
             : client.startThread(this.threadOptions(key)))
@@ -455,10 +458,10 @@ export class CodexProvider {
             const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
             const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-            const response = await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
+            const response = await this.rulesetTools.run(userId, options, async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
                 runtime.providerSourceRoot = () => generatedImageThreadDirectory(this.sessions.get(userId)?.id ?? null);
                 const images = staged.filter((attachment) => attachment.kind !== "file");
-                const artifactPrompt = withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun);
+                const artifactPrompt = rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun), rulesetRuntime);
                 const input = images.length > 0
                     ? [
                         { type: "text", text: artifactPrompt },
@@ -516,7 +519,7 @@ export class CodexProvider {
                         displayName: `generated-image-${index + 1}${path.extname(savedPath)}`,
                     })),
                 };
-            }));
+            })));
             this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
             return response;
         });
@@ -707,6 +710,7 @@ export class CodexProvider {
     }
     async resetSession(key) {
         await this.artifactTools.reset(key);
+        await this.rulesetTools.reset(key);
         this.sessions.delete(key);
         this.pending.delete(key);
         this.sessionOperationQueues.delete(key);
@@ -748,6 +752,7 @@ export class CodexProvider {
     async shutdown() {
         await this.participationProcesses.shutdown();
         await this.artifactTools.shutdown();
+        await this.rulesetTools.shutdown();
         this.sessions.clear();
         this.pending.clear();
         this.sessionOperationQueues.clear();

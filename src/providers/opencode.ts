@@ -7,6 +7,7 @@ import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
+import { RulesetToolSessions, rulesetToolPrompt, type RulesetMcpConfig } from "../common/rulesetToolBridge.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -105,15 +106,26 @@ export function openCodeSecurityConfig(): Record<string, unknown> {
 export function openCodeChildEnvironment(
   source: Record<string, string | undefined> = process.env,
   artifacts?: ArtifactMcpConfig,
+  rulesets?: RulesetMcpConfig,
 ): Record<string, string> {
   const environment = providerChildEnvironment("opencode", source);
-  if (artifacts) {
+  if (artifacts || rulesets) {
     const config = configuredSecurityMode(source) === "shared" ? openCodeSecurityConfig()
       : JSON.parse(environment.OPENCODE_CONFIG_CONTENT || "{}");
-    config.mcp = { ...(config.mcp ?? {}), artifact_tools: {
-      type: "local", command: [artifacts.command, ...artifacts.args], environment: artifacts.env, enabled: true, timeout: 960_000,
-    } };
-    config.permission = { ...(config.permission ?? {}), "artifact_tools_*": "allow" };
+    config.mcp = { ...(config.mcp ?? {}) };
+    config.permission = { ...(config.permission ?? {}) };
+    if (artifacts) {
+      config.mcp.artifact_tools = {
+        type: "local", command: [artifacts.command, ...artifacts.args], environment: artifacts.env, enabled: true, timeout: 960_000,
+      };
+      config.permission["artifact_tools_*"] = "allow";
+    }
+    if (rulesets) {
+      config.mcp.ruleset_tools = {
+        type: "local", command: [rulesets.command, ...rulesets.args], environment: rulesets.env, enabled: true, timeout: 120_000,
+      };
+      config.permission["ruleset_tools_*"] = "allow";
+    }
     return { ...environment, OPENCODE_DISABLE_AUTOUPDATE: "1",
       ...(configuredSecurityMode(source) === "shared" ? { OPENCODE_DISABLE_PROJECT_CONFIG: "1" } : {}),
       OPENCODE_CONFIG_CONTENT: JSON.stringify(config) };
@@ -165,14 +177,14 @@ export function selectOpenCodeParticipationModel(models: string[], current?: str
  */
 function runOpenCode(
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig }
+  opts: { cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
     const child = spawn(openCodeBin(), args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: openCodeChildEnvironment(process.env, opts.artifacts),
+      env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets),
     });
 
     let stdout = "";
@@ -262,6 +274,7 @@ function finalTextFromEvents(events: OpenCodeEvent[]): string {
 export class OpenCodeProvider implements Provider {
   private readonly participationProcesses = new ParticipationProcessRunner();
   private artifactTools = new ArtifactToolSessions();
+  private rulesetTools = new RulesetToolSessions();
   readonly name = "opencode" as const;
   readonly displayName = "OpenCode";
 
@@ -297,12 +310,12 @@ export class OpenCodeProvider implements Provider {
       const timeoutMs = providerTimeout("OPENCODE_TIMEOUT_MS", options);
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
       const workingDirectory = this.workingDir(userId);
-      const response = await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
+      const response = await this.rulesetTools.run(userId, options, async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
         for (const file of staged.filter((file) => !file.binary)) args.push("--file", file.path);
-        args.push(openCodeRequestPrompt(withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun)));
+        args.push(openCodeRequestPrompt(rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun), rulesetRuntime)));
         const stopProgress = startProgressUpdates(options);
         const { stdout, stderr, code } = await runOpenCode(args, {
-          cwd: workingDirectory, timeoutMs, providerName: this.displayName, artifacts: await this.artifactTools.config(userId),
+          cwd: workingDirectory, timeoutMs, providerName: this.displayName, artifacts: await this.artifactTools.config(userId), rulesets: await this.rulesetTools.config(userId),
         }).finally(stopProgress);
 
         if (code !== 0) {
@@ -317,7 +330,7 @@ export class OpenCodeProvider implements Provider {
           this.store.set(userId, newSessionId);
         }
         return finalTextFromEvents(events) || "(no response)";
-      }));
+      })));
       this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;
     });
@@ -521,6 +534,7 @@ export class OpenCodeProvider implements Provider {
 
   async resetSession(key: string): Promise<void> {
     await this.artifactTools.reset(key);
+    await this.rulesetTools.reset(key);
     const sessionId = this.sessions.get(key) ?? this.store.get(key);
     this.sessions.delete(key);
     this.store.delete(key);
@@ -559,6 +573,7 @@ export class OpenCodeProvider implements Provider {
   async shutdown(): Promise<void> {
     await this.participationProcesses.shutdown();
     await this.artifactTools.shutdown();
+    await this.rulesetTools.shutdown();
     this.sessions.clear();
     this.messageQueues.clear();
   }

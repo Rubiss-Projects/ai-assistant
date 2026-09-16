@@ -75,6 +75,8 @@ test("configuration, infrastructure, and explicit workspace actions require admi
     { commandName: "fleet" },
     { commandName: "workspace" },
     { commandName: "mcp", subcommand: "list" },
+    { commandName: "ruleset", subcommand: "set" },
+    { commandName: "ruleset", subcommand: "clear" },
     { commandName: "model", subcommand: "set" },
     { commandName: "reasoning", subcommand: "set" },
     { commandName: "provider", subcommand: "set" },
