@@ -129,13 +129,13 @@ npm start
 
 ### Conversations and sessions
 
-Use `/ask <prompt>` for a private, one-shot answer or `/chat <message>` for an ongoing conversation:
+Use `/chat <message>` for an ongoing conversation. In unrestricted mode, `/ask <prompt>` also provides a private, one-shot answer. Shared mode ignores incoming DMs for everyone. Only explicitly configured bot admins can use `/ask` in a server to receive a one-shot DM answer; other users should use server channels.
 
 | Where you use `/chat` | What happens |
 | --- | --- |
 | Server channel | Creates a public thread named `{Provider}: {your message}`, with its own conversation. |
 | Existing thread | Continues that thread's conversation. |
-| DM | Responds inline in your persistent DM session. |
+| DM | Unrestricted mode only: responds inline in your persistent DM session, if the command is available in DMs. |
 
 You can also mention the bot in a visible channel, or send a message without a mention in a channel listed in `DISCORD_FREE_CHANNELS`. Bot-owned chat threads respond without a mention. Ordinary channel conversations are isolated by user and channel; a bot-owned thread shares one session among its participants.
 
@@ -593,6 +593,8 @@ These are advanced runtime inputs, usually supplied by the operating system. The
 ## Access and security
 
 ### Discord permissions
+
+With `AI_ASSISTANT_SECURITY_MODE=shared`, incoming DM messages are ignored and all DM slash commands are rejected before execution, including for admins. Server `/ask` is restricted to users in `DISCORD_ADMIN_USERS` or with a global `bot-admin` rights grant; the legacy open-admin fallback does not qualify. Discord Administrator permission alone does not qualify either. This is enforced at runtime, so already registered commands cannot bypass it; `/ask` may still appear in the command picker for non-admins. Restart the bot after changing security mode. Other commands can still return ephemeral responses, and channel/thread visibility still follows Discord permissions.
 
 `DISCORD_ALLOWED_USERS` controls ordinary messages and public slash actions. `DISCORD_ADMIN_USERS` controls administrative slash actions; listed admins can also invoke public slash actions. To let an admin send ordinary messages when the allowlist is nonempty, include them in `DISCORD_ALLOWED_USERS` too.
 
