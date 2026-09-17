@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { evaluateWithJev, participationEvaluatorConfig } from "../src/common/participationEvaluator.js";
-import { runParticipationProcess } from "../src/providers/participationProcess.js";
+import { ParticipationProcessRunner, runParticipationProcess } from "../src/providers/participationProcess.js";
 import { CopilotProvider } from "../src/providers/copilot.js";
 import { selectOpenCodeParticipationModel } from "../src/providers/opencode.js";
 import { CodexProvider } from "../src/providers/codex.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -74,6 +74,28 @@ test("classification process enforces timeout and passes prompt as data", async 
     cwd: tmpdir(), env: process.env, timeoutMs: 2000, stdin: text,
   });
   assert.equal(output, text);
+});
+
+test("classifier shutdown kills active children and rejects subsequent discovery or requests", async () => {
+  const runner = new ParticipationProcessRunner();
+  const directory = mkdtempSync(join(tmpdir(), "classifier-shutdown-"));
+  const marker = join(directory, "pid");
+  const options = { cwd: directory, env: process.env, timeoutMs: 60_000 };
+  const running = runner.run(process.execPath, ["-e", "require('fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000)", marker], options);
+  const rejected = assert.rejects(running, /stopped/);
+  try {
+    const deadline = Date.now() + 3000;
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(existsSync(marker), "child started");
+    const pid = Number(readFileSync(marker, "utf8"));
+    await runner.shutdown();
+    await rejected;
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    await assert.rejects(runner.run(process.execPath, ["-e", "process.exit(0)"], options), /stopped/);
+  } finally {
+    await runner.shutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("Copilot classifier disables tools/discovery and removes its temporary session", async () => {

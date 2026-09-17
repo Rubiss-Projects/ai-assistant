@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import os from "node:os";
-import { runParticipationProcess } from "./participationProcess.js";
+import { ParticipationProcessRunner } from "./participationProcess.js";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
@@ -260,6 +260,7 @@ function finalTextFromEvents(events: OpenCodeEvent[]): string {
  * this bot (plan/workspace/mode/fleet, etc.) throw `UnsupportedError`.
  */
 export class OpenCodeProvider implements Provider {
+  private readonly participationProcesses = new ParticipationProcessRunner();
   private artifactTools = new ArtifactToolSessions();
   readonly name = "opencode" as const;
   readonly displayName = "OpenCode";
@@ -356,7 +357,7 @@ export class OpenCodeProvider implements Provider {
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
       };
       if (!options.model && !this.participationModels) {
-        const listed = await runParticipationProcess(openCodeBin(), ["models", "--pure"], {
+        const listed = await this.participationProcesses.run(openCodeBin(), ["models", "--pure"], {
           cwd: directory, timeoutMs: options.timeoutMs, env,
         });
         this.participationModels = listed.split("\n").map(line => line.trim()).filter(line => /^[^\s/]+\/[^\s]+$/.test(line));
@@ -370,7 +371,7 @@ export class OpenCodeProvider implements Provider {
       }
       const remaining = options.timeoutMs - (Date.now() - started);
       if (remaining <= 0) throw new Error("Participation evaluator timed out during model discovery.");
-      const stdout = await runParticipationProcess(openCodeBin(), [
+      const stdout = await this.participationProcesses.run(openCodeBin(), [
         "run", "--format", "json", "--pure", "--auto", "--model", model, prompt,
       ], { cwd: directory, timeoutMs: remaining, env });
       return finalTextFromEvents(parseEvents(stdout));
@@ -556,6 +557,7 @@ export class OpenCodeProvider implements Provider {
   }
 
   async shutdown(): Promise<void> {
+    await this.participationProcesses.shutdown();
     await this.artifactTools.shutdown();
     this.sessions.clear();
     this.messageQueues.clear();

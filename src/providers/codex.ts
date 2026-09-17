@@ -1,5 +1,5 @@
 import fs from "fs";
-import { runParticipationProcess } from "./participationProcess.js";
+import { ParticipationProcessRunner } from "./participationProcess.js";
 import { createRequire } from "node:module";
 import os from "os";
 import path from "path";
@@ -396,6 +396,7 @@ async function runCodexCapturingEvents(
  * a Codex thread; features the SDK does not expose throw `UnsupportedError`.
  */
 export class CodexProvider implements Provider {
+  private readonly participationProcesses = new ParticipationProcessRunner();
   private artifactTools = new ArtifactToolSessions();
   readonly name = "codex" as const;
   readonly displayName = "OpenAI Codex";
@@ -651,7 +652,7 @@ export class CodexProvider implements Provider {
   async evaluateParticipation(prompt: string, options: { model?: string; effort: "none" | "low"; timeoutMs: number }): Promise<string> {
     const directory = createCodexSessionTemporaryDirectory();
     try {
-      const stdout = await runParticipationProcess(process.env.CODEX_EXECUTABLE_PATH?.trim() || "codex", [
+      const stdout = await this.participationProcesses.run(process.env.CODEX_EXECUTABLE_PATH?.trim() || "codex", [
         "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
         "--sandbox", "read-only", "--json", "--model", options.model ?? "gpt-5.6-luna",
         "-c", `model_reasoning_effort=${JSON.stringify(options.effort)}`,
@@ -889,6 +890,7 @@ export class CodexProvider implements Provider {
   }
 
   async shutdown(): Promise<void> {
+    await this.participationProcesses.shutdown();
     await this.artifactTools.shutdown();
     this.sessions.clear();
     this.pending.clear();
