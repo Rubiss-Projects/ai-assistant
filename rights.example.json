@@ -12,7 +12,8 @@
     {
       "guildId": "222222222222222222",
       "roleId": "444444444444444444",
-      "roles": ["server-admin"]
+      "roles": ["server-admin"],
+      "capabilities": ["ask.use"]
     }
   ]
 }

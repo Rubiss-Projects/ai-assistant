@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
 export const CAPABILITIES = [
-    "chat.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
+    "chat.use", "ask.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
     "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
 ];
 const PRESETS = {
@@ -68,6 +68,9 @@ export function createAccessPolicy(env = process.env) {
                 return false;
             if (capability === "schedule.manage.own" && resource.ownerId && resource.ownerId !== s.userId)
                 return false;
+            // Private one-shot requests require an explicit grant, never the legacy open-admin fallback.
+            if (capability === "ask.use")
+                return explicitAdmin(s) || granted(s, capability);
             if (capability.startsWith("schedule.")) {
                 if (!s.guildId)
                     return false;

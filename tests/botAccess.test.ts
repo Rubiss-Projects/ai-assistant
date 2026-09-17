@@ -11,6 +11,7 @@ test("empty access lists allow messages and slash commands", () => {
 
   assert.equal(access.canMessage("user-1"), true);
   assert.equal(access.canUseAdminCommands("user-1"), true);
+  assert.equal(access.can({ userId: "user-1" }, "ask.use"), false);
 });
 
 test("slash commands fall back to the normal allowlist", () => {
@@ -20,6 +21,7 @@ test("slash commands fall back to the normal allowlist", () => {
   assert.equal(access.canUseAdminCommands("user-1"), true);
   assert.equal(access.canMessage("user-3"), false);
   assert.equal(access.canUseAdminCommands("user-3"), false);
+  assert.equal(access.can({ userId: "user-1" }, "ask.use"), false);
 });
 
 test("admin list independently restricts slash commands", () => {

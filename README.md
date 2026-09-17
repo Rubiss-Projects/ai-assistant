@@ -129,7 +129,7 @@ npm start
 
 ### Conversations and sessions
 
-Use `/chat <message>` for an ongoing conversation. In unrestricted mode, `/ask <prompt>` also provides a private, one-shot answer. Shared mode ignores incoming DMs for everyone. Only explicitly configured bot admins can use `/ask` in a server to receive a one-shot DM answer; other users should use server channels.
+Use `/chat <message>` for an ongoing conversation. In unrestricted mode, `/ask <prompt>` also provides a private, one-shot answer. Shared mode ignores incoming DMs for everyone. Explicit bot admins and users or server roles granted `ask.use` can use `/ask` in a server to receive a one-shot DM answer; other users should use server channels.
 
 | Where you use `/chat` | What happens |
 | --- | --- |
@@ -267,6 +267,7 @@ grant bot administration.
 | Capability | Operations |
 | --- | --- |
 | `chat.use` | Conversations and existing public slash actions |
+| `ask.use` | Permission to invoke private one-shot `/ask` in shared mode (also requires ordinary command access) |
 | `session.configure` | Model, reasoning, provider, agent, and mode changes |
 | `workspace.manage` | Workspace operations and explicit `/ask`/`/chat` workspaces |
 | `mcp.manage` | MCP configuration |
@@ -594,7 +595,7 @@ These are advanced runtime inputs, usually supplied by the operating system. The
 
 ### Discord permissions
 
-With `AI_ASSISTANT_SECURITY_MODE=shared`, incoming DM messages are ignored and all DM slash commands are rejected before execution, including for admins. Server `/ask` is restricted to users in `DISCORD_ADMIN_USERS` or with a global `bot-admin` rights grant; the legacy open-admin fallback does not qualify. Discord Administrator permission alone does not qualify either. This is enforced at runtime, so already registered commands cannot bypass it; `/ask` may still appear in the command picker for non-admins. Restart the bot after changing security mode. Other commands can still return ephemeral responses, and channel/thread visibility still follows Discord permissions.
+With `AI_ASSISTANT_SECURITY_MODE=shared`, incoming DM messages are ignored and all DM slash commands are rejected before execution, including for admins. Server `/ask` is restricted to users in `DISCORD_ADMIN_USERS`, with a global `bot-admin` rights grant, or with an explicit `ask.use` capability grant; the legacy open-admin fallback does not qualify. Discord Administrator permission or the `server-admin` preset alone does not qualify either. Grant `ask.use` to a guild-scoped role to allow private one-shot requests without granting other bot-admin privileges. The normal `chat.use` check still applies, and the optional `workspace` argument still requires `workspace.manage`. This is enforced at runtime, so already registered commands cannot bypass it; `/ask` may still appear in the command picker for non-admins. Restart the bot after changing security mode. Other commands can still return ephemeral responses, and channel/thread visibility still follows Discord permissions.
 
 `DISCORD_ALLOWED_USERS` controls ordinary messages and public slash actions. `DISCORD_ADMIN_USERS` controls administrative slash actions; listed admins can also invoke public slash actions. To let an admin send ordinary messages when the allowlist is nonempty, include them in `DISCORD_ALLOWED_USERS` too.
 

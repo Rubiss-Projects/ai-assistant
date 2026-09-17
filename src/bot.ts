@@ -80,14 +80,17 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
     if (!interaction.isChatInputCommand()) return;
 
     const cmd = interaction as ChatInputCommandInteraction;
-    // Block private entry points before permissions or dispatch. Only explicit bot
-    // admins may request a one-shot DM from a server; legacy open-admin access is insufficient.
-    const restrictedAsk = cmd.commandName === "ask" && !access.isExplicitAdmin({ userId: cmd.user.id });
+    const roles = cmd.member?.roles;
+    const subject = { userId: cmd.user.id, guildId: cmd.guildId,
+      roleIds: Array.isArray(roles) ? roles : roles ? [...roles.cache.keys()] : [] };
+    // Block private entry points before dispatch. Private one-shot requests need an
+    // explicit admin or ask.use grant; legacy open-admin access is insufficient.
+    const restrictedAsk = cmd.commandName === "ask" && !access.can(subject, "ask.use");
     if (sharedMode && (!cmd.guildId || restrictedAsk)) {
       await cmd.reply({
         content: !cmd.guildId
           ? "⛔ DMs are disabled in shared mode. Use /chat or mention me in a server channel."
-          : "⛔ /ask is restricted to explicitly configured bot administrators in shared mode. Use /chat or mention me in a server channel.",
+          : "⛔ /ask requires explicit permission in shared mode. Use /chat or mention me in a server channel.",
         ephemeral: true,
       });
       return;
@@ -97,9 +100,6 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
       && Boolean(cmd.options.getString("workspace", false));
     const request = { commandName: cmd.commandName, subcommand, hasWorkspace };
 
-    const roles = cmd.member?.roles;
-    const subject = { userId: cmd.user.id, guildId: cmd.guildId,
-      roleIds: Array.isArray(roles) ? roles : roles ? [...roles.cache.keys()] : [] };
     if (cmd.commandName === "schedule") {
       await handleSchedule(cmd, scheduler, subject);
       return;
