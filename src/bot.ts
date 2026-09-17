@@ -23,9 +23,9 @@ import { handleFleet } from "./handlers/slash/fleet.js";
 import { handlePlan } from "./handlers/slash/plan.js";
 import { handleWorkspace } from "./handlers/slash/workspace.js";
 import { handleMcp } from "./handlers/slash/mcp.js";
-import { ChatParticipation, participationMode } from "./common/chatParticipation.js";
+import { ChatParticipation, participationMode, parseParticipationDecision } from "./common/chatParticipation.js";
 import { participationEvaluatorConfig } from "./common/participationEvaluator.js";
-import { explicitlyMentionsBot, participationContext, participationReplyContext } from "./common/discordParticipation.js";
+import { assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext } from "./common/discordParticipation.js";
 import type { Message } from "discord.js";
 import { handleMention } from "./handlers/mention.js";
 
@@ -65,9 +65,17 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
 
   const participation = new ChatParticipation<Message>({
     id: message => message.id,
+    identity: message => assistantIdentity(message, client.user!),
     context: messages => participationContext(messages, client.user!.id,
       contextAuthorPolicy(access, client, messages[0].guildId)),
-    classify: (prompt, target) => sessions.evaluateParticipation(target.channelId, prompt),
+    classify: async (prompt, target) => {
+      const started = Date.now();
+      const result = await sessions.evaluateParticipation(target.channelId, prompt);
+      // Log routing only, never conversation text or raw model output.
+      const decision = parseParticipationDecision(result, JSON.parse(prompt).candidateIds);
+      console.info(`[participation] thread=${target.channelId} action=${decision.action} elapsedMs=${Date.now() - started}`);
+      return result;
+    },
     reply: async (target, context, requests) => {
       const subject = await discordSubject(client, target.author.id, target.guildId).catch(() => undefined);
       if (!subject || !access.canMessage(target.author.id, subject)) return;

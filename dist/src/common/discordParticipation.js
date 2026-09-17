@@ -1,4 +1,7 @@
 import { PermissionFlagsBits } from "discord.js";
+export function assistantIdentity(message, bot) {
+    return { id: bot.id, names: [...new Set([message.guild?.members.me?.displayName, bot.globalName, bot.username].filter((name) => Boolean(name)))] };
+}
 export function explicitlyMentionsBot(message, botId) {
     // Discord also populates mentions for reply notifications; those aren't explicit @mentions.
     return message.content.includes(`<@${botId}>`) || message.content.includes(`<@!${botId}>`);

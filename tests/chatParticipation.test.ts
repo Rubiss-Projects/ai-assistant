@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ChatParticipation, parseParticipationDecision, participationMode, type ConversationMessage } from "../src/common/chatParticipation.js";
-import { explicitlyMentionsBot, participationContext } from "../src/common/discordParticipation.js";
+import { assistantIdentity, explicitlyMentionsBot, participationContext } from "../src/common/discordParticipation.js";
 
 const sleep = (ms = 15) => new Promise(resolve => setTimeout(resolve, ms));
 const message = (id: string, content = "question"): ConversationMessage => ({ id, content, authorId: "alice", authorName: "Alice", bot: false, attachmentCount: 0 });
@@ -9,6 +9,7 @@ function harness(decide: (prompt: string) => Promise<string> = async () => '{"ac
   const replies: string[] = [], reactions: string[] = [], calls: string[] = [];
   const coordinator = new ChatParticipation<ConversationMessage>({
     id: value => value.id, context: async values => values,
+    identity: () => ({ id: "bot", names: ["Rook", "AI Assistant"] }),
     classify: async prompt => { calls.push(prompt); return decide(prompt); },
     reply: async value => { replies.push(value.id); },
     react: async (value, emoji) => { reactions.push(value.id + emoji); },
@@ -45,11 +46,18 @@ test("bursts use one evaluation and explicit requests bypass classification", as
   await sleep();
   assert.equal(h.calls.length, 1);
   assert.deepEqual(JSON.parse(h.calls[0]).candidateIds, ["1", "2"]);
+  assert.deepEqual(JSON.parse(h.calls[0]).assistant, { id: "bot", names: ["Rook", "AI Assistant"] });
   h.coordinator.enqueue("thread", message("3"), true);
   await sleep();
   assert.deepEqual(h.replies, ["3"]);
   assert.equal(h.calls.length, 1);
   await h.coordinator.stop();
+});
+
+test("assistant identity uses the current guild nickname and account names", () => {
+  const bot = { id: "bot", username: "AI Assistant", globalName: null };
+  assert.deepEqual(assistantIdentity({ guild: { members: { me: { displayName: "Rook" } } } } as never, bot), { id: "bot", names: ["Rook", "AI Assistant"] });
+  assert.deepEqual(assistantIdentity({ guild: null } as never, bot), { id: "bot", names: ["AI Assistant"] });
 });
 
 test("new messages invalidate an in-flight decision before any reply", async () => {
