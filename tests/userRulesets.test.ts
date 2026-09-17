@@ -8,7 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { createAccessPolicy } from "../src/common/accessPolicy.js";
 import { RulesetToolSessions } from "../src/common/rulesetToolBridge.js";
 import { RulesetTools, createRulesetToolRun } from "../src/common/rulesetTools.js";
-import { UserInstructionStore } from "../src/common/userInstructionStore.js";
+import { USER_RULESET_LIMITS, UserInstructionStore } from "../src/common/userInstructionStore.js";
 import { applyUserInstructions, previewUserInstructions, providerSystemPromptForUser } from "../src/utils/userInstructions.js";
 
 function tempFile(): string {
@@ -55,6 +55,33 @@ test("UserInstructionStore reloads before reads and writes so separate managers 
   assert.deepEqual(
     new UserInstructionStore(file).listForUser("guild-1", "target").map((ruleset) => ruleset.name).sort(),
     ["slash-rule", "tool-rule"],
+  );
+});
+
+test("UserInstructionStore rejects enabled rulesets that would exceed the injected block limit", () => {
+  const store = new UserInstructionStore(tempFile());
+  const maxInstructions = "x".repeat(USER_RULESET_LIMITS.maxInstructionLength);
+
+  store.set({ guildId: "g", targetUserId: "u", name: "a", instructions: maxInstructions, createdBy: "admin" });
+  assert.throws(
+    () => store.set({ guildId: "g", targetUserId: "u", name: "b", instructions: maxInstructions, createdBy: "admin" }),
+    /User instruction block exceeds/,
+  );
+
+  const appendable = new UserInstructionStore(tempFile());
+  appendable.set({ guildId: "g", targetUserId: "u", name: "a", instructions: "a".repeat(3850), createdBy: "admin" });
+  appendable.set({ guildId: "g", targetUserId: "u", name: "b", instructions: "b".repeat(3850), createdBy: "admin" });
+  assert.throws(
+    () => appendable.append("g", "u", "a", "c".repeat(100), "admin"),
+    /User instruction block exceeds/,
+  );
+
+  const enableable = new UserInstructionStore(tempFile());
+  enableable.set({ guildId: "g", targetUserId: "u", name: "a", instructions: maxInstructions, createdBy: "admin" });
+  enableable.set({ guildId: "g", targetUserId: "u", name: "b", instructions: maxInstructions, createdBy: "admin", enabled: false });
+  assert.throws(
+    () => enableable.setEnabled("g", "u", "b", true, "admin"),
+    /User instruction block exceeds/,
   );
 });
 

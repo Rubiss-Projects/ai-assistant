@@ -1,37 +1,24 @@
 import {
   configuredUserInstructionMode,
+  formatUserInstructionBlock as formatStoredUserInstructionBlock,
   USER_RULESET_LIMITS,
   UserInstructionStore,
+  validateUserInstructionBlockLength,
+  type UserInstructionContext,
   type UserInstructionRuleset,
 } from "../common/userInstructionStore.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
 
-export interface UserInstructionContext {
-  guildId?: string | null;
-  userId: string;
-  userDisplayName?: string;
-}
+export type { UserInstructionContext } from "../common/userInstructionStore.js";
 
 export function formatUserInstructionBlock(
   context: UserInstructionContext,
   rulesets: readonly UserInstructionRuleset[],
 ): string {
-  if (!rulesets.length) return "";
-  const identity = context.userDisplayName
-    ? `${context.userDisplayName} (${context.userId})`
-    : context.userId;
-  const blocks = rulesets.map((ruleset) => `Ruleset: ${ruleset.name}\n${ruleset.instructions}`);
-  const content = [
-    "Additional Discord user instructions:",
-    "The following admin-configured instructions are part of the active system behavior for this Discord user.",
-    "",
-    `Target Discord user: ${identity}`,
-    `Server: ${context.guildId ?? "DM"}`,
-    "",
-    ...blocks,
-  ].join("\n");
+  let content = formatStoredUserInstructionBlock(context, rulesets);
   if (content.length > USER_RULESET_LIMITS.maxInjectedBlockLength) {
-    throw new Error(`User instruction block exceeds ${USER_RULESET_LIMITS.maxInjectedBlockLength} characters.`);
+    content = formatStoredUserInstructionBlock({ ...context, userDisplayName: undefined }, rulesets);
+    validateUserInstructionBlockLength({ ...context, userDisplayName: undefined }, rulesets);
   }
   return content;
 }

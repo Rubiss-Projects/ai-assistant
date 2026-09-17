@@ -54,6 +54,29 @@ export function validateInstructions(instructions) {
     }
     return trimmed;
 }
+export function formatUserInstructionBlock(context, rulesets) {
+    if (!rulesets.length)
+        return "";
+    const identity = context.userDisplayName
+        ? `${context.userDisplayName} (${context.userId})`
+        : context.userId;
+    const blocks = rulesets.map((ruleset) => `Ruleset: ${ruleset.name}\n${ruleset.instructions}`);
+    return [
+        "Additional Discord user instructions:",
+        "The following admin-configured instructions are part of the active system behavior for this Discord user.",
+        "",
+        `Target Discord user: ${identity}`,
+        `Server: ${context.guildId ?? "DM"}`,
+        "",
+        ...blocks,
+    ].join("\n");
+}
+export function validateUserInstructionBlockLength(context, rulesets) {
+    const content = formatUserInstructionBlock(context, rulesets);
+    if (content.length > USER_RULESET_LIMITS.maxInjectedBlockLength) {
+        throw new Error(`User instruction block exceeds ${USER_RULESET_LIMITS.maxInjectedBlockLength} characters.`);
+    }
+}
 export class UserInstructionStore {
     filePath;
     rulesets = [];
@@ -120,9 +143,11 @@ export class UserInstructionStore {
             updatedBy: input.updatedBy ?? input.createdBy,
             updatedAt: now,
         };
-        this.rulesets = existing
+        const nextRulesets = existing
             ? this.rulesets.map((item) => item.id === existing.id ? ruleset : item)
             : [...this.rulesets, ruleset];
+        this.validateEnabledBlockFor(ruleset, nextRulesets);
+        this.rulesets = nextRulesets;
         this.persist();
         return ruleset;
     }
@@ -162,6 +187,21 @@ export class UserInstructionStore {
             throw new Error(`Ruleset ${name} does not exist.`);
         return this.set({ ...existing, enabled, createdBy: existing.createdBy, updatedBy });
     }
+    validateEnabledBlockFor(changed, nextRulesets) {
+        if (!changed.enabled)
+            return;
+        const guildIds = new Set([changed.guildId]);
+        if (changed.scope === "global") {
+            guildIds.add(null);
+            for (const ruleset of nextRulesets) {
+                if (ruleset.targetUserId === changed.targetUserId && ruleset.guildId !== null)
+                    guildIds.add(ruleset.guildId);
+            }
+        }
+        for (const guildId of guildIds) {
+            validateUserInstructionBlockLength({ guildId, userId: changed.targetUserId }, applicableRulesets(nextRulesets, guildId, changed.targetUserId));
+        }
+    }
     persist() {
         const dir = path.dirname(this.filePath);
         fs.mkdirSync(dir, { recursive: true });
@@ -172,6 +212,13 @@ export class UserInstructionStore {
 }
 function compareRulesets(a, b) {
     return a.priority - b.priority || a.name.localeCompare(b.name);
+}
+function applicableRulesets(rulesets, guildId, targetUserId) {
+    return rulesets
+        .filter((ruleset) => ruleset.targetUserId === targetUserId
+        && ruleset.enabled
+        && (ruleset.scope === "global" || ruleset.guildId === guildId))
+        .sort(compareRulesets);
 }
 function isRuleset(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
