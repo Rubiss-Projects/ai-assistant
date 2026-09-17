@@ -1,6 +1,6 @@
 import { chunkForDiscord } from "../../sessionManager.js";
 import { discordTextOptions } from "../../common/discordResponse.js";
-import { generatedRulesetName, UserInstructionStore, validateInstructions, validateRulesetName, } from "../../common/userInstructionStore.js";
+import { canManageUserInstructions, generatedRulesetName, UserInstructionStore, validateInstructions, validateRulesetName, } from "../../common/userInstructionStore.js";
 import { previewUserInstructions } from "../../utils/userInstructions.js";
 const store = new UserInstructionStore();
 function targetUser(interaction) {
@@ -16,12 +16,17 @@ async function replyLong(interaction, content) {
     for (const chunk of chunks.slice(1))
         await interaction.followUp({ ephemeral: true, ...discordTextOptions(chunk) });
 }
-export async function handleRuleset(interaction, subject) {
+export async function handleRuleset(interaction, subject, access) {
     const sub = interaction.options.getSubcommand(true);
     const target = targetUser(interaction);
     const guildId = interaction.guildId ?? subject.guildId ?? null;
     try {
         await interaction.deferReply({ ephemeral: true });
+        const isAdmin = access.can(subject, "ruleset.manage", { guildId: guildId ?? undefined });
+        if (!canManageUserInstructions(subject, target.id, isAdmin)) {
+            await interaction.editReply("You do not have permission to manage user rulesets for that Discord user.");
+            return;
+        }
         if (sub === "list" || sub === "get") {
             const name = interaction.options.getString("name", false);
             const includeDisabled = interaction.options.getBoolean("include_disabled", false) ?? false;

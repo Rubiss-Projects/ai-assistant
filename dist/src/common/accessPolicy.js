@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
+import { configuredUserInstructionMode } from "./userInstructionStore.js";
 export const CAPABILITIES = [
     "chat.use", "ask.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
     "ruleset.manage", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
@@ -111,6 +112,11 @@ export function slashCommandRequiresAdmin(request) {
     return slashCommandCapability(request) !== "chat.use";
 }
 export function canInvokeSlashCommand(access, userId, request, subject = { userId }) {
+    if (request.commandName === "ruleset") {
+        if (configuredUserInstructionMode() === "off")
+            return false;
+        return access.can(subject, "ruleset.manage") || access.can(subject, "chat.use");
+    }
     const capability = slashCommandCapability(request);
     // Preserve legacy unknown-command classification; the dispatcher never executes unmapped commands.
     return capability ? access.can(subject, capability) : access.canUseAdminCommands(userId);

@@ -216,7 +216,7 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
         await handleMcp(cmd, sessions);
         break;
       case "ruleset":
-        await handleRuleset(cmd, subject);
+        await handleRuleset(cmd, subject, access);
         break;
       default:
         console.warn(`Unknown command: ${cmd.commandName}`);

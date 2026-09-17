@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AccessPolicy, AccessSubject } from "./accessPolicy.js";
 import {
+  canManageUserInstructions,
   generatedRulesetName,
   normalizeRulesetName,
   UserInstructionStore,
+  userInstructionFeaturesEnabled,
   validateInstructions,
   validateRulesetName,
   type UserInstructionRuleset,
@@ -75,14 +77,20 @@ export class RulesetTools {
     return operation;
   }
 
-  private canManage(): boolean {
+  private canManage(targetUserId: string): boolean {
     return Boolean(this.context.access && this.context.requester
-      && this.context.access.can(this.context.requester, "ruleset.manage", { guildId: this.context.guildId ?? undefined }));
+      && canManageUserInstructions(
+        this.context.requester,
+        targetUserId,
+        this.context.access.can(this.context.requester, "ruleset.manage", { guildId: this.context.guildId ?? undefined }),
+      ));
   }
 
-  private requireManage(): AccessSubject {
-    if (!this.context.requester || !this.context.access) throw new Error("Ruleset management is unavailable for this run.");
-    if (!this.canManage()) throw new Error("You do not have permission to manage user rulesets.");
+  private requireManage(targetUserId: string): AccessSubject {
+    if (!userInstructionFeaturesEnabled() || !this.context.requester || !this.context.access) {
+      throw new Error("Ruleset management is unavailable for this run.");
+    }
+    if (!this.canManage(targetUserId)) throw new Error("You do not have permission to manage user rulesets for that Discord user.");
     return this.context.requester;
   }
 
@@ -94,26 +102,29 @@ export class RulesetTools {
   }
 
   private list(args: Record<string, unknown>): unknown {
-    this.requireManage();
-    return { rulesets: this.store.listForUser(this.context.guildId ?? null, this.target(args), args.include_disabled === "true").map(toolRuleset) };
+    const target = this.target(args);
+    this.requireManage(target);
+    return { rulesets: this.store.listForUser(this.context.guildId ?? null, target, args.include_disabled === "true").map(toolRuleset) };
   }
 
   private get(args: Record<string, unknown>): unknown {
-    this.requireManage();
-    const ruleset = this.store.get(this.context.guildId ?? null, this.target(args), String(args.name));
+    const target = this.target(args);
+    this.requireManage(target);
+    const ruleset = this.store.get(this.context.guildId ?? null, target, String(args.name));
     if (!ruleset) throw new Error("Ruleset not found.");
     return { ruleset: toolRuleset(ruleset) };
   }
 
   private set(args: Record<string, unknown>): unknown {
-    const requester = this.requireManage();
+    const target = this.target(args);
+    const requester = this.requireManage(target);
     const instructions = validateInstructions(String(args.instructions));
-    const name = args.name ? validateRulesetName(String(args.name)) : this.availableName(this.target(args), generatedRulesetName(instructions));
+    const name = args.name ? validateRulesetName(String(args.name)) : this.availableName(target, generatedRulesetName(instructions));
     const priority = args.priority ? Number(args.priority) : 100;
     if (!Number.isSafeInteger(priority)) throw new Error("Priority must be an integer.");
     const ruleset = this.store.set({
       guildId: this.context.guildId ?? null,
-      targetUserId: this.target(args),
+      targetUserId: target,
       name,
       instructions,
       priority,
@@ -125,15 +136,16 @@ export class RulesetTools {
   }
 
   private append(args: Record<string, unknown>): unknown {
-    const requester = this.requireManage();
-    const ruleset = this.store.append(this.context.guildId ?? null, this.target(args), String(args.name), String(args.instructions), requester.userId);
+    const target = this.target(args);
+    const requester = this.requireManage(target);
+    const ruleset = this.store.append(this.context.guildId ?? null, target, String(args.name), String(args.instructions), requester.userId);
     console.info(`[ruleset] append guild=${this.context.guildId ?? "DM"} target=${ruleset.targetUserId} by=${requester.userId} name=${ruleset.name}`);
     return { status: "updated", ruleset: toolRuleset(ruleset) };
   }
 
   private delete(args: Record<string, unknown>): unknown {
-    const requester = this.requireManage();
     const target = this.target(args);
+    const requester = this.requireManage(target);
     const name = validateRulesetName(String(args.name));
     const deleted = this.store.delete(this.context.guildId ?? null, target, name);
     console.info(`[ruleset] delete guild=${this.context.guildId ?? "DM"} target=${target} by=${requester.userId} name=${name}`);
@@ -141,23 +153,24 @@ export class RulesetTools {
   }
 
   private clear(args: Record<string, unknown>): unknown {
-    const requester = this.requireManage();
     const target = this.target(args);
+    const requester = this.requireManage(target);
     const deleted = this.store.clear(this.context.guildId ?? null, target);
     console.info(`[ruleset] clear guild=${this.context.guildId ?? "DM"} target=${target} by=${requester.userId} count=${deleted}`);
     return { status: "cleared", deleted };
   }
 
   private enabled(args: Record<string, unknown>, enabled: boolean): unknown {
-    const requester = this.requireManage();
-    const ruleset = this.store.setEnabled(this.context.guildId ?? null, this.target(args), String(args.name), enabled, requester.userId);
+    const target = this.target(args);
+    const requester = this.requireManage(target);
+    const ruleset = this.store.setEnabled(this.context.guildId ?? null, target, String(args.name), enabled, requester.userId);
     console.info(`[ruleset] ${enabled ? "enable" : "disable"} guild=${this.context.guildId ?? "DM"} target=${ruleset.targetUserId} by=${requester.userId} name=${ruleset.name}`);
     return { status: enabled ? "enabled" : "disabled", ruleset: toolRuleset(ruleset) };
   }
 
   private preview(args: Record<string, unknown>): unknown {
-    this.requireManage();
     const userId = this.target(args);
+    this.requireManage(userId);
     return {
       preview: previewUserInstructions(
         { guildId: this.context.guildId ?? null, userId },

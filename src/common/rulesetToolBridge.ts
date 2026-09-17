@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { RulesetTools, createRulesetToolRun, type RulesetToolContext } from "./rulesetTools.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
+import { userInstructionFeaturesEnabled } from "./userInstructionStore.js";
 import type { SendMessageOptions } from "../providers/types.js";
 
 export interface RulesetMcpConfig {
@@ -100,7 +101,8 @@ export class RulesetToolSessions {
 }
 
 export function rulesetToolPrompt(prompt: string, runtime: RulesetTools): string {
-  return `${prompt}\n\n<ruleset-tools>The host exposes Discord user ruleset tools for this response. If an authorized admin asks you to add, update, delete, clear, enable, disable, list, get, or preview user-specific rules, call ruleset_tools with run_id ${JSON.stringify(runtime.id)}. Do not claim a ruleset was changed until the tool reports success.</ruleset-tools>`;
+  if (!userInstructionFeaturesEnabled()) return prompt;
+  return `${prompt}\n\n<ruleset-tools>The host exposes Discord user ruleset tools for this response. If the requester asks you to add, update, delete, clear, enable, disable, list, get, or preview user-specific rules, call ruleset_tools with run_id ${JSON.stringify(runtime.id)}. The host enforces the configured USER_INSTRUCTION_MODE authorization for the target user. Do not claim a ruleset was changed until the tool reports success.</ruleset-tools>`;
 }
 
 function rulesetMcpServerToml(config: RulesetMcpConfig): string {

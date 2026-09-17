@@ -10,6 +10,8 @@ import { providerSystemPromptForUser } from "../utils/userInstructions.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt, type RulesetMcpConfig } from "../common/rulesetToolBridge.js";
+import type { RulesetTools } from "../common/rulesetTools.js";
+import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -332,16 +334,21 @@ export class OpenCodeProvider implements Provider {
       const timeoutMs = providerTimeout("OPENCODE_TIMEOUT_MS", options);
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
       const workingDirectory = this.workingDir(userId);
-      const response = await this.rulesetTools.run(userId, options, async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
+      const runWithRulesetTools = <T>(action: (rulesetRuntime?: RulesetTools) => Promise<T>) =>
+        userInstructionFeaturesEnabled()
+          ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
+          : action();
+      const response = await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
         for (const file of staged.filter((file) => !file.binary)) args.push("--file", file.path);
-        args.push(rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun), rulesetRuntime));
+        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun);
+        args.push(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt);
         const stopProgress = startProgressUpdates(options);
         const { stdout, stderr, code } = await runOpenCode(args, {
           cwd: workingDirectory,
           timeoutMs,
           providerName: this.displayName,
           artifacts: await this.artifactTools.config(userId),
-          rulesets: await this.rulesetTools.config(userId),
+          rulesets: userInstructionFeaturesEnabled() ? await this.rulesetTools.config(userId) : undefined,
           systemPrompt,
           agentName,
         }).finally(stopProgress);

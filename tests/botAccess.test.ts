@@ -6,6 +6,16 @@ import {
   slashCommandRequiresAdmin,
 } from "../src/bot.js";
 
+function withUserInstructionMode<T>(mode: string, action: () => T): T {
+  const previous = process.env.USER_INSTRUCTION_MODE;
+  process.env.USER_INSTRUCTION_MODE = mode;
+  try { return action(); }
+  finally {
+    if (previous === undefined) delete process.env.USER_INSTRUCTION_MODE;
+    else process.env.USER_INSTRUCTION_MODE = previous;
+  }
+}
+
 test("empty access lists allow messages and slash commands", () => {
   const access = createAccessPolicy({});
 
@@ -104,4 +114,23 @@ test("allowed users get public actions while admins get every action", () => {
   assert.equal(canInvokeSlashCommand(access, "admin", { commandName: "model", subcommand: "set" }), true);
   assert.equal(canInvokeSlashCommand(access, "admin", { commandName: "ask" }), true);
   assert.equal(canInvokeSlashCommand(access, "stranger", { commandName: "ask" }), false);
+});
+
+test("ruleset slash commands are hidden when user instructions are off", () => {
+  const access = createAccessPolicy({
+    DISCORD_ALLOWED_USERS: "member",
+    DISCORD_ADMIN_USERS: "admin",
+  });
+  const request = { commandName: "ruleset", subcommand: "set" };
+
+  withUserInstructionMode("off", () => {
+    assert.equal(canInvokeSlashCommand(access, "admin", request), false);
+    assert.equal(canInvokeSlashCommand(access, "member", request), false);
+  });
+
+  withUserInstructionMode("admin_and_self", () => {
+    assert.equal(canInvokeSlashCommand(access, "admin", request), true);
+    assert.equal(canInvokeSlashCommand(access, "member", request), true);
+    assert.equal(canInvokeSlashCommand(access, "stranger", request), false);
+  });
 });

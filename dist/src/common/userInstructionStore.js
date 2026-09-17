@@ -16,6 +16,18 @@ export function configuredUserInstructionMode(env = process.env) {
         return value;
     throw new Error("USER_INSTRUCTION_MODE must be off, admin_only, admin_and_self, or unfiltered.");
 }
+export function userInstructionFeaturesEnabled(env = process.env) {
+    return configuredUserInstructionMode(env) !== "off";
+}
+export function canManageUserInstructions(requester, targetUserId, isAdmin, mode = configuredUserInstructionMode()) {
+    if (mode === "off")
+        return false;
+    if (mode === "unfiltered")
+        return Boolean(requester);
+    if (mode === "admin_only")
+        return isAdmin;
+    return isAdmin || Boolean(requester && requester.userId === targetUserId);
+}
 export function userInstructionRulesetsFile(env = process.env) {
     return env.USER_INSTRUCTION_RULESETS_FILE?.trim()
         || path.join(os.homedir(), ".config", "ai-assistant", "user-instructions.json");
