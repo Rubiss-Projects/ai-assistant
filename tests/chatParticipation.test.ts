@@ -196,3 +196,29 @@ test("stop does not wait on an active answer or start another queued explicit an
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(replies, ["1"]);
 });
+
+test("slash-only traffic evicts completed idle threads while retaining active threads", async t => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const coordinator = new ChatParticipation<ConversationMessage>({
+    id: value => value.id, context: async values => values,
+    classify: async () => '{"action":"ignore"}',
+    reply: async () => {}, react: async () => {}, onError: () => {},
+  });
+  let finish!: () => void;
+  const blocked = new Promise<void>(resolve => { finish = resolve; });
+  try {
+    await coordinator.runExplicit("old", async () => {});
+    await new Promise(resolve => setImmediate(resolve));
+    const active = coordinator.runExplicit("active", () => blocked);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    now += 60_001;
+    await coordinator.runExplicit("new", async () => {});
+    const threads = (coordinator as any).threads as Map<string, unknown>;
+    assert.equal(threads.has("old"), false);
+    assert.equal(threads.has("active"), true);
+    assert.equal(threads.has("new"), true);
+    finish();
+    await active;
+  } finally { finish(); await coordinator.stop(); }
+});

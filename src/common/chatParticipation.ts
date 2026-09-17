@@ -84,12 +84,16 @@ export class ChatParticipation<T> {
     debounceMs: 2_000, maxWaitMs: 8_000, cooldownMs: 20_000,
   }) {}
 
-  enqueue(key: string, value: T, explicit: boolean): void {
-    if (this.stopped) return;
-    const now = Date.now();
+  private evictIdle(now: number): void {
     for (const [id, state] of this.threads) {
       if (!state.running && !state.timer && !state.pending.length && !state.jobs.length && now - state.touched > 60_000) this.threads.delete(id);
     }
+  }
+
+  enqueue(key: string, value: T, explicit: boolean): void {
+    if (this.stopped) return;
+    const now = Date.now();
+    this.evictIdle(now);
     let state = this.threads.get(key);
     if (!state) {
       state = { pending: [], jobs: [], firstAt: now, lastAt: now, version: 0, lastParticipation: -Infinity, lastReaction: -Infinity, touched: now };
@@ -112,12 +116,14 @@ export class ChatParticipation<T> {
   /** Slash commands share the same queue and supersede ambient decisions. */
   runExplicit(key: string, run: () => Promise<void>): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("Participation coordinator stopped."));
+    const now = Date.now();
+    this.evictIdle(now);
     let state = this.threads.get(key);
     if (!state) {
-      const now = Date.now();
       state = { pending: [], jobs: [], firstAt: now, lastAt: now, version: 0, lastParticipation: -Infinity, lastReaction: -Infinity, touched: now };
       this.threads.set(key, state);
     }
+    state.touched = now;
     state.version++;
     state.pending = state.pending.filter(item => item.explicit);
     const result = new Promise<void>((resolve, reject) => { state!.jobs.push({ run, resolve, reject }); });
