@@ -75,16 +75,18 @@ for (const mode of ["ask", "chat DM", "chat thread", "chat new thread"]) {
     process.env.DISCORD_SUPPRESS_EMBEDS = "true";
     const { sent, message } = deliveryMock();
     const thread = { id: "thread", send: message.reply, toString: () => "<#thread>" };
+    let loading = false;
     const interaction = {
       user: { id: "user", send: async () => message }, client: { user: { id: "bot" } }, channelId: "channel",
       channel: { isDMBased: () => mode === "chat DM", isThread: () => mode === "chat thread" },
       options: { getString: (key: string) => key === "workspace" ? null : "Tell me about these sites", getAttachment: () => null },
-      deferReply: async () => {}, fetchReply: async () => ({ ...message, startThread: async () => thread }),
-      editReply: async () => {},
+      deferReply: async () => { loading = true; }, fetchReply: async () => ({ ...message, startThread: async () => thread }),
+      editReply: async () => { loading = false; },
     };
     const sessions = { sendMessage: async () => response, resetSession: async () => {}, activeProviderDisplayName: () => "Codex" };
     if (mode === "ask") await handleAsk(interaction as never, sessions as never);
     else await handleChat(interaction as never, sessions as never);
+    if (mode !== "ask") assert.equal(loading, false, "clear Discord loading through the interaction webhook before durable message edits");
     assertDelivered(sent);
   });
 }

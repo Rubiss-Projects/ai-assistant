@@ -24,6 +24,8 @@ export async function handleChat(
   if (interaction.channel?.isDMBased()) {
     try {
       await interaction.deferReply();
+      // Clear Discord's Loading flag via the interaction webhook before durable bot-token edits.
+      await interaction.editReply("⏳ Preparing your conversation…");
       durableReply = await interaction.fetchReply();
       // Resolve after defer to avoid hitting Discord's 3s interaction window
       const prepared = await prepareSlashAttachments(
@@ -76,6 +78,8 @@ export async function handleChat(
   // If already inside a thread, reuse it instead of trying to nest threads.
   try {
     await interaction.deferReply();
+    // Clear Discord's Loading flag while the interaction token is fresh.
+    await interaction.editReply("⏳ Preparing your conversation…");
     durableReply = await interaction.fetchReply();
     const currentSessionKey = interaction.channel?.isThread()
       ? interactionSessionKey(interaction)

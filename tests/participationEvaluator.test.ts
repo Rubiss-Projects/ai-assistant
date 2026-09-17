@@ -15,6 +15,7 @@ function response(answers: unknown) { return async () => new Response(JSON.strin
 
 test("evaluator settings default to provider and reject invalid configuration", () => {
   assert.equal(config.evaluator, "provider");
+  assert.equal(config.jevThreshold, 0.7);
   assert.equal(config.effort, "none");
   assert.throws(() => participationEvaluatorConfig({ CHAT_PARTICIPATION_EVALUATOR: "jev" }), /TYPESAFE_API_KEY/);
   assert.throws(() => participationEvaluatorConfig({ CHAT_PARTICIPATION_EVALUATOR: "unknown" }));
@@ -40,7 +41,7 @@ test("Jev uses documented typed choices and selects a confident direct request",
 
 test("Jev stays silent on uncertain, missing, or unexpected answers", async () => {
   for (const answer of [
-    { type: "choice", choice: "direct_reply", probabilities: { direct_reply: 0.7 } },
+    { type: "choice", choice: "direct_reply", probabilities: { direct_reply: 0.69 } },
     { type: "choice", choice: "direct_reply", confidence: 0.99 },
     { type: "choice", choice: "reaction_99", probabilities: { reaction_99: 1 } },
     { type: "choice", choice: "direct_reply", probabilities: { direct_reply: 2 } },
@@ -167,4 +168,11 @@ test("Copilot startup timeout cleans up a late classification session", async ()
   resolve({ sessionId: "late", disconnect: async () => {} });
   await new Promise(done => setImmediate(done));
   assert.equal(removed, true);
+});
+
+test("Jev accepts a clear follow-up below the former 80 percent cutoff", async () => {
+  const result = await evaluateWithJev(prompt, config, "test", response({ message_0: {
+    type: "choice", choice: "direct_reply", probabilities: { direct_reply: 0.76, unsolicited_reply: 0.02, ignore: 0.22 },
+  } }) as typeof fetch);
+  assert.deepEqual(JSON.parse(result), { action: "reply", messageId: "1", directed: true });
 });

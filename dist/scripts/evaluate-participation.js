@@ -15,7 +15,7 @@ const durations = [];
 try {
     for (const scenario of participationScenarios) {
         const candidateIds = scenario.candidateIds ?? [scenario.messages.at(-1).id];
-        const prompt = JSON.stringify({ candidateIds, replyCooldown: false, reactionCooldown: false, messages: scenario.messages });
+        const prompt = JSON.stringify({ assistant: { id: "bot", names: ["Rook", "AI Assistant"] }, candidateIds, replyCooldown: false, reactionCooldown: false, messages: scenario.messages });
         const start = performance.now();
         let raw;
         try {
