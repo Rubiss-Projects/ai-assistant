@@ -49,14 +49,17 @@ export class ChatParticipation {
         this.callbacks = callbacks;
         this.options = options;
     }
-    enqueue(key, value, explicit) {
-        if (this.stopped)
-            return;
-        const now = Date.now();
+    evictIdle(now) {
         for (const [id, state] of this.threads) {
             if (!state.running && !state.timer && !state.pending.length && !state.jobs.length && now - state.touched > 60_000)
                 this.threads.delete(id);
         }
+    }
+    enqueue(key, value, explicit) {
+        if (this.stopped)
+            return;
+        const now = Date.now();
+        this.evictIdle(now);
         let state = this.threads.get(key);
         if (!state) {
             state = { pending: [], jobs: [], firstAt: now, lastAt: now, version: 0, lastParticipation: -Infinity, lastReaction: -Infinity, touched: now };
@@ -82,12 +85,14 @@ export class ChatParticipation {
     runExplicit(key, run) {
         if (this.stopped)
             return Promise.reject(new Error("Participation coordinator stopped."));
+        const now = Date.now();
+        this.evictIdle(now);
         let state = this.threads.get(key);
         if (!state) {
-            const now = Date.now();
             state = { pending: [], jobs: [], firstAt: now, lastAt: now, version: 0, lastParticipation: -Infinity, lastReaction: -Infinity, touched: now };
             this.threads.set(key, state);
         }
+        state.touched = now;
         state.version++;
         state.pending = state.pending.filter(item => item.explicit);
         const result = new Promise((resolve, reject) => { state.jobs.push({ run, resolve, reject }); });
