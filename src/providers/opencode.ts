@@ -1,5 +1,7 @@
 import { spawn } from "child_process";
 import fs from "fs";
+import os from "node:os";
+import { runParticipationProcess } from "./participationProcess.js";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
@@ -145,6 +147,18 @@ export function openCodeRequestPrompt(prompt: string): string {
     : withSystemPrompt(prompt);
 }
 
+/** Keep classification on the configured connection, preferring a small model. */
+export function selectOpenCodeParticipationModel(models: string[], current?: string): string {
+  const connection = current?.split("/")[0];
+  const candidates = connection ? models.filter(model => model.startsWith(`${connection}/`)) : models;
+  for (const suffix of ["/gpt-5.6-luna", "/claude-haiku-4.5", "/gpt-4.1-mini"]) {
+    const match = candidates.find(model => model.endsWith(suffix));
+    if (match) return match;
+  }
+  if (current) return current;
+  throw new Error("Set CHAT_PARTICIPATION_MODEL to a small model available in OpenCode.");
+}
+
 /**
  * Runs the `opencode` CLI non-interactively and returns its stdout.
  * Uses spawn (no shell) so prompts/arguments are never interpreted by a shell.
@@ -256,6 +270,7 @@ export class OpenCodeProvider implements Provider {
   private workingDirOverrides: Map<string, string> = new Map();
   private modelOverrides: Map<string, string> = new Map();
   private messageQueues: Map<string, Promise<unknown>> = new Map();
+  private participationModels?: string[];
 
   private configuredModel(): string | undefined {
     return process.env.OPENCODE_MODEL?.trim() || undefined;
@@ -314,6 +329,52 @@ export class OpenCodeProvider implements Provider {
     const history = this.histories.get(key) ?? [];
     history.push(event);
     this.histories.set(key, history.slice(-100));
+  }
+
+  async evaluateParticipation(prompt: string, options: { model?: string; connectionModel?: string; effort: "none" | "low"; timeoutMs: number }): Promise<string> {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ai-assistant-classifier-"));
+    const started = Date.now();
+    try {
+      // Isolate OpenCode's session database while preserving the operator's login.
+      const dataDirectory = path.join(directory, "data");
+      const authDirectory = path.join(dataDirectory, "opencode");
+      fs.mkdirSync(authDirectory, { recursive: true, mode: 0o700 });
+      const authFile = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "opencode", "auth.json");
+      if (fs.existsSync(authFile)) {
+        const target = path.join(authDirectory, "auth.json");
+        fs.copyFileSync(authFile, target);
+        fs.chmodSync(target, 0o600);
+      }
+      const config = {
+        autoupdate: false, share: "disabled", plugin: [], mcp: {}, permission: { "*": "deny" },
+        agent: { build: { tools: { "*": false }, permission: { "*": "deny" } } },
+      };
+      const env = {
+        ...providerChildEnvironment("opencode", { ...process.env, AI_ASSISTANT_SECURITY_MODE: "shared" }),
+        XDG_DATA_HOME: dataDirectory, XDG_STATE_HOME: path.join(directory, "state"),
+        OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+      };
+      if (!options.model && !this.participationModels) {
+        const listed = await runParticipationProcess(openCodeBin(), ["models", "--pure"], {
+          cwd: directory, timeoutMs: options.timeoutMs, env,
+        });
+        this.participationModels = listed.split("\n").map(line => line.trim()).filter(line => /^[^\s/]+\/[^\s]+$/.test(line));
+      }
+      const model = options.model ?? selectOpenCodeParticipationModel(this.participationModels!, options.connectionModel ?? this.configuredModel());
+      if (model.endsWith("/gpt-5.6-luna")) {
+        const slash = model.indexOf("/");
+        env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config,
+          provider: { [model.slice(0, slash)]: { models: { [model.slice(slash + 1)]: { options: { reasoningEffort: options.effort } } } } },
+        });
+      }
+      const remaining = options.timeoutMs - (Date.now() - started);
+      if (remaining <= 0) throw new Error("Participation evaluator timed out during model discovery.");
+      const stdout = await runParticipationProcess(openCodeBin(), [
+        "run", "--format", "json", "--pure", "--auto", "--model", model, prompt,
+      ], { cwd: directory, timeoutMs: remaining, env });
+      return finalTextFromEvents(parseEvents(stdout));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   }
 
   async getStatus(): Promise<StatusInfo> {

@@ -2,6 +2,7 @@ import { chunkForDiscord } from "./common/chunkForDiscord.js";
 import { ProviderStore } from "./common/providerStore.js";
 import { createProvider, isValidProviderName } from "./providers/index.js";
 import { PROVIDERS, normalizeProviderName, isUnsupported, RunTimeoutError, UnsupportedError } from "./providers/types.js";
+import { participationEvaluatorConfig, evaluateWithJev, providerParticipationPrompt } from "./common/participationEvaluator.js";
 import { randomUUID } from "node:crypto";
 export { chunkForDiscord, isUnsupported, RunTimeoutError, UnsupportedError };
 /**
@@ -117,6 +118,18 @@ export class SessionManager {
     // ── Chat & session operations (delegated to the active provider for key) ────
     sendMessage(userId, prompt, imagePaths, options) {
         return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
+    }
+    async evaluateParticipation(key, prompt) {
+        const config = participationEvaluatorConfig();
+        if (config.evaluator === "jev")
+            return evaluateWithJev(prompt, config);
+        const provider = this.providerFor(key);
+        if (!provider.evaluateParticipation)
+            throw new UnsupportedError(provider.displayName, "participation evaluation");
+        return provider.evaluateParticipation(providerParticipationPrompt(prompt), {
+            ...config,
+            ...(provider.name === "opencode" ? { connectionModel: await provider.getCurrentModel(key) } : {}),
+        });
     }
     /** Run an internal one-shot inference without adding it to the user's conversation. */
     async runEphemeral(key, prompt) {

@@ -137,7 +137,30 @@ Use `/chat <message>` for an ongoing conversation. In unrestricted mode, `/ask <
 | Existing thread | Continues that thread's conversation. |
 | DM | Unrestricted mode only: responds inline in your persistent DM session, if the command is available in DMs. |
 
-You can also mention the bot in a visible channel, or send a message without a mention in a channel listed in `DISCORD_FREE_CHANNELS`. Bot-owned chat threads respond without a mention. Ordinary channel conversations are isolated by user and channel; a bot-owned thread shares one session among its participants.
+You can also mention the bot in a visible channel, or send a message without a mention in a channel listed in `DISCORD_FREE_CHANNELS`. Bot-owned chat threads can respond without a mention, using the participation policy below. Ordinary channel conversations are isolated by user and channel; a bot-owned thread shares one session among its participants.
+
+In shared mode, bot-owned `/chat` threads default to **smart participation**: the bot chooses whether to reply, add one reaction, or stay silent. It favors silence during human-to-human conversation and acknowledgments. Short follow-ups such as “why?” remain eligible. Explicit `@bot` mentions and `/chat` always request an answer. Reply notifications alone are not treated as explicit mentions.
+
+Ordinary messages are grouped after two seconds of quiet (up to eight seconds before starting a decision). Each thread runs one decision or response at a time. New messages invalidate unfinished decisions, and a 20-second cooldown limits unsolicited replies and reactions. Skipped messages remain available through recent Discord history, with author and reply metadata and the existing access filters. History is bounded to 50 messages / 24,000 content characters; it is not a permanent transcript. Reactions need Discord's Add Reactions permission; a failed reaction does not generate a text reply. Classification failures stay silent, while explicit requests continue to work.
+
+Set `CHAT_PARTICIPATION_MODE=always` to answer every message or `mentions-only` to require an explicit mention or slash command. Unrestricted/dedicated deployments default to `always`. These settings affect bot-owned threads; ordinary mentions and `DISCORD_FREE_CHANNELS` retain their behavior. Restart after changing configuration.
+
+The default evaluator uses the thread's active provider and existing login in a separate classification session. It prefers Luna, independently of the main chat model, and can be changed with `CHAT_PARTICIPATION_MODEL` to a model your account supports. Copilot disables tools and configuration discovery. Codex uses an ephemeral, isolated, read-only run with shell, web search, MCP, apps, hooks and plugins disabled. OpenCode selects a small model on the configured connection (preferring Luna, then Haiku or GPT-4.1 Mini, then the configured model) and uses an isolated pure run with tools and permissions denied. Its temporary session database is deleted afterward. No artifact tools are attached to classification runs. Provider startup overhead still contributes to latency.
+
+[Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) is an optional decision evaluator, not a replacement for the model writing answers. Its [typed Choice API](https://docs.typesafe.ai/primitives/choice) supplies a probability for each action. To use it, put this in your gitignored `.env`:
+
+```dotenv
+CHAT_PARTICIPATION_EVALUATOR=jev
+TYPESAFE_API_KEY=your_typesafe_key
+# Optional; otherwise defaults to jev-latest:
+# CHAT_PARTICIPATION_MODEL=jev-latest
+CHAT_PARTICIPATION_JEV_THRESHOLD=0.8
+```
+
+Only Jev needs a TypeSafe key. The key stays with the host evaluator; shared provider environments do not receive it. Selecting Jev sends the bounded, permission-filtered conversation excerpt to TypeSafe. The two reply alternatives are combined when applying the action threshold; bypassing cooldown still requires a confident direct request. Low-probability or malformed results produce no Discord activity; there is no automatic fallback to a different service.
+
+Run `npx tsx scripts/evaluate-participation.ts jev` for a live check against synthetic multi-user conversations, or replace `jev` with `codex`, `copilot`, or `opencode` to test an existing provider login. This uses real inference, reports decision accuracy and observed latency, and never connects to Discord. The small fixture set is a smoke test, not a general accuracy benchmark.
+
 
 Mentions and free-channel messages include nearby conversation. A reply mentioning the bot also includes the referenced message and its surroundings.
 
@@ -458,6 +481,13 @@ Defaults below describe behavior when a setting is absent, with template, wizard
 | `AI_ASSISTANT_SECURITY_MODE` | `unrestricted` if absent; template/wizard: `shared` | `shared` isolates credentials and scopes provider tools; `unrestricted` gives providers the operator's inherited capabilities. Invalid values stop startup. See [Provider security](#provider-security). |
 | `AI_ASSISTANT_ENABLE_SITES` | `false`; accepts `true`, `false` | In shared mode, enables the Codex Sites connector and scoped source-push network access to create, update, and publish through the logged-in ChatGPT account. Other apps remain restricted and destructive connector actions remain blocked. |
 | `AI_ASSISTANT_WORKSPACE_ROOT` | Working directory in shared mode; wizard: `<config dir>/workspaces`; Compose: `/data/workspaces` | Sets the enforced root for provider file access in shared mode. Ignored in unrestricted mode. Compose explicitly sets this value, so changing it there requires editing `compose.yaml`. |
+| `CHAT_PARTICIPATION_MODE` | Shared: `smart`; unrestricted: `always` | Bot-owned thread behavior: `smart`, `always`, or `mentions-only`. |
+| `CHAT_PARTICIPATION_EVALUATOR` | `provider` | Use the thread's provider/login, or select `jev`. |
+| `CHAT_PARTICIPATION_MODEL` | Luna for Codex/Copilot; available small model for OpenCode; `jev-latest` for Jev | Separate evaluator model; does not change the main conversation model. |
+| `CHAT_PARTICIPATION_REASONING` | `none` | `none` or `low`; Copilot uses `low`. Ignored by Jev. |
+| `CHAT_PARTICIPATION_TIMEOUT_MS` | `15000` | Evaluator timeout, 100–60000 ms. |
+| `CHAT_PARTICIPATION_JEV_THRESHOLD` | `0.8` | Minimum action probability, 0.5–1. Uncertain results stay silent. |
+| `TYPESAFE_API_KEY` | Unset | Required only when the participation evaluator is `jev`. |
 | `REGISTER_COMMANDS_ON_START` | `true` in the container entrypoint | Registers guild slash commands before the container starts the bot. Set `false` to skip; only the exact value `true` enables registration. Has no effect on native startup. |
 
 For a short custom prompt:

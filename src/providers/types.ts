@@ -139,6 +139,8 @@ export interface Provider {
   readonly displayName: string;
 
   sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<AgentResponse>;
+  /** Isolated classification: no conversation state or artifact tools. */
+  evaluateParticipation?(prompt: string, options: { model?: string; connectionModel?: string; effort: "none" | "low"; timeoutMs: number }): Promise<string>;
   getStatus(): Promise<StatusInfo>;
   getHistory(userId: string): Promise<HistoryEvent[] | null>;
   listModels(): Promise<ModelInfo[]>;

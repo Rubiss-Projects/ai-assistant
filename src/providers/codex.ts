@@ -1,4 +1,5 @@
 import fs from "fs";
+import { runParticipationProcess } from "./participationProcess.js";
 import { createRequire } from "node:module";
 import os from "os";
 import path from "path";
@@ -645,6 +646,37 @@ export class CodexProvider implements Provider {
       .map((item) => item.text)
       .filter(Boolean);
     return agentMessages.at(-1) ?? null;
+  }
+
+  async evaluateParticipation(prompt: string, options: { model?: string; effort: "none" | "low"; timeoutMs: number }): Promise<string> {
+    const directory = createCodexSessionTemporaryDirectory();
+    try {
+      const stdout = await runParticipationProcess(process.env.CODEX_EXECUTABLE_PATH?.trim() || "codex", [
+        "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
+        "--sandbox", "read-only", "--json", "--model", options.model ?? "gpt-5.6-luna",
+        "-c", `model_reasoning_effort=${JSON.stringify(options.effort)}`,
+        "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
+        "-c", "mcp_servers={}", "-c", "project_doc_max_bytes=0",
+        ...["shell_tool", "unified_exec", "apps", "hooks", "plugins", "remote_plugin", "memories", "multi_agent",
+          "computer_use", "browser_use", "browser_use_external", "image_generation", "view_image", "request_permissions_tool", "shell_snapshot",
+          "skill_mcp_dependency_install", "workspace_dependencies", "code_mode", "goals"].flatMap(feature => ["-c", `features.${feature}=false`]),
+        "-c", 'developer_instructions="You are a classification function. Use no tools. Return only decision JSON."',
+        "-",
+      ], { cwd: directory, env: {
+        ...providerChildEnvironment("codex", { ...process.env, AI_ASSISTANT_SECURITY_MODE: "shared" }),
+        ...(process.env.OPENAI_API_KEY ? { CODEX_API_KEY: process.env.OPENAI_API_KEY } : {}),
+      }, timeoutMs: options.timeoutMs, stdin: prompt });
+      let result = "";
+      for (const line of stdout.split("\n")) {
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "item.completed" && event.item?.type === "agent_message") result = event.item.text;
+        } catch { /* Non-JSON diagnostic line. */ }
+      }
+      return result;
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   }
 
   async getStatus(): Promise<StatusInfo> {

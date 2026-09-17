@@ -16,6 +16,9 @@ import { handleFleet } from "./handlers/slash/fleet.js";
 import { handlePlan } from "./handlers/slash/plan.js";
 import { handleWorkspace } from "./handlers/slash/workspace.js";
 import { handleMcp } from "./handlers/slash/mcp.js";
+import { ChatParticipation, participationMode } from "./common/chatParticipation.js";
+import { participationEvaluatorConfig } from "./common/participationEvaluator.js";
+import { explicitlyMentionsBot, participationContext, participationReplyContext } from "./common/discordParticipation.js";
 import { handleMention } from "./handlers/mention.js";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +34,9 @@ export function createBot(sessions) {
     // Computed here so dotenv.config() has already run in index.ts.
     const access = createAccessPolicy();
     const sharedMode = sharedSecurityEnabled();
+    const chatParticipationMode = participationMode(sharedMode);
+    if (chatParticipationMode === "smart")
+        participationEvaluatorConfig();
     // Channel ID(s) where the bot responds to every message without needing a mention
     const freeChannels = new Set((process.env.DISCORD_FREE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
     const client = new Client({
@@ -41,6 +47,21 @@ export function createBot(sessions) {
             GatewayIntentBits.DirectMessages,
         ],
         partials: [Partials.Channel], // Required for DM support
+    });
+    const participation = new ChatParticipation({
+        id: message => message.id,
+        context: messages => participationContext(messages, client.user.id, contextAuthorPolicy(access, client, messages[0].guildId)),
+        classify: (prompt, target) => sessions.evaluateParticipation(target.channelId, prompt),
+        reply: async (target, context, requests) => {
+            const subject = await discordSubject(client, target.author.id, target.guildId).catch(() => undefined);
+            if (!subject || !access.canMessage(target.author.id, subject))
+                return;
+            await handleMention(target, client, sessions, target.channelId, contextAuthorPolicy(access, client, target.guildId), { context: participationReplyContext(context, requests.map(message => message.id)), requests });
+        },
+        react: async (target, emoji) => {
+            await target.react(emoji).catch(() => { });
+        },
+        onError: () => console.warn("[participation] Evaluation failed; staying silent. Check evaluator access, model and timeout settings."),
     });
     const enabled = process.env.SCHEDULES_ENABLED?.trim() || "false";
     if (!["true", "false"].includes(enabled))
@@ -98,7 +119,15 @@ export function createBot(sessions) {
                 await handleAsk(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId));
                 break;
             case "chat":
-                await handleChat(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId));
+                await handleChat(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId), chatParticipationMode === "always" ? undefined : (key, run) => participation.runExplicit(key, run), chatParticipationMode === "always" ? undefined : async (source) => {
+                    if (!source.channel.isThread() || source.channel.ownerId !== client.user?.id)
+                        return "";
+                    const context = await participationContext([source], client.user.id, contextAuthorPolicy(access, client, cmd.guildId), {
+                        authorId: cmd.user.id, authorName: cmd.user.username,
+                        content: cmd.options.getString("message", true),
+                    });
+                    return participationReplyContext(context, [source.id]);
+                });
                 break;
             case "reset":
                 await handleReset(cmd, sessions);
@@ -164,12 +193,19 @@ export function createBot(sessions) {
         const subject = await discordSubject(client, message.author.id, message.guildId).catch(() => undefined);
         if (!subject || !access.canMessage(message.author.id, subject))
             return;
-        // Bot-owned threads: respond to every message, session keyed by thread ID
+        // Shared conversations decide before enrichment, typing indicators or agent execution.
+        if (ownedThread && chatParticipationMode !== "always") {
+            const explicit = explicitlyMentionsBot(message, client.user.id);
+            if (chatParticipationMode === "mentions-only" && !explicit)
+                return;
+            participation.enqueue(message.channelId, message, explicit);
+            return;
+        }
         if (ownedThread) {
             await handleMention(message, client, sessions, message.channelId, contextAuthorPolicy(access, client, message.guildId));
             return;
         }
         await handleMention(message, client, sessions, undefined, contextAuthorPolicy(access, client, message.guildId));
     });
-    return Object.assign(client, { stopScheduler: async () => { await scheduler?.stop(); } });
+    return Object.assign(client, { stopScheduler: async () => { await Promise.all([scheduler?.stop(), participation.stop()]); } });
 }
