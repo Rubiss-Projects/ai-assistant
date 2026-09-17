@@ -2,13 +2,14 @@ import { ChatInputCommandInteraction } from "discord.js";
 import { chunkForDiscord } from "../../sessionManager.js";
 import { discordTextOptions } from "../../common/discordResponse.js";
 import {
+  canManageUserInstructions,
   generatedRulesetName,
   UserInstructionStore,
   validateInstructions,
   validateRulesetName,
 } from "../../common/userInstructionStore.js";
 import { previewUserInstructions } from "../../utils/userInstructions.js";
-import type { AccessSubject } from "../../common/accessPolicy.js";
+import type { AccessPolicy, AccessSubject } from "../../common/accessPolicy.js";
 
 const store = new UserInstructionStore();
 
@@ -27,12 +28,19 @@ async function replyLong(interaction: ChatInputCommandInteraction, content: stri
 export async function handleRuleset(
   interaction: ChatInputCommandInteraction,
   subject: AccessSubject,
+  access: AccessPolicy,
 ): Promise<void> {
   const sub = interaction.options.getSubcommand(true);
   const target = targetUser(interaction);
   const guildId = interaction.guildId ?? subject.guildId ?? null;
   try {
     await interaction.deferReply({ ephemeral: true });
+    const isAdmin = access.can(subject, "ruleset.manage", { guildId: guildId ?? undefined });
+    if (!canManageUserInstructions(subject, target.id, isAdmin)) {
+      await interaction.editReply("You do not have permission to manage user rulesets for that Discord user.");
+      return;
+    }
+
     if (sub === "list" || sub === "get") {
       const name = interaction.options.getString("name", false);
       const includeDisabled = interaction.options.getBoolean("include_disabled", false) ?? false;

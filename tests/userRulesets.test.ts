@@ -6,7 +6,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createAccessPolicy } from "../src/common/accessPolicy.js";
-import { RulesetToolSessions } from "../src/common/rulesetToolBridge.js";
+import { RulesetToolSessions, rulesetToolPrompt } from "../src/common/rulesetToolBridge.js";
 import { RulesetTools, createRulesetToolRun } from "../src/common/rulesetTools.js";
 import { USER_RULESET_LIMITS, UserInstructionStore } from "../src/common/userInstructionStore.js";
 import { applyUserInstructions, previewUserInstructions, providerSystemPromptForUser } from "../src/utils/userInstructions.js";
@@ -20,6 +20,16 @@ function withMode<T>(mode: string, action: () => T): T {
   const previous = process.env.USER_INSTRUCTION_MODE;
   process.env.USER_INSTRUCTION_MODE = mode;
   try { return action(); }
+  finally {
+    if (previous === undefined) delete process.env.USER_INSTRUCTION_MODE;
+    else process.env.USER_INSTRUCTION_MODE = previous;
+  }
+}
+
+async function withModeAsync<T>(mode: string, action: () => Promise<T>): Promise<T> {
+  const previous = process.env.USER_INSTRUCTION_MODE;
+  process.env.USER_INSTRUCTION_MODE = mode;
+  try { return await action(); }
   finally {
     if (previous === undefined) delete process.env.USER_INSTRUCTION_MODE;
     else process.env.USER_INSTRUCTION_MODE = previous;
@@ -111,7 +121,7 @@ test("providerSystemPromptForUser composes enabled rules without rewriting user 
   assert.doesNotMatch(systemPrompt, /User message:\nhello/);
 });
 
-test("RulesetTools enforce host permissions and mutate the store for admins", async () => {
+test("RulesetTools enforce host permissions and mutate the store for admins", async () => withModeAsync("admin_only", async () => {
   const file = tempFile();
   const store = new UserInstructionStore(file);
   const access = createAccessPolicy({ DISCORD_ADMIN_USERS: "admin" });
@@ -133,6 +143,63 @@ test("RulesetTools enforce host permissions and mutate the store for admins", as
     adminTools.call("list_user_rulesets", { run_id: adminRun.id, user: "123" }),
     /expired|aborted|inactive/i,
   );
+}));
+
+test("RulesetTools honor USER_INSTRUCTION_MODE management policies", async () => {
+  const access = createAccessPolicy({ DISCORD_ADMIN_USERS: "admin" });
+
+  await withModeAsync("off", async () => {
+    const store = new UserInstructionStore(tempFile());
+    const run = createRulesetToolRun();
+    const tools = new RulesetTools(run, { access, requester: { userId: "111", guildId: "guild-1" }, guildId: "guild-1" }, store);
+    await assert.rejects(
+      tools.call("set_user_ruleset", { run_id: run.id, user: "222", name: "off-rule", instructions: "No-op." }),
+      /unavailable/,
+    );
+    assert.equal(rulesetToolPrompt("hello", tools), "hello");
+  });
+
+  await withModeAsync("admin_only", async () => {
+    const store = new UserInstructionStore(tempFile());
+    const memberRun = createRulesetToolRun();
+    const memberTools = new RulesetTools(memberRun, { access, requester: { userId: "111", guildId: "guild-1" }, guildId: "guild-1" }, store);
+    await assert.rejects(
+      memberTools.call("set_user_ruleset", { run_id: memberRun.id, user: "111", name: "self-rule", instructions: "Self." }),
+      /permission/,
+    );
+
+    const adminRun = createRulesetToolRun();
+    const adminTools = new RulesetTools(adminRun, { access, requester: { userId: "admin", guildId: "guild-1" }, guildId: "guild-1" }, store);
+    await adminTools.call("set_user_ruleset", { run_id: adminRun.id, user: "222", name: "admin-rule", instructions: "Admin." });
+    assert.equal(store.listForUser("guild-1", "222").length, 1);
+  });
+
+  await withModeAsync("admin_and_self", async () => {
+    const store = new UserInstructionStore(tempFile());
+    const memberRun = createRulesetToolRun();
+    const memberTools = new RulesetTools(memberRun, { access, requester: { userId: "111", guildId: "guild-1" }, guildId: "guild-1" }, store);
+    await memberTools.call("set_user_ruleset", { run_id: memberRun.id, user: "111", name: "self-rule", instructions: "Self." });
+    await assert.rejects(
+      memberTools.call("set_user_ruleset", { run_id: memberRun.id, user: "222", name: "ben-rule", instructions: "Ben." }),
+      /permission/,
+    );
+
+    const adminRun = createRulesetToolRun();
+    const adminTools = new RulesetTools(adminRun, { access, requester: { userId: "admin", guildId: "guild-1" }, guildId: "guild-1" }, store);
+    await adminTools.call("set_user_ruleset", { run_id: adminRun.id, user: "111", name: "admin-self-rule", instructions: "Admin for Brian." });
+    assert.deepEqual(
+      store.listForUser("guild-1", "111").map((ruleset) => ruleset.name).sort(),
+      ["admin-self-rule", "self-rule"],
+    );
+  });
+
+  await withModeAsync("unfiltered", async () => {
+    const store = new UserInstructionStore(tempFile());
+    const brianRun = createRulesetToolRun();
+    const brianTools = new RulesetTools(brianRun, { access, requester: { userId: "111", guildId: "guild-1" }, guildId: "guild-1" }, store);
+    await brianTools.call("set_user_ruleset", { run_id: brianRun.id, user: "222", name: "brian-for-ben", instructions: "Brian can set Ben." });
+    assert.equal(store.listForUser("guild-1", "222")[0].createdBy, "111");
+  });
 });
 
 test("ruleset MCP transport lists tools, mutates during active runs, and rejects stale calls", async (t) => {
@@ -153,12 +220,14 @@ test("ruleset MCP transport lists tools, mutates during active runs, and rejects
 
   const access = createAccessPolicy({ DISCORD_ADMIN_USERS: "admin" });
   let runId = "";
-  await sessions.run("session-a", {
-    rulesetContext: { access, requester: { userId: "admin", guildId: "guild-1" }, guildId: "guild-1" },
-  }, async (runtime) => {
-    runId = runtime.id;
-    const result = await client.callTool({ name: "set_user_ruleset", arguments: { run_id: runtime.id, user: "123", instructions: "When they say hello, say world." } });
-    assert.equal(result.isError, undefined);
+  await withModeAsync("admin_only", async () => {
+    await sessions.run("session-a", {
+      rulesetContext: { access, requester: { userId: "admin", guildId: "guild-1" }, guildId: "guild-1" },
+    }, async (runtime) => {
+      runId = runtime.id;
+      const result = await client.callTool({ name: "set_user_ruleset", arguments: { run_id: runtime.id, user: "123", instructions: "When they say hello, say world." } });
+      assert.equal(result.isError, undefined);
+    });
   });
 
   assert.equal(new UserInstructionStore(file).listForUser("guild-1", "123").length, 1);

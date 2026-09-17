@@ -9,6 +9,7 @@ import { providerSystemPromptForUser } from "../utils/userInstructions.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
+import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
@@ -212,7 +213,9 @@ export class CopilotProvider {
         // would execute repository-controlled code before the permission handler can intervene.
         const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
         mcpServers.artifact_tools = { ...(await this.artifactTools.config(key)), type: "local", tools: ["*"], timeout: 960_000 };
-        mcpServers.ruleset_tools = { ...(await this.rulesetTools.config(key)), type: "local", tools: ["*"], timeout: 120_000 };
+        if (userInstructionFeaturesEnabled()) {
+            mcpServers.ruleset_tools = { ...(await this.rulesetTools.config(key)), type: "local", tools: ["*"], timeout: 120_000 };
+        }
         const sessionConfig = shared
             ? {
                 onPermissionRequest: createCopilotPermissionHandler(workingDir),
@@ -324,10 +327,14 @@ export class CopilotProvider {
                     const workingDirectory = this.sessionWorkingDirectories.get(userId)
                         ?? this.workingDirOverrides.get(userId)
                         ?? ensureProviderWorkingDirectory();
-                    return await this.rulesetTools.run(userId, options, async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
+                    const runWithRulesetTools = (action) => userInstructionFeaturesEnabled()
+                        ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
+                        : action();
+                    return await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
                         const attachments = staged.filter((file) => !file.binary).map((file) => ({ type: "file", path: file.path, displayName: file.displayName }));
+                        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun);
                         return sendUntilIdle(session, {
-                            prompt: rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun), rulesetRuntime),
+                            prompt: rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt,
                             ...(attachments?.length ? { attachments } : {}),
                         }, options);
                     })));

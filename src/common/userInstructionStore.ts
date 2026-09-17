@@ -42,6 +42,10 @@ export interface UserInstructionContext {
   userDisplayName?: string;
 }
 
+export interface UserInstructionManagerSubject {
+  userId: string;
+}
+
 export const USER_RULESET_LIMITS = {
   maxRulesetsPerUserGuild: 10,
   maxInstructionLength: 4000,
@@ -54,6 +58,22 @@ export function configuredUserInstructionMode(env: NodeJS.ProcessEnv = process.e
   if (!value) return "off";
   if (["off", "admin_only", "admin_and_self", "unfiltered"].includes(value)) return value as UserInstructionMode;
   throw new Error("USER_INSTRUCTION_MODE must be off, admin_only, admin_and_self, or unfiltered.");
+}
+
+export function userInstructionFeaturesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return configuredUserInstructionMode(env) !== "off";
+}
+
+export function canManageUserInstructions(
+  requester: UserInstructionManagerSubject | undefined,
+  targetUserId: string,
+  isAdmin: boolean,
+  mode = configuredUserInstructionMode(),
+): boolean {
+  if (mode === "off") return false;
+  if (mode === "unfiltered") return Boolean(requester);
+  if (mode === "admin_only") return isAdmin;
+  return isAdmin || Boolean(requester && requester.userId === targetUserId);
 }
 
 export function userInstructionRulesetsFile(env: NodeJS.ProcessEnv = process.env): string {

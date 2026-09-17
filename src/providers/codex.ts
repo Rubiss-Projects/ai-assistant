@@ -12,8 +12,10 @@ import { providerSystemPromptForUser } from "../utils/userInstructions.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt, type RulesetMcpConfig } from "../common/rulesetToolBridge.js";
+import type { RulesetTools } from "../common/rulesetTools.js";
 import { codexHostMcpOverride, codexHostMcpOverrides } from "../common/hostMcpConfig.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
+import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -467,7 +469,8 @@ export class CodexProvider implements Provider {
     if (inFlight) return inFlight;
 
     const storedThreadId = this.store.get(key);
-    const client = this.clientFor(key, systemPrompt, await this.artifactTools.config(key), await this.rulesetTools.config(key));
+    const rulesetConfig = userInstructionFeaturesEnabled() ? await this.rulesetTools.config(key) : undefined;
+    const client = this.clientFor(key, systemPrompt, await this.artifactTools.config(key), rulesetConfig);
     const resumeThread = (client as unknown as { resumeThread?: Codex["resumeThread"] }).resumeThread;
     const creation = Promise.resolve(
       storedThreadId && typeof resumeThread === "function"
@@ -580,10 +583,15 @@ export class CodexProvider implements Provider {
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
       const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
       const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-      const response = await this.rulesetTools.run(userId, options, async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
+      const runWithRulesetTools = <T>(action: (rulesetRuntime?: RulesetTools) => Promise<T>) =>
+        userInstructionFeaturesEnabled()
+          ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
+          : action();
+      const response = await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
         runtime.providerSourceRoot = () => generatedImageThreadDirectory(this.sessions.get(userId)?.id ?? null);
         const images = staged.filter((attachment) => attachment.kind !== "file");
-        const artifactPrompt = rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun), rulesetRuntime);
+        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun);
+        const artifactPrompt = rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt;
         const input: string | UserInput[] =
           images.length > 0
             ? [
