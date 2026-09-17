@@ -20,6 +20,7 @@ import { handleMention } from "./handlers/mention.js";
 import os from "node:os";
 import path from "node:path";
 import { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
+import { sharedSecurityEnabled } from "./common/providerSecurity.js";
 import { Scheduler } from "./scheduling/engine.js";
 import { ScheduleStore } from "./scheduling/store.js";
 import { discordSubject, contextAuthorPolicy } from "./common/discordAccess.js";
@@ -29,6 +30,7 @@ export { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } 
 export function createBot(sessions) {
     // Computed here so dotenv.config() has already run in index.ts.
     const access = createAccessPolicy();
+    const sharedMode = sharedSecurityEnabled();
     // Channel ID(s) where the bot responds to every message without needing a mention
     const freeChannels = new Set((process.env.DISCORD_FREE_CHANNELS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
     const client = new Client({
@@ -61,6 +63,18 @@ export function createBot(sessions) {
         if (!interaction.isChatInputCommand())
             return;
         const cmd = interaction;
+        // Block private entry points before permissions or dispatch. Only explicit bot
+        // admins may request a one-shot DM from a server; legacy open-admin access is insufficient.
+        const restrictedAsk = cmd.commandName === "ask" && !access.isExplicitAdmin({ userId: cmd.user.id });
+        if (sharedMode && (!cmd.guildId || restrictedAsk)) {
+            await cmd.reply({
+                content: !cmd.guildId
+                    ? "⛔ DMs are disabled in shared mode. Use /chat or mention me in a server channel."
+                    : "⛔ /ask is restricted to explicitly configured bot administrators in shared mode. Use /chat or mention me in a server channel.",
+                ephemeral: true,
+            });
+            return;
+        }
         const subcommand = cmd.options.getSubcommand(false);
         const hasWorkspace = (cmd.commandName === "ask" || cmd.commandName === "chat")
             && Boolean(cmd.options.getString("workspace", false));
@@ -136,6 +150,8 @@ export function createBot(sessions) {
         }
     });
     client.on(Events.MessageCreate, async (message) => {
+        if (sharedMode && !message.guildId)
+            return;
         if (message.author.bot)
             return;
         if (!client.user)
