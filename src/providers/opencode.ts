@@ -1,10 +1,12 @@
 import { spawn } from "child_process";
+import { createHash } from "node:crypto";
 import fs from "fs";
 import os from "node:os";
 import { ParticipationProcessRunner } from "./participationProcess.js";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPromptForUser } from "../utils/userInstructions.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt, type RulesetMcpConfig } from "../common/rulesetToolBridge.js";
@@ -66,6 +68,14 @@ function openCodeBin(): string {
   return resolveOpenCodeBinary();
 }
 
+function promptFingerprint(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex");
+}
+
+function openCodeAgentName(systemPrompt: string): string {
+  return `ai-assistant-${promptFingerprint(systemPrompt).slice(0, 16)}`;
+}
+
 /** Inline policy has the highest normal config precedence in OpenCode v1. */
 export function openCodeSecurityConfig(): Record<string, unknown> {
   const sensitivePathPolicy = Object.fromEntries([
@@ -107,11 +117,20 @@ export function openCodeChildEnvironment(
   source: Record<string, string | undefined> = process.env,
   artifacts?: ArtifactMcpConfig,
   rulesets?: RulesetMcpConfig,
+  systemPrompt?: string,
+  agentName?: string,
 ): Record<string, string> {
   const environment = providerChildEnvironment("opencode", source);
-  if (artifacts || rulesets) {
+  if (artifacts || rulesets || systemPrompt) {
     const config = configuredSecurityMode(source) === "shared" ? openCodeSecurityConfig()
       : JSON.parse(environment.OPENCODE_CONFIG_CONTENT || "{}");
+    if (systemPrompt) {
+      const name = agentName ?? openCodeAgentName(systemPrompt);
+      config.agent = {
+        ...(typeof config.agent === "object" && config.agent !== null ? config.agent : {}),
+        [name]: { mode: "primary", prompt: systemPrompt },
+      };
+    }
     config.mcp = { ...(config.mcp ?? {}) };
     config.permission = { ...(config.permission ?? {}) };
     if (artifacts) {
@@ -177,14 +196,14 @@ export function selectOpenCodeParticipationModel(models: string[], current?: str
  */
 function runOpenCode(
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig }
+  opts: { cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig; systemPrompt?: string; agentName?: string }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
     const child = spawn(openCodeBin(), args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets),
+      env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets, opts.systemPrompt, opts.agentName),
     });
 
     let stdout = "";
@@ -307,15 +326,24 @@ export class OpenCodeProvider implements Provider {
       if (sessionId) args.push("--session", sessionId);
       const model = this.modelOverrides.get(userId) ?? this.configuredModel();
       if (model) args.push("--model", model);
+      const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
+      const agentName = openCodeAgentName(systemPrompt);
+      args.push("--agent", agentName);
       const timeoutMs = providerTimeout("OPENCODE_TIMEOUT_MS", options);
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
       const workingDirectory = this.workingDir(userId);
       const response = await this.rulesetTools.run(userId, options, async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
         for (const file of staged.filter((file) => !file.binary)) args.push("--file", file.path);
-        args.push(openCodeRequestPrompt(rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun), rulesetRuntime)));
+        args.push(rulesetToolPrompt(withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun), rulesetRuntime));
         const stopProgress = startProgressUpdates(options);
         const { stdout, stderr, code } = await runOpenCode(args, {
-          cwd: workingDirectory, timeoutMs, providerName: this.displayName, artifacts: await this.artifactTools.config(userId), rulesets: await this.rulesetTools.config(userId),
+          cwd: workingDirectory,
+          timeoutMs,
+          providerName: this.displayName,
+          artifacts: await this.artifactTools.config(userId),
+          rulesets: await this.rulesetTools.config(userId),
+          systemPrompt,
+          agentName,
         }).finally(stopProgress);
 
         if (code !== 0) {

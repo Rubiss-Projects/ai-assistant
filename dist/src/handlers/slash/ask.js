@@ -4,7 +4,6 @@ import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js"
 import { progressMessage } from "../../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 import { userVisibleErrorMessage } from "../../common/userVisibleError.js";
-import { applyUserInstructions } from "../../utils/userInstructions.js";
 export async function handleAsk(interaction, sessions, canIncludeContextAuthor = () => true, rulesetContext) {
     const prompt = interaction.options.getString("prompt", true);
     const workspace = interaction.options.getString("workspace", false);
@@ -27,7 +26,12 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
                 sessions.setSessionWorkingDir(tempKey, workspace);
             const prepared = await prepareSlashAttachments(prompt, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(tempKey, internalPrompt));
             try {
-                response = await sessions.sendMessage(tempKey, applyUserInstructions(prepared.prompt, { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username }), prepared.attachments.length ? prepared.attachments : undefined, { rulesetContext, resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }) });
+                response = await sessions.sendMessage(tempKey, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, {
+                    rulesetContext,
+                    userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+                    resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
+                    onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }),
+                });
             }
             finally {
                 // Temp file cleanup is independent of session reset — always run both

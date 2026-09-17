@@ -9,7 +9,6 @@ import type { AgentResponse, SendMessageOptions } from "../../providers/types.js
 import type { ConversationMessage } from "../../common/chatParticipation.js";
 import { participationAttachments, participationReplyContext } from "../../common/discordParticipation.js";
 import { userVisibleErrorMessage } from "../../common/userVisibleError.js";
-import { applyUserInstructions } from "../../utils/userInstructions.js";
 
 export async function handleChat(
   interaction: ChatInputCommandInteraction,
@@ -47,9 +46,14 @@ export async function handleChat(
         if (workspace) sessions.setSessionWorkingDir(interaction.user.id, workspace);
         response = await sessions.sendMessage(
           interaction.user.id,
-          applyUserInstructions(prepared.prompt, { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username }),
+          prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
-          { rulesetContext, resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
+          {
+            rulesetContext,
+            userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+            resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
+            onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}),
+          },
         );
       } finally {
         await prepared.cleanup();
@@ -112,9 +116,14 @@ export async function handleChat(
             : prepared.prompt;
           const response = await sessions.sendMessage(
             currentSessionKey,
-            applyUserInstructions(prompt, { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username }),
+            prompt,
             prepared.attachments.length ? prepared.attachments : undefined,
-            { rulesetContext, resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
+            {
+              rulesetContext,
+              userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+              resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
+              onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}),
+            },
           );
           const chunks = chunkForDiscord(response.content);
           await durableReply!.edit(discordTextOptions(chunks[0]));
@@ -145,9 +154,14 @@ export async function handleChat(
         if (workspace) sessions.setSessionWorkingDir(thread.id, workspace);
         const response = await sessions.sendMessage(
           thread.id,
-          applyUserInstructions(prepared.prompt, { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username }),
+          prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
-          { rulesetContext, resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => {}) },
+          {
+            rulesetContext,
+            userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+            resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
+            onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => {}),
+          },
         );
         const chunks = chunkForDiscord(response.content);
         for (const chunk of chunks) {
