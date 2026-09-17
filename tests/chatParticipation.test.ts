@@ -171,3 +171,28 @@ test("slash context uses the requester permissions and identity, not the bot's",
   assert.equal(context[0].bot, false);
   assert.equal(context[0].content, "What did we decide?");
 });
+
+test("stop does not wait on an active answer or start another queued explicit answer", async () => {
+  let began!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  let finish!: () => void;
+  const active = new Promise<void>(resolve => { finish = resolve; });
+  const replies: string[] = [];
+  const coordinator = new ChatParticipation<ConversationMessage>({
+    id: value => value.id, context: async values => values,
+    classify: async () => '{"action":"ignore"}',
+    reply: async value => { replies.push(value.id); began(); await active; },
+    react: async () => {}, onError: () => {},
+  });
+  coordinator.enqueue("thread", message("1"), true);
+  coordinator.enqueue("thread", message("2"), true);
+  await started;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([coordinator.stop(), new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => reject(new Error("Shutdown waited on the active provider")), 100);
+    })]);
+  } finally { clearTimeout(deadline); finish(); }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(replies, ["1"]);
+});
