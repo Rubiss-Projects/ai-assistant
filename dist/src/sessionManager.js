@@ -43,6 +43,7 @@ export class SessionManager {
     /** Default provider display name. */
     displayName;
     providers = new Map();
+    stopping = false;
     overrides = new Map(); // session key -> provider name
     store;
     constructor(defaultName, store) {
@@ -61,6 +62,7 @@ export class SessionManager {
     }
     // ── Provider selection ──────────────────────────────────────────────────────
     getProvider(name) {
+        this.assertAcceptingWork();
         let provider = this.providers.get(name);
         if (!provider) {
             provider = createProvider(name);
@@ -96,6 +98,7 @@ export class SessionManager {
      * default provider name clears the override.
      */
     setSessionProvider(key, providerName) {
+        this.assertAcceptingWork();
         const name = providerName.trim().toLowerCase();
         if (!isValidProviderName(name)) {
             throw new Error(`Unknown provider "${providerName}". Choose: ${PROVIDERS.join(", ")}.`);
@@ -111,25 +114,33 @@ export class SessionManager {
         return Promise.resolve();
     }
     async shutdown() {
+        this.stopping = true;
         const all = Array.from(this.providers.values());
         this.providers.clear();
         await Promise.all(all.map((p) => p.shutdown()));
+    }
+    assertAcceptingWork() {
+        if (this.stopping)
+            throw new Error("Session manager is shutting down.");
     }
     // ── Chat & session operations (delegated to the active provider for key) ────
     sendMessage(userId, prompt, imagePaths, options) {
         return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
     }
     async evaluateParticipation(key, prompt) {
+        this.assertAcceptingWork();
         const config = participationEvaluatorConfig();
         if (config.evaluator === "jev")
             return evaluateWithJev(prompt, config);
         const provider = this.providerFor(key);
         if (!provider.evaluateParticipation)
             throw new UnsupportedError(provider.displayName, "participation evaluation");
-        return provider.evaluateParticipation(providerParticipationPrompt(prompt), {
+        const options = {
             ...config,
             ...(provider.name === "opencode" ? { connectionModel: await provider.getCurrentModel(key) } : {}),
-        });
+        };
+        this.assertAcceptingWork();
+        return provider.evaluateParticipation(providerParticipationPrompt(prompt), options);
     }
     /** Run an internal one-shot inference without adding it to the user's conversation. */
     async runEphemeral(key, prompt) {
