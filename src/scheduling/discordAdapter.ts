@@ -10,7 +10,6 @@ import { ensureProviderWorkingDirectory } from "../common/providerSecurity.js";
 import type { SessionManager } from "../sessionManager.js";
 import { RunTimeoutError } from "../providers/types.js";
 import { artifactMessageResolver, discordMessageLocation } from "../utils/artifactMessage.js";
-import { applyUserInstructions } from "../utils/userInstructions.js";
 import { DeliveryRejectedError, ScheduleAccessError, type ScheduleAdapter } from "./engine.js";
 import type { DeliveryPart, ScheduledTask, TaskRun } from "./types.js";
 import { previousLookupContext, SCHEDULE_LOOKUP_INSTRUCTIONS } from "./lookups.js";
@@ -80,13 +79,10 @@ export class DiscordScheduleAdapter implements ScheduleAdapter {
       }
       const resolveArtifact = artifactMessageResolver(this.client, task.ownerId, contextAuthorPolicy(this.access, this.client, task.guildId));
       const ownerSubject = { userId: task.ownerId, guildId: task.guildId };
-      const scheduledPrompt = applyUserInstructions(
-        `Scheduled task at ${new Date(run.startedAt).toISOString()}. Produce the response for the saved destination channel.\n${SCHEDULE_LOOKUP_INSTRUCTIONS}\n${task.content}${context}${previousLookupContext(task.lastVerifiedLookups)}`,
-        { guildId: task.guildId, userId: task.ownerId },
-      );
+      const scheduledPrompt = `Scheduled task at ${new Date(run.startedAt).toISOString()}. Produce the response for the saved destination channel.\n${SCHEDULE_LOOKUP_INSTRUCTIONS}\n${task.content}${context}${previousLookupContext(task.lastVerifiedLookups)}`;
       const response = await this.sessions.sendMessage(key,
         scheduledPrompt,
-        undefined, { timeoutMs, rulesetContext: { access: this.access, requester: ownerSubject, guildId: task.guildId }, onLookup: record => {
+        undefined, { timeoutMs, rulesetContext: { access: this.access, requester: ownerSubject, guildId: task.guildId }, userInstructionContext: { guildId: task.guildId, userId: task.ownerId }, onLookup: record => {
           const index = run.lookups!.findIndex(item => item.url === record.url);
           if (index >= 0) run.lookups![index] = record;
           else if (run.lookups!.length < 24) run.lookups!.push(record);

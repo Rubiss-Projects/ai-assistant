@@ -9,7 +9,7 @@ import { createAccessPolicy } from "../src/common/accessPolicy.js";
 import { RulesetToolSessions } from "../src/common/rulesetToolBridge.js";
 import { RulesetTools, createRulesetToolRun } from "../src/common/rulesetTools.js";
 import { UserInstructionStore } from "../src/common/userInstructionStore.js";
-import { applyUserInstructions, previewUserInstructions } from "../src/utils/userInstructions.js";
+import { applyUserInstructions, previewUserInstructions, providerSystemPromptForUser } from "../src/utils/userInstructions.js";
 
 function tempFile(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "user-rulesets-"));
@@ -68,6 +68,20 @@ test("applyUserInstructions injects enabled rules only when configured", () => {
   assert.match(injected, /hello-world/);
   assert.doesNotMatch(injected, /Do not include/);
   assert.match(previewUserInstructions({ guildId: "guild-1", userId: "target" }, false, store), /say world/i);
+});
+
+test("providerSystemPromptForUser composes enabled rules without rewriting user text", () => {
+  const store = new UserInstructionStore(tempFile());
+  store.set({ guildId: "guild-1", targetUserId: "target", name: "hello-world", instructions: "When they say hello, say world.", createdBy: "admin" });
+
+  const systemPrompt = withMode("admin_only", () =>
+    providerSystemPromptForUser({ guildId: "guild-1", userId: "target", userDisplayName: "Target" }, store)
+  );
+
+  assert.match(systemPrompt, /Additional Discord user instructions/);
+  assert.match(systemPrompt, /hello-world/);
+  assert.match(systemPrompt, /When they say hello, say world/);
+  assert.doesNotMatch(systemPrompt, /User message:\nhello/);
 });
 
 test("RulesetTools enforce host permissions and mutate the store for admins", async () => {

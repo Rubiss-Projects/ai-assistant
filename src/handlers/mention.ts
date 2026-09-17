@@ -9,7 +9,6 @@ import { progressMessage } from "../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../common/discordResponse.js";
 import { userVisibleErrorMessage } from "../common/userVisibleError.js";
 import type { AgentResponse, SendMessageOptions } from "../providers/types.js";
-import { applyUserInstructions } from "../utils/userInstructions.js";
 
 interface MentionParticipation {
   context: string;
@@ -149,10 +148,11 @@ export async function handleMention(
 
     const response = await sessions.sendMessage(
       key,
-      applyUserInstructions(enrichedPrompt, { guildId: message.guildId, userId: message.author.id, userDisplayName: message.author.displayName ?? message.author.username }),
+      enrichedPrompt,
       prepared.fileAttachments.length ? prepared.fileAttachments : undefined,
       {
         rulesetContext: mentionOptions.rulesetContext,
+        userInstructionContext: { guildId: message.guildId, userId: message.author.id, userDisplayName: message.author.displayName ?? message.author.username },
         resolveArtifactMessage: artifactMessageResolver(client, message.author.id, canIncludeContextAuthor),
         onProgress: ({ elapsedMs }) => {
           progressUpdates = progressUpdates.catch(() => {}).then(async () => {

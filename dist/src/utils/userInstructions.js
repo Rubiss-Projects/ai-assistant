@@ -1,4 +1,5 @@
 import { configuredUserInstructionMode, USER_RULESET_LIMITS, UserInstructionStore, } from "../common/userInstructionStore.js";
+import { providerSystemPrompt } from "../common/systemPrompt.js";
 export function formatUserInstructionBlock(context, rulesets) {
     if (!rulesets.length)
         return "";
@@ -28,6 +29,17 @@ export function applyUserInstructions(prompt, context, store = new UserInstructi
     if (!block)
         return prompt;
     return `${block}\n\nUser message:\n${prompt}`;
+}
+export function activeUserInstructionBlock(context, store = new UserInstructionStore()) {
+    if (!context || configuredUserInstructionMode() === "off")
+        return "";
+    const rulesets = store.listForUser(context.guildId ?? null, context.userId, false);
+    return formatUserInstructionBlock(context, rulesets);
+}
+export function providerSystemPromptForUser(context, store = new UserInstructionStore()) {
+    return [providerSystemPrompt(), activeUserInstructionBlock(context, store)]
+        .filter(Boolean)
+        .join("\n\n");
 }
 export function previewUserInstructions(context, includeDisabled = false, store = new UserInstructionStore()) {
     const rulesets = store.listForUser(context.guildId ?? null, context.userId, includeDisabled);

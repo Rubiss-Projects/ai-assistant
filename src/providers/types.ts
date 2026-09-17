@@ -1,5 +1,6 @@
 import type { LookupRecord } from "../utils/fetchWebpage.js";
 import type { AccessPolicy, AccessSubject } from "../common/accessPolicy.js";
+import type { UserInstructionContext } from "../utils/userInstructions.js";
 
 export const PROVIDERS = ["copilot", "codex", "opencode"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
@@ -96,6 +97,8 @@ export interface SendMessageOptions {
     access: AccessPolicy;
     guildId?: string | null;
   };
+  /** Active Discord speaker whose admin-configured rulesets should affect this turn. */
+  userInstructionContext?: UserInstructionContext;
 }
 
 export interface ArtifactCandidate {

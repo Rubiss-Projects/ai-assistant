@@ -4,6 +4,7 @@ import {
   UserInstructionStore,
   type UserInstructionRuleset,
 } from "../common/userInstructionStore.js";
+import { providerSystemPrompt } from "../common/systemPrompt.js";
 
 export interface UserInstructionContext {
   guildId?: string | null;
@@ -45,6 +46,24 @@ export function applyUserInstructions(
   const block = formatUserInstructionBlock(context, rulesets);
   if (!block) return prompt;
   return `${block}\n\nUser message:\n${prompt}`;
+}
+
+export function activeUserInstructionBlock(
+  context?: UserInstructionContext,
+  store = new UserInstructionStore(),
+): string {
+  if (!context || configuredUserInstructionMode() === "off") return "";
+  const rulesets = store.listForUser(context.guildId ?? null, context.userId, false);
+  return formatUserInstructionBlock(context, rulesets);
+}
+
+export function providerSystemPromptForUser(
+  context?: UserInstructionContext,
+  store = new UserInstructionStore(),
+): string {
+  return [providerSystemPrompt(), activeUserInstructionBlock(context, store)]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function previewUserInstructions(
