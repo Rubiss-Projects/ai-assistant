@@ -158,7 +158,10 @@ export class ChatParticipation<T> {
     if (!values.length) return;
     if (this.stopped) return;
     if (explicit.length) {
-      for (const item of explicit) await this.callbacks.reply(item.value, context, [item.value]);
+      for (const item of explicit) {
+        if (this.stopped) break;
+        await this.callbacks.reply(item.value, context, [item.value]);
+      }
       state.lastParticipation = Date.now();
       return;
     }
@@ -194,7 +197,9 @@ export class ChatParticipation<T> {
       clearTimeout(state.timer); state.pending = [];
       for (const job of state.jobs.splice(0)) job.reject(new Error("Participation coordinator stopped."));
     }
-    await Promise.allSettled([...this.threads.values()].map(state => state.running));
+    // Active callbacks are provider-owned. Waiting here would prevent index.ts
+    // from reaching sessions.shutdown(), which performs provider cleanup. Their
+    // continuations observe stopped and cannot begin another queued turn.
     this.threads.clear();
   }
 }
