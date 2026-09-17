@@ -412,6 +412,44 @@ export class CopilotProvider implements Provider {
     return next;
   }
 
+  async evaluateParticipation(prompt: string, options: { model?: string; effort: "none" | "low"; timeoutMs: number }): Promise<string> {
+    const started = Date.now();
+    let abandoned = false;
+    const creating = this.client.createSession({
+      model: options.model ?? "gpt-5.6-luna",
+      reasoningEffort: "low", // Copilot SDK does not expose a "none" effort.
+      availableTools: [], excludedTools: ["builtin:*", "mcp:*", "custom:*"],
+      enableConfigDiscovery: false, skipCustomInstructions: true,
+      skillDirectories: [], pluginDirectories: [], mcpServers: {},
+      infiniteSessions: { enabled: false },
+      onPermissionRequest: () => ({ kind: "reject", feedback: "Classification has no tool permissions." }),
+      systemMessage: { mode: "replace", content: "Classify the supplied conversation using the supplied policy. Return only the decision JSON." },
+    });
+    // Startup/authentication counts toward the classifier budget too. A late
+    // session is deleted instead of becoming an orphan after a startup timeout.
+    void creating.then(async session => {
+      if (!abandoned) return;
+      await session.disconnect().catch(() => {});
+      await this.client.deleteSession(session.sessionId).catch(() => {});
+    }, () => {}).catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const session = await Promise.race([
+      creating,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          abandoned = true;
+          reject(new Error("Participation evaluator timed out during startup."));
+        }, options.timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    try {
+      return await sendUntilIdle(session, { prompt }, { timeoutMs: Math.max(1, options.timeoutMs - (Date.now() - started)) });
+    } finally {
+      await session.disconnect().catch(() => {});
+      await this.client.deleteSession(session.sessionId).catch(() => {});
+    }
+  }
+
   async getStatus(): Promise<StatusInfo> {
     await this.client.start();
     const [status, authStatus] = await Promise.all([

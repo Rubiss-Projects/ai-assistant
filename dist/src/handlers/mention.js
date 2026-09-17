@@ -52,7 +52,7 @@ export async function deliverMentionResponse(sourceMessage, progressReply, respo
     await deliverDiscordAttachments((options) => sourceMessage.reply(options), response.attachments);
 }
 export async function handleMention(message, client, sessions, sessionKey, // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
-canIncludeContextAuthor = () => true) {
+canIncludeContextAuthor = () => true, participation) {
     // Strip all @mentions of the bot and trim
     const botMentionPattern = new RegExp(`<@!?${client.user.id}>`, "g");
     const prompt = message.content.replace(botMentionPattern, "").trim();
@@ -73,8 +73,12 @@ canIncludeContextAuthor = () => true) {
         const knowledgePrompt = await enrichWithDiscordKnowledge(message, basePrompt, client, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(key, internalPrompt));
         const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments, canIncludeContextAuthor);
         let enrichedPrompt = await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor, contextAttachments);
+        // Add ambient conversation only after host-side intent/link processing so
+        // background messages cannot trigger memory writes, searches or downloads.
+        if (participation)
+            enrichedPrompt = `${participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
         const result = await downloadFileAttachments([
-            ...message.attachments.values(),
+            ...(participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
             ...contextAttachments,
         ]);
         cleanup = result.cleanup;

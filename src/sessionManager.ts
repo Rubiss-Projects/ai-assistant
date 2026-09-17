@@ -16,6 +16,7 @@ import type {
   SessionMode,
   StatusInfo,
 } from "./providers/types.js";
+import { participationEvaluatorConfig, evaluateWithJev, providerParticipationPrompt } from "./common/participationEvaluator.js";
 import { randomUUID } from "node:crypto";
 
 export { chunkForDiscord, isUnsupported, RunTimeoutError, UnsupportedError };
@@ -142,6 +143,17 @@ export class SessionManager {
 
   sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<AgentResponse> {
     return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
+  }
+
+  async evaluateParticipation(key: string, prompt: string): Promise<string> {
+    const config = participationEvaluatorConfig();
+    if (config.evaluator === "jev") return evaluateWithJev(prompt, config);
+    const provider = this.providerFor(key);
+    if (!provider.evaluateParticipation) throw new UnsupportedError(provider.displayName, "participation evaluation");
+    return provider.evaluateParticipation(providerParticipationPrompt(prompt), {
+      ...config,
+      ...(provider.name === "opencode" ? { connectionModel: await provider.getCurrentModel(key) } : {}),
+    });
   }
 
   /** Run an internal one-shot inference without adding it to the user's conversation. */
