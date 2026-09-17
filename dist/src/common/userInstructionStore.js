@@ -71,9 +71,11 @@ export class UserInstructionStore {
         }
     }
     all() {
+        this.load();
         return [...this.rulesets];
     }
     listForUser(guildId, targetUserId, includeDisabled = false) {
+        this.load();
         const normalizedGuild = guildId ?? null;
         return this.rulesets
             .filter((ruleset) => ruleset.targetUserId === targetUserId
@@ -82,6 +84,7 @@ export class UserInstructionStore {
             .sort(compareRulesets);
     }
     get(guildId, targetUserId, name) {
+        this.load();
         const normalizedGuild = guildId ?? null;
         const normalizedName = validateRulesetName(name);
         return this.rulesets.find((ruleset) => ruleset.targetUserId === targetUserId
@@ -89,6 +92,7 @@ export class UserInstructionStore {
             && ruleset.guildId === normalizedGuild);
     }
     set(input) {
+        this.load();
         const now = new Date().toISOString();
         const guildId = input.scope === "global" ? null : input.guildId ?? null;
         const name = validateRulesetName(input.name);
@@ -134,6 +138,7 @@ export class UserInstructionStore {
         });
     }
     delete(guildId, targetUserId, name) {
+        this.load();
         const normalizedGuild = guildId ?? null;
         const normalizedName = validateRulesetName(name);
         const before = this.rulesets.length;
@@ -143,6 +148,7 @@ export class UserInstructionStore {
         return this.rulesets.length !== before;
     }
     clear(guildId, targetUserId) {
+        this.load();
         const normalizedGuild = guildId ?? null;
         const before = this.rulesets.length;
         this.rulesets = this.rulesets.filter((ruleset) => !(ruleset.guildId === normalizedGuild && ruleset.targetUserId === targetUserId));

@@ -43,6 +43,21 @@ test("UserInstructionStore persists, replaces, disables, deletes, and clears rul
   assert.equal(store.clear("guild-1", "target"), 2);
 });
 
+test("UserInstructionStore reloads before reads and writes so separate managers do not clobber each other", () => {
+  const file = tempFile();
+  const slashLikeStore = new UserInstructionStore(file);
+  const toolLikeStore = new UserInstructionStore(file);
+
+  toolLikeStore.set({ guildId: "guild-1", targetUserId: "target", name: "tool-rule", instructions: "Created by tool.", createdBy: "admin" });
+  assert.equal(slashLikeStore.listForUser("guild-1", "target").map((ruleset) => ruleset.name).join(","), "tool-rule");
+
+  slashLikeStore.set({ guildId: "guild-1", targetUserId: "target", name: "slash-rule", instructions: "Created by slash.", createdBy: "admin" });
+  assert.deepEqual(
+    new UserInstructionStore(file).listForUser("guild-1", "target").map((ruleset) => ruleset.name).sort(),
+    ["slash-rule", "tool-rule"],
+  );
+});
+
 test("applyUserInstructions injects enabled rules only when configured", () => {
   const store = new UserInstructionStore(tempFile());
   store.set({ guildId: "guild-1", targetUserId: "target", name: "hello-world", instructions: "When they say hello, say world.", createdBy: "admin" });
