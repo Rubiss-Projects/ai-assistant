@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ChatParticipation, parseParticipationDecision, participationMode, type ConversationMessage } from "../src/common/chatParticipation.js";
 import { assistantIdentity, explicitlyMentionsBot, participationContext } from "../src/common/discordParticipation.js";
+import { evaluateWithJev, participationEvaluatorConfig } from "../src/common/participationEvaluator.js";
 
 const sleep = (ms = 15) => new Promise(resolve => setTimeout(resolve, ms));
 const message = (id: string, content = "question"): ConversationMessage => ({ id, content, authorId: "alice", authorName: "Alice", bot: false, attachmentCount: 0 });
@@ -75,10 +76,17 @@ test("new messages invalidate an in-flight decision before any reply", async () 
   await h.coordinator.stop();
 });
 
-test("cooldown suppresses ambient replies/reactions but permits directed follow-ups", async () => {
+test("cooldown suppresses ranked unsolicited replies but permits a sub-70-percent direct winner", async () => {
   const h = harness(async prompt => {
     const id = JSON.parse(prompt).candidateIds[0];
-    return JSON.stringify({ action: "reply", messageId: id, directed: id === "3" });
+    const choice = id === "3" ? "direct_reply" : "unsolicited_reply";
+    return evaluateWithJev(prompt, participationEvaluatorConfig({}), "test", async () => new Response(JSON.stringify({ answers: {
+      message_0: { type: "choice", choice, probabilities: {
+        ignore: 0.25, direct_reply: 0.05, unsolicited_reply: 0.05,
+        reaction_0: 0.1, reaction_1: 0, reaction_2: 0, reaction_3: 0, reaction_4: 0,
+        [choice]: 0.6,
+      } },
+    } })));
   });
   h.coordinator.enqueue("thread", message("1"), true);
   await sleep();

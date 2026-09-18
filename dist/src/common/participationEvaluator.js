@@ -9,12 +9,33 @@ export function participationEvaluatorConfig(source = process.env) {
     const timeoutMs = Number(source.CHAT_PARTICIPATION_TIMEOUT_MS?.trim() || 15_000);
     if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000)
         throw new Error("CHAT_PARTICIPATION_TIMEOUT_MS must be between 100 and 60000.");
-    const jevThreshold = Number(source.CHAT_PARTICIPATION_JEV_THRESHOLD?.trim() || 0.7);
-    if (!Number.isFinite(jevThreshold) || jevThreshold < 0.5 || jevThreshold > 1)
-        throw new Error("CHAT_PARTICIPATION_JEV_THRESHOLD must be between 0.5 and 1.");
     if (evaluator === "jev" && !source.TYPESAFE_API_KEY?.trim())
         throw new Error("TYPESAFE_API_KEY is required when CHAT_PARTICIPATION_EVALUATOR=jev.");
-    return { evaluator, effort, timeoutMs, jevThreshold, model: source.CHAT_PARTICIPATION_MODEL?.trim() || undefined };
+    return { evaluator, effort, timeoutMs, model: source.CHAT_PARTICIPATION_MODEL?.trim() || undefined };
+}
+const JEV_CHOICES = ["ignore", "direct_reply", "unsolicited_reply", ...PARTICIPATION_REACTIONS.map((_, index) => `reaction_${index}`)];
+/** The documented choice is an argmax; validate the full distribution before acting.
+ * For equal maxima, use Jev's selected choice rather than object insertion order.
+ */
+function winningJevChoice(answer) {
+    if (!answer || typeof answer !== "object" || Array.isArray(answer))
+        return;
+    const { type, choice, probabilities } = answer;
+    if (type !== "choice" || typeof choice !== "string" || !JEV_CHOICES.includes(choice))
+        return;
+    if (!probabilities || typeof probabilities !== "object" || Array.isArray(probabilities))
+        return;
+    const entries = Object.entries(probabilities);
+    if (entries.length !== JEV_CHOICES.length || entries.some(([key, value]) => !JEV_CHOICES.includes(key) || typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1))
+        return;
+    const scores = probabilities;
+    const total = Object.values(scores).reduce((sum, value) => sum + value, 0);
+    // Small rounding drift is allowed; this is shape validation, not a confidence gate.
+    if (Math.abs(total - 1) > 0.02 + Number.EPSILON)
+        return;
+    if (scores[choice] !== Math.max(...Object.values(scores)))
+        return;
+    return choice;
 }
 /** Jev evaluates fixed choices per candidate; only the host selects IDs and emoji. */
 export async function evaluateWithJev(prompt, config, apiKey = process.env.TYPESAFE_API_KEY, request = fetch) {
@@ -44,32 +65,20 @@ export async function evaluateWithJev(prompt, config, apiKey = process.env.TYPES
     let selected;
     let bestPriority = -1;
     for (let i = 0; i < state.candidateIds.length; i++) {
-        const answer = payload.answers?.[`message_${i}`];
-        if (answer?.type !== "choice" || !answer.choice)
-            continue;
-        const probabilities = answer.probabilities;
-        if (!probabilities || Object.values(probabilities).some(value => typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1))
-            continue;
-        if (Object.values(probabilities).reduce((sum, value) => sum + value, 0) > 1.02)
+        const choice = winningJevChoice(payload?.answers?.[`message_${i}`]);
+        if (!choice || choice === "ignore")
             continue;
         const messageId = state.candidateIds[i];
-        // Direct and unsolicited are two reasons for the same reply action. Summing
-        // these mutually exclusive choices avoids rejecting a confident reply merely
-        // because its intended audience is ambiguous.
-        const direct = probabilities.direct_reply ?? 0;
-        const reply = direct + (probabilities.unsolicited_reply ?? 0);
-        const directed = direct >= config.jevThreshold;
-        const priority = reply >= config.jevThreshold ? (directed ? 2 : 1) : 0;
+        const directed = choice === "direct_reply";
+        // Across candidate messages, preserve direct > unsolicited > reaction priority
+        // and prefer the most recent candidate of the same kind.
+        const priority = directed ? 2 : choice === "unsolicited_reply" ? 1 : 0;
         if (priority < bestPriority)
             continue;
         if (priority > 0)
             selected = { action: "reply", messageId, directed };
-        else {
-            const match = /^reaction_([0-4])$/.exec(answer.choice);
-            if (!match || (probabilities[answer.choice] ?? 0) < config.jevThreshold)
-                continue;
-            selected = { action: "react", messageId, emoji: PARTICIPATION_REACTIONS[Number(match[1])] };
-        }
+        else
+            selected = { action: "react", messageId, emoji: PARTICIPATION_REACTIONS[Number(choice.slice("reaction_".length))] };
         bestPriority = priority;
     }
     return JSON.stringify(selected ?? { action: "ignore" });
