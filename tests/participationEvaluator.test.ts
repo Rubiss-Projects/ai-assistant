@@ -11,16 +11,20 @@ import { join } from "node:path";
 
 const config = participationEvaluatorConfig({});
 const prompt = JSON.stringify({ candidateIds: ["1", "2"], cooldown: false, messages: [] });
+function choiceAnswer(choice: string, scores: Record<string, number>) {
+  const probabilities = { ignore: 0, direct_reply: 0, unsolicited_reply: 0, reaction_0: 0, reaction_1: 0, reaction_2: 0, reaction_3: 0, reaction_4: 0, ...scores };
+  if (!("ignore" in scores)) probabilities.ignore = 1 - Object.values(probabilities).reduce((sum, value) => sum + value, 0);
+  return { type: "choice", choice, probabilities };
+}
 function response(answers: unknown) { return async () => new Response(JSON.stringify({ answers }), { status: 200 }); }
 
 test("evaluator settings default to provider and reject invalid configuration", () => {
   assert.equal(config.evaluator, "provider");
-  assert.equal(config.jevThreshold, 0.7);
   assert.equal(config.effort, "none");
   assert.throws(() => participationEvaluatorConfig({ CHAT_PARTICIPATION_EVALUATOR: "jev" }), /TYPESAFE_API_KEY/);
   assert.throws(() => participationEvaluatorConfig({ CHAT_PARTICIPATION_EVALUATOR: "unknown" }));
   assert.throws(() => participationEvaluatorConfig({ CHAT_PARTICIPATION_TIMEOUT_MS: "NaN" }));
-  assert.throws(() => participationEvaluatorConfig({ CHAT_PARTICIPATION_JEV_THRESHOLD: "0.1" }));
+  assert.deepEqual(participationEvaluatorConfig({ CHAT_PARTICIPATION_JEV_THRESHOLD: "0.99" }), config);
 });
 
 test("Jev uses documented typed choices and selects a confident direct request", async () => {
@@ -32,36 +36,50 @@ test("Jev uses documented typed choices and selects a confident direct request",
     assert.equal(body.model, "jev-latest");
     assert.equal(body.questions.message_0.type, "choice");
     return response({
-      message_0: { type: "choice", choice: "reaction_0", probabilities: { reaction_0: 0.95 } },
-      message_1: { type: "choice", choice: "direct_reply", probabilities: { direct_reply: 0.9 } },
+      message_0: choiceAnswer("reaction_0", { reaction_0: 0.95 }),
+      message_1: choiceAnswer("direct_reply", { direct_reply: 0.9 }),
     })();
   });
   assert.deepEqual(JSON.parse(result), { action: "reply", messageId: "2", directed: true });
 });
 
-test("Jev stays silent on uncertain, missing, or unexpected answers", async () => {
+test("Jev stays silent on malformed, incomplete, or inconsistent distributions", async () => {
   for (const answer of [
     { type: "choice", choice: "direct_reply", probabilities: { direct_reply: 0.69 } },
     { type: "choice", choice: "direct_reply", confidence: 0.99 },
     { type: "choice", choice: "reaction_99", probabilities: { reaction_99: 1 } },
     { type: "choice", choice: "direct_reply", probabilities: { direct_reply: 2 } },
     { type: "choice", choice: "direct_reply", probabilities: { direct_reply: "0.95" } },
+    choiceAnswer("direct_reply", { direct_reply: 0.2, ignore: 0.8 }),
+    choiceAnswer("direct_reply", { direct_reply: 0.8, ignore: 0.8 }),
+    choiceAnswer("direct_reply", { direct_reply: 0.2, ignore: 0.1 }),
+    choiceAnswer("direct_reply", { direct_reply: 0, ignore: 0 }),
+    choiceAnswer("direct_reply", { direct_reply: 0.8, unexpected: 0.2 }),
+    { ...choiceAnswer("direct_reply", { direct_reply: 1 }), probabilities: [] },
     null,
   ]) {
     assert.deepEqual(JSON.parse(await evaluateWithJev(prompt, config, "test", response({ message_0: answer }) as typeof fetch)), { action: "ignore" });
   }
 });
 
-test("Jev combines reply alternatives without treating ambiguous audience as directed", async () => {
-  const result = await evaluateWithJev(prompt, config, "test", response({ message_0: {
-    type: "choice", choice: "unsolicited_reply", probabilities: { direct_reply: 0.28, unsolicited_reply: 0.64, ignore: 0.08 },
-  } }) as typeof fetch);
-  assert.deepEqual(JSON.parse(result), { action: "reply", messageId: "1", directed: false });
-});
+for (const [name, choice, scores, expected] of [
+  ["direct reply wins below old cutoff", "direct_reply", { direct_reply: 0.6, ignore: 0.25, unsolicited_reply: 0.05, reaction_0: 0.1 }, { action: "reply", messageId: "1", directed: true }],
+  ["unsolicited reply wins below old cutoff", "unsolicited_reply", { direct_reply: 0.2, unsolicited_reply: 0.45, ignore: 0.35 }, { action: "reply", messageId: "1", directed: false }],
+  ["ignore beats each reply even when their sum wins", "ignore", { ignore: 0.4, direct_reply: 0.35, unsolicited_reply: 0.25 }, { action: "ignore" }],
+  ["reply beats individual reactions even when their sum wins", "direct_reply", { direct_reply: 0.35, ignore: 0.1, reaction_0: 0.3, reaction_1: 0.25 }, { action: "reply", messageId: "1", directed: true }],
+  ["reaction beats reply without a threshold", "reaction_1", { reaction_1: 0.4, direct_reply: 0.3, ignore: 0.2, reaction_0: 0.1 }, { action: "react", messageId: "1", emoji: "❤️" }],
+  ["direct winner below majority beats combined reactions", "direct_reply", { direct_reply: 0.34, ignore: 0.14, unsolicited_reply: 0, reaction_0: 0.26, reaction_1: 0.06, reaction_2: 0.05, reaction_3: 0.04, reaction_4: 0.1 }, { action: "reply", messageId: "1", directed: true }],
+  ["flat valid distribution uses Jev's tied winner", "reaction_4", { ignore: 0.125, direct_reply: 0.125, unsolicited_reply: 0.125, reaction_0: 0.125, reaction_1: 0.125, reaction_2: 0.125, reaction_3: 0.125, reaction_4: 0.125 }, { action: "react", messageId: "1", emoji: "👀" }],
+] as const) {
+  test(`Jev ranking: ${name}`, async () => {
+    const result = await evaluateWithJev(prompt, config, "test", response({ message_0: choiceAnswer(choice, scores) }) as typeof fetch);
+    assert.deepEqual(JSON.parse(result), expected);
+  });
+}
 
 test("Jev returns only allowlisted emoji and does not expose error response bodies", async () => {
   assert.deepEqual(JSON.parse(await evaluateWithJev(prompt, config, "test", response({
-    message_0: { type: "choice", choice: "reaction_2", probabilities: { reaction_2: 0.9 } },
+    message_0: choiceAnswer("reaction_2", { reaction_2: 0.9 }),
   }) as typeof fetch)), { action: "react", messageId: "1", emoji: "🎉" });
   await assert.rejects(evaluateWithJev(prompt, config, "test", (async () => new Response("secret response body", { status: 401 })) as typeof fetch), /^Error: TypeSafe participation request failed \(401\)\.$/);
 });
@@ -168,11 +186,4 @@ test("Copilot startup timeout cleans up a late classification session", async ()
   resolve({ sessionId: "late", disconnect: async () => {} });
   await new Promise(done => setImmediate(done));
   assert.equal(removed, true);
-});
-
-test("Jev accepts a clear follow-up below the former 80 percent cutoff", async () => {
-  const result = await evaluateWithJev(prompt, config, "test", response({ message_0: {
-    type: "choice", choice: "direct_reply", probabilities: { direct_reply: 0.76, unsolicited_reply: 0.02, ignore: 0.22 },
-  } }) as typeof fetch);
-  assert.deepEqual(JSON.parse(result), { action: "reply", messageId: "1", directed: true });
 });

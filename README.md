@@ -154,10 +154,9 @@ CHAT_PARTICIPATION_EVALUATOR=jev
 TYPESAFE_API_KEY=your_typesafe_key
 # Optional; otherwise defaults to jev-latest:
 # CHAT_PARTICIPATION_MODEL=jev-latest
-CHAT_PARTICIPATION_JEV_THRESHOLD=0.7
 ```
 
-Only Jev needs a TypeSafe key. The key stays with the host evaluator; shared provider environments do not receive it. Selecting Jev sends the bounded, permission-filtered conversation excerpt to TypeSafe. The two reply alternatives are combined when applying the action threshold; bypassing cooldown still requires a confident direct request. Low-probability or malformed results produce no Discord activity; there is no automatic fallback to a different service.
+Only Jev needs a TypeSafe key. The key stays with the host evaluator; shared provider environments do not receive it. Selecting Jev sends the bounded, permission-filtered conversation excerpt to TypeSafe. Jev’s highest-probability individual choice wins, including `ignore`; reply types and emoji scores are never combined. A winning `direct_reply` bypasses unsolicited-reply cooldown. The former `CHAT_PARTICIPATION_JEV_THRESHOLD` setting is ignored and can be removed. Malformed distributions produce no Discord activity; there is no automatic fallback to a different service.
 
 Run `npx tsx scripts/evaluate-participation.ts jev` for a live check against synthetic multi-user conversations, or replace `jev` with `codex`, `copilot`, or `opencode` to test an existing provider login. This uses real inference, reports decision accuracy and observed latency, and never connects to Discord. The small fixture set is a smoke test, not a general accuracy benchmark.
 
@@ -486,7 +485,6 @@ Defaults below describe behavior when a setting is absent, with template, wizard
 | `CHAT_PARTICIPATION_MODEL` | Luna for Codex/Copilot; available small model for OpenCode; `jev-latest` for Jev | Separate evaluator model; does not change the main conversation model. |
 | `CHAT_PARTICIPATION_REASONING` | `none` | `none` or `low`; Copilot uses `low`. Ignored by Jev. |
 | `CHAT_PARTICIPATION_TIMEOUT_MS` | `15000` | Evaluator timeout, 100–60000 ms. |
-| `CHAT_PARTICIPATION_JEV_THRESHOLD` | `0.7` | Minimum action probability, 0.5–1. Uncertain results stay silent. |
 | `TYPESAFE_API_KEY` | Unset | Required only when the participation evaluator is `jev`. |
 | `REGISTER_COMMANDS_ON_START` | `true` in the container entrypoint | Registers guild slash commands before the container starts the bot. Set `false` to skip; only the exact value `true` enables registration. Has no effect on native startup. |
 
