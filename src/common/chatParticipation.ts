@@ -181,7 +181,9 @@ export class ChatParticipation<T> {
     const reactionCooldown = Date.now() - state.lastReaction < this.options.cooldownMs;
     const ids = values.map(value => this.callbacks.id(value));
     const targetForEvaluation = values.at(-1)!;
-    const result = await this.callbacks.classify(JSON.stringify({ assistant: this.callbacks.identity?.(targetForEvaluation), candidateIds: ids, replyCooldown: cooldown, reactionCooldown, messages: context }), targetForEvaluation);
+    // Signed CDN references belong only to answer delivery, never the routing service.
+    const classifierContext = context.map(({ attachments: _attachments, ...message }) => message);
+    const result = await this.callbacks.classify(JSON.stringify({ assistant: this.callbacks.identity?.(targetForEvaluation), candidateIds: ids, replyCooldown: cooldown, reactionCooldown, messages: classifierContext }), targetForEvaluation);
     if (this.stopped) return;
     if (version !== state.version) {
       // Reconsider with the new messages: someone may have answered in the meantime.

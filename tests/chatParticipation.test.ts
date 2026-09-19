@@ -238,3 +238,28 @@ test("slash-only traffic evicts completed idle threads while retaining active th
     await active;
   } finally { finish(); await coordinator.stop(); }
 });
+
+test("classification excludes attachment references while answers retain them", async t => {
+  const attachment = { url: "https://cdn.discordapp.com/chart.png?signature=private", name: "private-chart.png", contentType: "image/png" };
+  const context = [{ ...message("1"), attachmentCount: 1, attachments: [attachment] }];
+  let classifierPrompt = "";
+  let answerContext: ConversationMessage[] = [];
+  let complete!: () => void;
+  const replied = new Promise<void>(resolve => { complete = resolve; });
+  const coordinator = new ChatParticipation<ConversationMessage>({
+    id: value => value.id, context: async () => context,
+    classify: async prompt => {
+      classifierPrompt = prompt;
+      return '{"action":"reply","messageId":"1","directed":true}';
+    },
+    reply: async (_target, history) => { answerContext = history; complete(); },
+    react: async () => {}, onError: error => { throw error; },
+  }, { debounceMs: 0, maxWaitMs: 0, cooldownMs: 0 });
+  t.after(() => coordinator.stop());
+  coordinator.enqueue("thread", context[0], false);
+  await replied;
+  assert.equal(JSON.parse(classifierPrompt).messages[0].attachmentCount, 1);
+  assert.equal("attachments" in JSON.parse(classifierPrompt).messages[0], false);
+  assert.doesNotMatch(classifierPrompt, /signature=private|private-chart/);
+  assert.deepEqual(answerContext[0].attachments, [attachment]);
+});
