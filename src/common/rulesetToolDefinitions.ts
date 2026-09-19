@@ -16,7 +16,7 @@ export const RULESET_TOOLS = [
   },
   {
     name: "set_user_ruleset",
-    description: "Create or replace a ruleset for a Discord user. Use this when an admin asks you to add or update a user-specific rule.",
+    description: "Create or replace a ruleset for a Discord user. Use this when the requester asks you to add or update a user-specific rule.",
     inputSchema: { type: "object" as const, properties: { run_id: runProperty, user: userProperty, name: nameProperty, instructions: instructionsProperty, priority: { type: "string" } }, required: ["run_id", "user", "instructions"], additionalProperties: false },
   },
   {
