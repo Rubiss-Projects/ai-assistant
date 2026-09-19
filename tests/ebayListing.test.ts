@@ -26,7 +26,7 @@ function browserFixture(t: TestContext, replies: Reply[]) {
     }
   };
   const pause = (event: any) => new Promise<void>((resolve, reject) => {
-    const requestId = String(++sequence);
+    const requestId = event.requestId ?? String(++sequence);
     pending.set(requestId, { resolve, reject });
     cdp.emit("Fetch.requestPaused", { requestId, frameId: "main", resourceType: "Document", request: { url, method: "GET" }, ...event });
   });
@@ -34,13 +34,23 @@ function browserFixture(t: TestContext, replies: Reply[]) {
     newCDPSession: async () => cdp,
     cookies: async () => sessionCookies ? [{ name: "anonymous", value: "private-to-context" }] : [],
     newPage: async () => ({ goto: async (target: string) => {
+      let reply: Reply;
+      for (;;) {
       navigations.push(target);
-      const reply = replies.shift() ?? {};
-      await pause({});
-      await pause({ responseStatusCode: reply.status ?? 200, responseHeaders: [
+      reply = replies.shift() ?? {};
+      const requestId = String(++sequence);
+      const request = { url: target, method: "GET" };
+      await pause({ requestId, request });
+      await pause({ requestId, request, responseStatusCode: reply.status ?? 200, responseHeaders: [
         ...(reply.location ? [{ name: "Location", value: reply.location }] : []),
         ...(reply.length === undefined ? [] : [{ name: "Content-Length", value: String(reply.length) }]),
       ] });
+      if (reply.location && (reply.status ?? 200) >= 300 && (reply.status ?? 200) < 400) {
+        target = new URL(reply.location, target).href;
+        continue;
+      }
+      break;
+      }
       if (reply.refresh) await pause({});
       // Neither subresources nor embedded frames may reach their destinations.
       await assert.rejects(pause({ resourceType: "Image", request: { url: "http://127.0.0.1/private", method: "GET" } }));
@@ -107,10 +117,67 @@ test("response interception stops redirects before private or alternate destinat
   const fixture = browserFixture(t, [{ status: 302, location: "http://169.254.169.254/latest/meta-data" }, { status: 307, location: "https://www.ebay.com/splashui/challenge" }]);
   for (let run = 0; run < 2; run++) {
     const result = await fetchWebpage(url, undefined, fetchEbayListing);
-    assert.equal(result.status === "unavailable" && result.errorCode, "http_error");
+    assert.equal(result.status === "unavailable" && result.errorCode, run === 0 ? "listing_mismatch" : "challenge");
   }
   assert.deepEqual(fixture.navigations, [url, url]);
   assert.equal(fixture.calls.filter(call => call.method === "Fetch.failRequest").length, 2);
+});
+
+test("same-item slug and query redirects succeed with redacted navigation evidence", async t => {
+  const destination = "https://www.ebay.com/itm/synology-nas/168671555854?session=secret-token";
+  const fixture = browserFixture(t, [{ status: 307, location: destination }, {}]);
+  const result = await fetchWebpage(url, undefined, fetchEbayListing);
+  assert.equal(result.status, "available");
+  if (result.status !== "available") return;
+  assert.match(result.text, /US \$910/);
+  assert.equal(result.finalUrl, destination);
+  assert.deepEqual(result.diagnostics?.navigations, [
+    { url, status: 307, redirectUrl: destination.split("?")[0] },
+    { url: destination.split("?")[0], status: 200 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result.diagnostics), /secret-token/);
+  assert.deepEqual(fixture.navigations, [url, destination]);
+});
+
+test("redirects cannot switch item, host, credentials, protocol, or port", async t => {
+  const targets = [
+    "https://www.ebay.com/itm/999999999999", "https://ebay.com/itm/168671555854",
+    "https://www.ebay.com.evil.test/itm/168671555854", "http://www.ebay.com/itm/168671555854",
+    "https://www.ebay.com:8443/itm/168671555854", "https://user:secret@www.ebay.com/itm/168671555854",
+  ];
+  const fixture = browserFixture(t, targets.map(location => ({ status: 302, location })));
+  for (const _ of targets) {
+    const result = await fetchWebpage(url, undefined, fetchEbayListing);
+    assert.equal(result.status === "unavailable" && result.errorCode, "listing_mismatch");
+    assert.doesNotMatch(JSON.stringify(result), /user:secret/);
+  }
+  assert.deepEqual(fixture.navigations, targets.map(() => url));
+});
+
+test("redirect loops and long changing chains stop without retrying", async t => {
+  const fixture = browserFixture(t, [{ status: 302, location: url }]);
+  const loop = await fetchWebpage(url, undefined, fetchEbayListing);
+  assert.equal(loop.status === "unavailable" && loop.errorCode, "navigation_loop");
+  assert.equal(fixture.navigations.length, 1);
+});
+
+test("at most five validated redirect hops are followed", async t => {
+  const fixture = browserFixture(t, Array.from({ length: 6 }, (_, i) => ({ status: 302, location: `${url}?step=${i}` })));
+  const result = await fetchWebpage(url, undefined, fetchEbayListing);
+  assert.equal(result.status === "unavailable" && result.errorCode, "navigation_limit");
+  assert.equal(fixture.navigations.length, 6);
+});
+
+test("challenge pages return bounded page evidence without retrying cookies", async t => {
+  const fixture = browserFixture(t, [{ status: 403, cookies: true, body: '<title>Pardon Our Interruption</title><p>Verify you are human</p><script>hiddenToken</script>' }]);
+  const result = await fetchWebpage(url, undefined, fetchEbayListing);
+  assert.equal(result.status, "unavailable");
+  if (result.status !== "unavailable") return;
+  assert.equal(result.errorCode, "challenge");
+  assert.equal(result.diagnostics?.title, "Pardon Our Interruption");
+  assert.match(result.diagnostics?.excerpt ?? "", /Verify you are human/);
+  assert.doesNotMatch(JSON.stringify(result), /hiddenToken|private-to-context/);
+  assert.equal(fixture.navigations.length, 1);
 });
 
 test("private DNS prevents browser startup", async t => {

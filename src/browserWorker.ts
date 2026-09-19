@@ -26,12 +26,12 @@ export function createBrowserWorker(readers: { general: typeof fetchPublicResour
       const resource = await readers[input.kind as "general" | "ebay"](input.url, { signal: controller.signal, maxBytes: input.maxBytes, timeoutMs: 35_000, standardPortsOnly: true });
       if (response.destroyed) return;
       response.setHeader("Content-Type", "application/json");
-      response.end(JSON.stringify({ ok: true, data: resource.data.toString("base64"), url: resource.url, contentType: resource.contentType, charset: resource.charset }));
+      response.end(JSON.stringify({ ok: true, data: resource.data.toString("base64"), url: resource.url, contentType: resource.contentType, charset: resource.charset, diagnostics: resource.diagnostics }));
     } catch (error) {
       if (response.destroyed) return;
       response.writeHead(422, { "Content-Type": "application/json" });
       response.end(JSON.stringify(error instanceof PublicFetchError
-        ? { ok: false, code: error.code, message: error.message, status: error.status }
+        ? { ok: false, code: error.code, message: error.message, status: error.status, diagnostics: error.diagnostics }
         : { ok: false, code: "network_error", message: "The browser worker could not complete this read." }));
     }
   });

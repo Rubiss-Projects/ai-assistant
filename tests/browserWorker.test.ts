@@ -81,3 +81,31 @@ test("browser reads never fall back to an unbounded in-process renderer", async 
   t.after(() => { if (previous !== undefined) process.env.AI_ASSISTANT_BROWSER_URL = previous; });
   await assert.rejects(fetchBrowserResource("general")("https://example.com", { maxBytes: 1024 }), /memory-limited browser worker/);
 });
+
+test("navigation diagnostics reach fetch_webpage through the worker on success and failure", async t => {
+  const { fetchWebpage } = await import("../src/utils/fetchWebpage.js");
+  const diagnostics = { finalUrl: "https://example.com/challenge", navigations: [
+    { url: "https://example.com/item", status: 307, redirectUrl: "https://example.com/challenge" },
+  ], title: "Verify you are human", excerpt: "Please verify you are human" };
+  const read = async (url: string) => {
+    if (url.endsWith("blocked")) throw new PublicFetchError("challenge", "Human verification required.", 307, diagnostics);
+    return { data: Buffer.from("<p>Public article</p>"), url, contentType: "text/html", filename: "page", diagnostics };
+  };
+  const server = createBrowserWorker({ general: read, ebay: read });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const previous = process.env.AI_ASSISTANT_BROWSER_URL;
+  process.env.AI_ASSISTANT_BROWSER_URL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.AI_ASSISTANT_BROWSER_URL; else process.env.AI_ASSISTANT_BROWSER_URL = previous;
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+  const result = await fetchBrowserResource("general")("https://example.com", { maxBytes: 1024 });
+  assert.deepEqual(result.diagnostics, diagnostics);
+  const unavailable = await fetchWebpage("https://example.com/blocked", undefined, undefined, { mode: "browser" });
+  assert.equal(unavailable.status, "unavailable");
+  if (unavailable.status !== "unavailable") return;
+  assert.equal(unavailable.errorCode, "challenge");
+  assert.equal(unavailable.httpStatus, 307);
+  assert.deepEqual(unavailable.diagnostics, diagnostics);
+  assert.match(unavailable.nextStep ?? "", /Do not retry/);
+});

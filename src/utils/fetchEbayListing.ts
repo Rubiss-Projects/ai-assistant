@@ -3,6 +3,7 @@ import { chromium, type Browser } from "playwright-core";
 import { operationSignal } from "../common/operationSignal.js";
 import { contentCharset, isPublicAddress, PublicFetchError, type fetchPublicResource, type PublicResource } from "./fetchArtifact.js";
 import { acquireBrowserSlot, closeBrowserAndRelease } from "./browserBudget.js";
+import { BrowserTrace, isChallengePage, isChallengeUrl } from "./browserDiagnostics.js";
 
 /** Only canonical, public eBay item pages can use the browser transport. */
 export function ebayListingUrl(raw: string): string | undefined {
@@ -13,7 +14,7 @@ export function ebayListingUrl(raw: string): string | undefined {
   return item ? `https://www.ebay.com/itm/${item}` : undefined;
 }
 
-/** Fresh anonymous Chromium session; no scripts, subresources, actions, or redirects. */
+/** Fresh anonymous session; only validated redirects to this same listing may continue. */
 export const fetchEbayListing: typeof fetchPublicResource = async (raw, options): Promise<PublicResource> => {
   const url = ebayListingUrl(raw);
   if (!url) throw new PublicFetchError("policy_blocked", "The eBay reader only accepts public HTTPS item URLs.");
@@ -23,6 +24,7 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
   let launch: Promise<Browser> | undefined;
   let releaseBrowser: (() => void) | undefined;
   let failure: Error | undefined;
+  const trace = new BrowserTrace();
   const close = () => { void browser?.close().catch(() => {}); };
   signal.addEventListener("abort", close, { once: true });
   const within = async <T>(promise: Promise<T>): Promise<T> => {
@@ -61,6 +63,9 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
     const frameId = (await cdp.send("Page.getFrameTree")).frameTree.frame.id;
     let bytes = 0;
     let navigationPermitted = false;
+    let expectedUrl = url;
+    let redirects = 0;
+    const visited = new Set<string>();
     const stop = (error: Error) => { failure ??= error; close(); };
     cdp.on("Network.dataReceived", event => {
       bytes += event.dataLength;
@@ -68,15 +73,39 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
     });
     cdp.on("Fetch.requestPaused", event => {
       void (async () => {
-        const allowed = event.frameId === frameId && event.resourceType === "Document" && event.request.method === "GET" && event.request.url === url;
+        const mainDocument = event.frameId === frameId && event.resourceType === "Document";
+        if (mainDocument) {
+          if (event.responseStatusCode !== undefined) trace.response(event.requestId, event.request.url, event.responseStatusCode,
+            event.responseHeaders?.find(header => header.name.toLowerCase() === "location")?.value);
+          else trace.request(event.requestId, event.request.url);
+        }
+        const allowed = mainDocument && event.request.method === "GET" && event.request.url === expectedUrl;
         if (!allowed) {
           if (event.frameId === frameId && event.resourceType === "Document") failure ??= new PublicFetchError("policy_blocked", "eBay navigated away from the requested listing.");
           await cdp.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
         } else if (event.responseStatusCode !== undefined) {
-          // Intercept responses before Chromium follows any Location header.
+          // Validate before Chromium follows Location; DNS remains pinned to www.ebay.com.
           if (event.responseStatusCode >= 300 && event.responseStatusCode < 400) {
-            failure ??= new PublicFetchError("http_error", "eBay redirected away from the requested listing.", event.responseStatusCode);
-            await cdp.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
+            const location = event.responseHeaders?.find(header => header.name.toLowerCase() === "location")?.value;
+            let target: URL | undefined;
+            try { if (location) target = new URL(location, event.request.url); } catch { /* Rejected below. */ }
+            if (target) target.hash = "";
+            if (!target) failure ??= new PublicFetchError("http_error", "eBay returned a redirect without a valid destination.", event.responseStatusCode);
+            else if (target.origin === "https://www.ebay.com" && isChallengeUrl(target.href)) {
+              failure ??= new PublicFetchError("challenge", "eBay redirected to a verification challenge. This anonymous reader cannot complete human verification.", event.responseStatusCode);
+            } else if (target.origin !== "https://www.ebay.com" || ebayListingUrl(target.href) !== url) {
+              failure ??= new PublicFetchError("listing_mismatch", "eBay redirected outside the requested listing; no replacement listing was used.", event.responseStatusCode);
+            } else if (visited.has(target.href)) {
+              failure ??= new PublicFetchError("navigation_loop", "eBay repeated a listing redirect; the read stopped to avoid a loop.", event.responseStatusCode);
+            } else if (++redirects > 5) {
+              failure ??= new PublicFetchError("navigation_limit", "eBay exceeded the five-redirect limit.", event.responseStatusCode);
+            }
+            if (failure) await cdp.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
+            else {
+              expectedUrl = target!.href;
+              navigationPermitted = true;
+              await cdp.send("Fetch.continueResponse", { requestId: event.requestId });
+            }
           } else {
             const length = event.responseHeaders?.find(header => header.name.toLowerCase() === "content-length")?.value;
             if (Number(length) > options.maxBytes) stop(new PublicFetchError("too_large", `Input exceeds the ${options.maxBytes}-byte limit.`));
@@ -87,6 +116,7 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
           await cdp.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
         } else {
           navigationPermitted = false;
+          visited.add(event.request.url);
           await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
         }
       })().catch(error => { if (!signal.aborted && !failure) stop(error); });
@@ -95,25 +125,31 @@ export const fetchEbayListing: typeof fetchPublicResource = async (raw, options)
     await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }, { urlPattern: "*", requestStage: "Response" }] });
     for (let attempt = 0; attempt < 2; attempt++) {
       signal.throwIfAborted();
+      expectedUrl = url;
+      visited.clear();
       navigationPermitted = true;
       const response = await within(page.goto(url, { waitUntil: "domcontentloaded", timeout: 25_000 }));
       if (!response) throw new PublicFetchError("network_error", "eBay did not return a listing response.");
       const data = await within(response.body());
       if (failure) throw failure;
       if (data.length > options.maxBytes) throw new PublicFetchError("too_large", `Input exceeds the ${options.maxBytes}-byte limit.`);
+      trace.document(data.toString("utf8"));
+      if (isChallengePage(trace.diagnostics.title ?? "", trace.diagnostics.excerpt ?? "")) {
+        throw new PublicFetchError("challenge", "eBay returned a verification challenge; the listing contents are unavailable.", response.status());
+      }
       // eBay's first response may establish an anonymous session with HTTP 403.
       // Retain only this fresh context's cookies for one read of the same item.
       if (response.status() === 403 && attempt === 0 && (await context.cookies(url)).length) continue;
       if (response.status() !== 200) throw new PublicFetchError("http_error", `The source returned HTTP ${response.status()}.`, response.status());
       const header = (await response.allHeaders())["content-type"] ?? "application/octet-stream";
-      return { data, url, filename: "listing.html", contentType: header.split(";")[0].trim().toLowerCase(), charset: contentCharset(header) };
+      return { data, url: expectedUrl, filename: "listing.html", contentType: header.split(";")[0].trim().toLowerCase(), charset: contentCharset(header), diagnostics: trace.diagnostics };
     }
     throw new PublicFetchError("http_error", "The source returned HTTP 403.", 403);
   } catch (error) {
     if (signal.aborted) throw signal.reason;
-    if (failure) throw failure;
-    if (error instanceof PublicFetchError) throw error;
-    throw new PublicFetchError("network_error", "The eBay browser could not complete this read. Try again or use another source.");
+    const cause = failure ?? error;
+    if (cause instanceof PublicFetchError) { cause.diagnostics = trace.diagnostics; throw cause; }
+    throw new PublicFetchError("network_error", "The eBay browser could not complete this read. Try again or use another source.", undefined, trace.diagnostics);
   } finally {
     signal.removeEventListener("abort", close);
     operation.dispose();

@@ -30,12 +30,13 @@ export interface FetchedArtifact {
   contentType: string;
 }
 
-export type PublicFetchFailure = "policy_blocked" | "http_error" | "too_large" | "unsupported" | "network_error";
+export type PublicFetchFailure = "policy_blocked" | "http_error" | "too_large" | "unsupported" | "network_error" | "challenge" | "navigation_limit" | "navigation_loop" | "listing_mismatch";
 export class PublicFetchError extends Error {
-  constructor(readonly code: PublicFetchFailure, message: string, readonly status?: number) { super(message); }
+  constructor(readonly code: PublicFetchFailure, message: string, readonly status?: number,
+    public diagnostics?: import("./browserDiagnostics.js").BrowserDiagnostics) { super(message); }
 }
 
-export interface PublicResource extends FetchedArtifact { url: string; charset?: string }
+export interface PublicResource extends FetchedArtifact { url: string; charset?: string; diagnostics?: import("./browserDiagnostics.js").BrowserDiagnostics }
 
 export function contentCharset(contentType: string): string | undefined {
   const match = contentType.match(/;\s*charset\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;\s]*))/i);

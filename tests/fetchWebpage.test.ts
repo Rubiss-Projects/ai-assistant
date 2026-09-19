@@ -199,3 +199,30 @@ test("cancellation aborts retrieval without a retry or an unavailable success re
   await assert.rejects(operation, /cancelled by owner/);
   assert.equal(calls, 1);
 });
+
+test("explicit eBay rendering removes tracking and rejects another listing's facts", async () => {
+  const requested = "https://www.ebay.com/itm/318826959150";
+  let called = 0;
+  const result = await fetchWebpage(requested + "?tracking=secret", undefined, undefined, {
+    mode: "browser", browserReader: async url => {
+      called++;
+      assert.equal(url, requested);
+      return { ...page("<title>Another item</title><p>$42</p>"), url: "https://www.ebay.com/itm/999999999999" };
+    },
+  });
+  assert.equal(result.status === "unavailable" && result.errorCode, "listing_mismatch");
+  assert.equal(called, 1);
+});
+
+test("listing image and embedded-description URLs are discoverable without loading them", async () => {
+  let calls = 0;
+  const result = await fetchWebpage("https://example.com/page", undefined, async () => {
+    calls++;
+    return page('<head><base href="/listing/"><meta property="og:image" content="photo.jpg"></head><body><img src="photo.jpg"><img data-src="other.jpg" src="placeholder.jpg"><iframe src="description"></iframe><iframe src="javascript:bad()"></iframe><img src="https://user:secret@example.com/private"><div hidden><iframe src="hidden"></iframe><img src="hidden.jpg"></div></body>');
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.status, "available");
+  if (result.status !== "available") return;
+  assert.deepEqual(result.images, ["https://example.com/listing/photo.jpg", "https://example.com/listing/other.jpg"]);
+  assert.deepEqual(result.embeddedPages, ["https://example.com/listing/description"]);
+});

@@ -26,10 +26,12 @@ export function artifactFilename(value) {
 export class PublicFetchError extends Error {
     code;
     status;
-    constructor(code, message, status) {
+    diagnostics;
+    constructor(code, message, status, diagnostics) {
         super(message);
         this.code = code;
         this.status = status;
+        this.diagnostics = diagnostics;
     }
 }
 export function contentCharset(contentType) {

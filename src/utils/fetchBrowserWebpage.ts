@@ -1,10 +1,12 @@
-import { chromium, type Browser } from "playwright-core";
+import { chromium, type Browser, type Request } from "playwright-core";
 import { setTimeout as delay } from "node:timers/promises";
 import { operationSignal } from "../common/operationSignal.js";
 import { PublicFetchError, type fetchPublicResource } from "./fetchArtifact.js";
 import { createPublicBrowserProxy, publicBrowserAddress, publicBrowserUrl } from "./publicBrowserProxy.js";
 import { acquireBrowserSlot, closeBrowserAndRelease } from "./browserBudget.js";
 import { boundedBrowserDocument, MAX_BROWSER_DOM_NODES } from "./browserDocument.js";
+import { BrowserTrace, isChallengePage, isChallengeUrl } from "./browserDiagnostics.js";
+import { ebayListingUrl } from "./fetchEbayListing.js";
 
 /** General anonymous renderer. The proxy is the network boundary; routing limits page actions. */
 export const fetchBrowserWebpage: typeof fetchPublicResource = async (raw, options) => {
@@ -17,6 +19,7 @@ export const fetchBrowserWebpage: typeof fetchPublicResource = async (raw, optio
   let monitor: ReturnType<typeof setInterval> | undefined;
   let proxy: Awaited<ReturnType<typeof createPublicBrowserProxy>> | undefined;
   let failure: PublicFetchError | undefined;
+  const trace = new BrowserTrace();
   const close = () => { void browser?.close().catch(() => {}); };
   const within = async <T>(promise: Promise<T>): Promise<T> => {
     let abort = () => {};
@@ -59,9 +62,14 @@ export const fetchBrowserWebpage: typeof fetchPublicResource = async (raw, optio
     let requests = 0, attemptedRequests = 0, navigations = 0, bytes = 0;
     let documentStatus: number | undefined;
     let documentFailure: PublicFetchError | undefined;
+    const requestIds = new WeakMap<Request, string>();
+    const visits = new Map<string, number>();
     const page = await context.newPage();
     context.on("page", extra => { if (extra !== page) void extra.close().catch(() => {}); });
     const stop = (message: string) => { failure ??= new PublicFetchError("too_large", message); close(); };
+    const stopNavigation = (code: "challenge" | "navigation_loop" | "navigation_limit", message: string) => {
+      failure ??= new PublicFetchError(code, message); close();
+    };
     await context.route("**/*", async route => {
       const request = route.request();
       try {
@@ -76,11 +84,21 @@ export const fetchBrowserWebpage: typeof fetchPublicResource = async (raw, optio
       // Blocked images/ads do not spend the useful page-read budget. Still bound
       // hostile scripts that repeatedly attempt requests rejected by routing.
       if (++attemptedRequests > 1024) stop("Browser attempted-request budget exceeded.");
-      if (request.isNavigationRequest() && request.frame() === page.mainFrame() && ++navigations > 8) stop("Browser navigation budget exceeded.");
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+        const id = String(++navigations);
+        requestIds.set(request, id);
+        trace.request(id, request.url());
+        const count = (visits.get(request.url()) ?? 0) + 1;
+        visits.set(request.url(), count);
+        if (isChallengeUrl(request.url())) stopNavigation("challenge", "The source redirected to a verification challenge; this anonymous reader cannot complete human verification.");
+        else if (count >= 3) stopNavigation("navigation_loop", "The page repeatedly navigated to the same URL; the read stopped to avoid a loop.");
+        else if (navigations > 8) stopNavigation("navigation_limit", "Browser navigation budget exceeded (eight main-frame requests).");
+      }
     });
     page.on("response", response => {
       if (response.request().isNavigationRequest() && response.request().frame() === page.mainFrame()) {
         documentStatus = response.status();
+        trace.response(requestIds.get(response.request()) ?? String(navigations), response.url(), response.status(), response.headers()["location"]);
         documentFailure = undefined;
       }
     });
@@ -110,7 +128,14 @@ export const fetchBrowserWebpage: typeof fetchPublicResource = async (raw, optio
       break;
     }
     if (!response) throw new PublicFetchError("network_error", "The browser did not receive a page.");
-    if (response.status() !== 200) throw new PublicFetchError("http_error", `The source returned HTTP ${response.status()}.`, response.status());
+    if (response.status() !== 200) {
+      // Preserve bounded evidence from an error document, without treating it as listing facts.
+      try { trace.document(await within(boundedBrowserDocument(cdp, Math.min(options.maxBytes, 64 * 1024)))); } catch { /* Diagnostics are best effort. */ }
+      if (isChallengePage(trace.diagnostics.title ?? "", trace.diagnostics.excerpt ?? "")) {
+        throw new PublicFetchError("challenge", "The source returned a verification challenge; page contents are unavailable.", response.status());
+      }
+      throw new PublicFetchError("http_error", `The source returned HTTP ${response.status()}.`, response.status());
+    }
     // Allow client-rendered articles and their read-only data requests to settle, without waiting on ads indefinitely.
     await within(page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {}));
     await delay(500, undefined, { signal });
@@ -119,16 +144,22 @@ export const fetchBrowserWebpage: typeof fetchPublicResource = async (raw, optio
     if (documentFailure) throw documentFailure;
     if (documentStatus !== 200) throw new PublicFetchError("http_error", `The source returned HTTP ${documentStatus}.`, documentStatus);
     const html = await within(boundedBrowserDocument(cdp, options.maxBytes));
+    trace.document(html);
     if (failure) throw failure;
+    if (isChallengePage(trace.diagnostics.title ?? "", trace.diagnostics.excerpt ?? "")) {
+      throw new PublicFetchError("challenge", "The source returned a verification challenge; page contents are unavailable.", documentStatus);
+    }
+    if (ebayListingUrl(raw) && ebayListingUrl(page.url()) !== ebayListingUrl(raw)) {
+      throw new PublicFetchError("listing_mismatch", "The browser ended outside the requested eBay listing; no replacement listing was used.");
+    }
     const data = Buffer.from(html);
     if (data.length > options.maxBytes) throw new PublicFetchError("too_large", `Rendered page exceeds the ${options.maxBytes}-byte limit.`);
-    return { data, url: page.url(), filename: "page.html", contentType: "text/html", charset: "utf-8" };
+    return { data, url: page.url(), filename: "page.html", contentType: "text/html", charset: "utf-8", diagnostics: trace.diagnostics };
   } catch (error) {
     if (signal.aborted) throw signal.reason;
-    if (failure) throw failure;
-    if (error instanceof PublicFetchError) throw error;
-    if (proxy?.error) throw proxy.error;
-    throw new PublicFetchError("network_error", "The anonymous browser could not read this page. Try hosted article reading or another source.");
+    const cause = failure ?? (error instanceof PublicFetchError ? error : proxy?.error);
+    if (cause) { cause.diagnostics = trace.diagnostics; throw cause; }
+    throw new PublicFetchError("network_error", "The anonymous browser could not read this page. Try hosted article reading or another source.", undefined, trace.diagnostics);
   } finally {
     signal.removeEventListener("abort", close);
     clearInterval(monitor);
