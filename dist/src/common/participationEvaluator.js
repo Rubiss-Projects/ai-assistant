@@ -48,6 +48,9 @@ export async function evaluateWithJev(prompt, config, apiKey = process.env.TYPES
     if (!Array.isArray(state.candidateIds) || !state.candidateIds.length)
         return '{"action":"ignore"}';
     const emojis = state.availableEmojis ?? DEFAULT_PARTICIPATION_EMOJIS;
+    // Jev sees emoji names in the Choice criteria; host values need not be repeated
+    // in shared state. Provider evaluators still receive the original catalog.
+    const { availableEmojis: _catalog, ...jevState } = state;
     const emojiCriteria = Object.fromEntries(emojis.map((emoji, i) => [`emoji_${i}`, emoji.name]));
     const questions = Object.fromEntries(state.candidateIds.flatMap((id, i) => [[`message_${i}`, {
                 type: "choice",
@@ -66,7 +69,7 @@ export async function evaluateWithJev(prompt, config, apiKey = process.env.TYPES
     // Keep each action/emoji pair together. Large guild catalogs and message bursts
     // need multiple bounded requests rather than silently dropping emoji candidates.
     const bodies = [];
-    const encode = (batch) => JSON.stringify({ model: config.model ?? "jev-latest", state, questions: batch });
+    const encode = (batch) => JSON.stringify({ model: config.model ?? "jev-latest", state: jevState, questions: batch });
     let batch = {};
     for (let i = 0; i < state.candidateIds.length; i++) {
         const pair = { [`message_${i}`]: questions[`message_${i}`], [`emoji_${i}`]: questions[`emoji_${i}`] };

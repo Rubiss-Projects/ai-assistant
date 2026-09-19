@@ -84,7 +84,7 @@ test("custom emoji are batched with actions and mapped back to host values", asy
   const result = await evaluateWithJev(JSON.stringify(state), config, "test", async (_url, options) => {
     calls++;
     const body = JSON.parse(String(options?.body));
-    assert.deepEqual(body.state, state);
+    assert.deepEqual(body.state, { candidateIds: state.candidateIds, messages: state.messages });
     assert.deepEqual(Object.keys(body.questions.message_0.criteria), ["ignore", "direct_reply", "unsolicited_reply", "react"]);
     assert.deepEqual(body.questions.emoji_0.criteria, { emoji_0: "thumbs up", emoji_1: "party_parrot" });
     assert.match(body.questions.emoji_0.instructions, /Assuming.*candidate message "1"/);
@@ -224,7 +224,7 @@ test("large catalogs split bounded requests without dropping emoji or losing pri
     if (signal) assert.equal(options?.signal, signal);
     signal = options?.signal as AbortSignal;
     const body = JSON.parse(String(options?.body));
-    assert.equal(body.state.availableEmojis.length, 300);
+    assert.equal("availableEmojis" in body.state, false);
     const answers: Record<string, unknown> = {};
     for (const key of Object.keys(body.questions).filter(key => key.startsWith("message_"))) {
       const index = key.slice("message_".length);
@@ -235,4 +235,22 @@ test("large catalogs split bounded requests without dropping emoji or losing pri
   });
   assert.ok(calls > 1);
   assert.deepEqual(JSON.parse(result), { action: "reply", messageId: "11", directed: true });
+});
+
+
+test("full conversation and 300 long-named server emoji fit without duplicated catalog", async () => {
+  const availableEmojis = Array.from({ length: 300 }, (_, i) => ({ value: String(123456789012345678n + BigInt(i)), name: `celebration_${i}`.padEnd(32, "x") }));
+  const messages = Array.from({ length: 16 }, (_, i) => ({ id: String(i), authorId: "alice", authorName: "Alice", content: "x".repeat(1500), bot: false, attachmentCount: 0 }));
+  let called = false;
+  const result = await evaluateWithJev(JSON.stringify({ candidateIds: ["15"], availableEmojis, messages }), config, "test", async (_url, options) => {
+    called = true;
+    assert.ok(Buffer.byteLength(String(options?.body)) <= 60_000);
+    const body = JSON.parse(String(options?.body));
+    assert.equal("availableEmojis" in body.state, false);
+    assert.deepEqual(body.state.messages, messages);
+    assert.equal(Object.keys(body.questions.emoji_0.criteria).length, 300);
+    return response({ message_0: choiceAnswer("react", { react: 1 }), emoji_0: { type: "choice", choice: "emoji_299", probabilities: Object.fromEntries(availableEmojis.map((_, i) => [`emoji_${i}`, i === 299 ? 1 : 0])) } })();
+  });
+  assert.equal(called, true);
+  assert.deepEqual(JSON.parse(result), { action: "react", messageId: "15", emoji: availableEmojis[299].value });
 });
