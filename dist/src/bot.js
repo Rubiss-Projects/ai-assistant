@@ -60,7 +60,7 @@ export function createBot(sessions) {
             // Log routing only, never conversation text or raw model output.
             const state = JSON.parse(prompt);
             const decision = parseParticipationDecision(result, state.candidateIds, state.availableEmojis);
-            console.info(`[participation] thread=${target.channelId} action=${decision.action} elapsedMs=${Date.now() - started}`);
+            console.info(`[participation] thread=${target.channelId} decision=${decision.action} elapsedMs=${Date.now() - started}`);
             return result;
         },
         reply: async (target, context, requests) => {
@@ -72,6 +72,7 @@ export function createBot(sessions) {
         react: async (target, emoji) => {
             await reactWithParticipationEmoji(target, emoji);
         },
+        onOutcome: (target, action, outcome) => console.info(`[participation] thread=${target.channelId} action=${action} outcome=${outcome}`),
         onError: () => console.warn("[participation] Evaluation failed; staying silent. Check evaluator access, model and timeout settings."),
     });
     const enabled = process.env.SCHEDULES_ENABLED?.trim() || "false";

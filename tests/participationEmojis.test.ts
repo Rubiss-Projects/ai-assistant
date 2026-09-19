@@ -23,7 +23,7 @@ function guildMessage() {
 
 test("catalog includes this server's usable emoji and Unicode fallbacks", () => {
   const { message, guild } = guildMessage();
-  assert.deepEqual(participationEmojis(message as never), [...DEFAULT_PARTICIPATION_EMOJIS, { value: "100", name: "party_parrot" }, { value: "400", name: "role_celebration" }]);
+  assert.deepEqual(participationEmojis(message as never), [...DEFAULT_PARTICIPATION_EMOJIS, { value: "100", name: "party_parrot", custom: true }, { value: "400", name: "role_celebration", custom: true }]);
   guild.emojis.cache.get("100")!.name = "renamed";
   assert.equal(participationEmojis(message as never).find(e => e.value === "100")?.name, "renamed");
   assert.deepEqual(participationEmojis({ guild: null }), DEFAULT_PARTICIPATION_EMOJIS);
@@ -33,11 +33,11 @@ test("reaction delivery rechecks deletion, availability and roles", async () => 
   const { message, guild, sent } = guildMessage();
   await reactWithParticipationEmoji(message as never, "100");
   guild.emojis.cache.delete("100");
-  await reactWithParticipationEmoji(message as never, "100");
+  await assert.rejects(reactWithParticipationEmoji(message as never, "100"), /no longer available/);
   guild.members.me.roles.cache.clear();
-  await reactWithParticipationEmoji(message as never, "400");
-  await reactWithParticipationEmoji(message as never, "200");
-  await reactWithParticipationEmoji(message as never, "other-server-emoji");
+  await assert.rejects(reactWithParticipationEmoji(message as never, "400"), /no longer available/);
+  await assert.rejects(reactWithParticipationEmoji(message as never, "200"), /no longer available/);
+  await assert.rejects(reactWithParticipationEmoji(message as never, "other-server-emoji"), /no longer available/);
   await reactWithParticipationEmoji(message as never, "👍");
   assert.deepEqual(sent, ["100", "👍"]);
 });
@@ -45,14 +45,14 @@ test("reaction delivery rechecks deletion, availability and roles", async () => 
 test("custom emoji must be in the catalog supplied for the decision", () => {
   const raw = JSON.stringify({ action: "react", messageId: "1", emoji: "100" });
   assert.deepEqual(parseParticipationDecision(raw, ["1"]), { action: "ignore" });
-  assert.deepEqual(parseParticipationDecision(raw, ["1"], [{ value: "100", name: "party_parrot" }]), JSON.parse(raw));
+  assert.deepEqual(parseParticipationDecision(raw, ["1"], [{ value: "100", name: "party_parrot", custom: true }]), JSON.parse(raw));
 });
 
 test("coordinator carries custom catalog through classification and reaction delivery", async t => {
   const sent: string[] = [];
   let finish!: () => void;
   const done = new Promise<void>(resolve => { finish = resolve; });
-  const catalog = [{ value: "100", name: "party_parrot" }];
+  const catalog = [{ value: "100", name: "party_parrot", custom: true }];
   const coordinator = new ChatParticipation<ConversationMessage>({
     id: m => m.id, context: async messages => messages, emojis: () => catalog,
     classify: async prompt => {
@@ -84,7 +84,7 @@ test("evaluation catches wrong targets, direction and malformed output", () => {
 
 test("evaluation checks requested custom emoji and cooldown activity", () => {
   const reaction: ParticipationScenario = { ...scenario, replyCooldown: false, reactionCooldown: true, expectedActivity: false,
-    availableEmojis: [{ value: "100", name: "party" }, { value: "200", name: "sad" }],
+    availableEmojis: [{ value: "100", name: "party", custom: true }, { value: "200", name: "sad", custom: true }],
     expected: [{ action: "react", messageId: "2", emoji: "100" }],
   };
   assert.equal(assessParticipation(JSON.stringify(reaction.expected[0]), reaction).passed, true);
