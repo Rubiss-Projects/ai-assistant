@@ -9,7 +9,10 @@ export function assessParticipation(raw: string, scenario: ParticipationScenario
   const activity = participationAllowed(decision, scenario.replyCooldown ?? false, scenario.reactionCooldown ?? false);
   return {
     valid: true, decision, activity,
-    passed: scenario.expected.some(expected => isDeepStrictEqual(expected, decision)) &&
+    passed: scenario.expected.some(expected => isDeepStrictEqual(
+      expected.action === "react" ? { ...expected, directed: Boolean(expected.directed) } : expected,
+      decision.action === "react" ? { ...decision, directed: Boolean(decision.directed) } : decision,
+    )) &&
       (scenario.expectedActivity === undefined || activity === scenario.expectedActivity),
   };
 }

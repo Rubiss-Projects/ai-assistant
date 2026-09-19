@@ -83,7 +83,7 @@ test("cooldown suppresses ranked unsolicited replies but permits a sub-70-percen
     return evaluateWithJev(prompt, participationEvaluatorConfig({}), "test", async () => new Response(JSON.stringify({ answers: {
       message_0: { type: "choice", choice, probabilities: {
         ignore: 0.25, direct_reply: 0.05, unsolicited_reply: 0.05,
-        react: 0.1,
+        direct_react: 0, react: 0.1,
         [choice]: 0.6,
       } },
     } })));
@@ -277,4 +277,61 @@ test("answer context excludes unbounded attachment metadata without losing downl
   assert.doesNotMatch(prompt, /cdn\.discordapp\.com|signature|chart-99/);
   assert.ok(prompt.length < 1000);
   assert.deepEqual(participationAttachments(context), attachments);
+});
+
+test("explicit reaction requests bypass cooldown while unsolicited reactions remain suppressed", async t => {
+  const reactions: string[] = [], outcomes: string[] = [];
+  const coordinator = new ChatParticipation<ConversationMessage>({
+    id: value => value.id, context: async values => values,
+    classify: async prompt => {
+      const id = JSON.parse(prompt).candidateIds[0];
+      return JSON.stringify({ action: "react", messageId: id, emoji: "👍", directed: id !== "3" });
+    },
+    reply: async () => assert.fail("must not write a reply"),
+    react: async value => { reactions.push(value.id); },
+    onOutcome: (value, _action, outcome) => { outcomes.push(`${value.id}:${outcome}`); },
+    onError: error => { throw error; },
+  }, { debounceMs: 0, maxWaitMs: 0, cooldownMs: 60_000 });
+  t.after(() => coordinator.stop());
+  for (const id of ["1", "2", "3"]) {
+    coordinator.enqueue("thread", message(id), false);
+    await sleep();
+  }
+  assert.deepEqual(reactions, ["1", "2"]);
+  assert.deepEqual(outcomes, ["1:delivered", "2:delivered", "3:cooldown"]);
+  assert.deepEqual(parseParticipationDecision('{"action":"react","messageId":"1","emoji":"👍","directed":"true"}', ["1"]), { action: "ignore" });
+});
+
+test("conversation state retains only the assistant's observed reactions", async () => {
+  const latest = { id: "1", content: "Pick a different emoji", createdTimestamp: 1,
+    author: { id: "alice", username: "Alice", bot: false }, attachments: new Map(),
+    reactions: { cache: new Map([
+      ["1", { me: true, emoji: { id: "123", name: "party_parrot" } }],
+      ["2", { me: true, emoji: { id: null, name: "👍" } }],
+      ["3", { me: false, emoji: { id: "456", name: "other_persons_reaction" } }],
+    ]) },
+    channel: { permissionsFor: () => ({ has: () => false }) },
+  };
+  const context = await participationContext([latest as never], "bot", () => true);
+  assert.deepEqual(context[0].assistantReactions, [{ value: "123", name: "party_parrot" }, { value: "👍", name: "👍" }]);
+});
+
+test("failed reaction delivery is not logged as delivered and does not start cooldown", async t => {
+  const outcomes: string[] = [];
+  let attempts = 0;
+  const coordinator = new ChatParticipation<ConversationMessage>({
+    id: value => value.id, context: async values => values,
+    classify: async prompt => JSON.stringify({ action: "react", messageId: JSON.parse(prompt).candidateIds[0], emoji: "👍" }),
+    reply: async () => {},
+    react: async () => { if (++attempts === 1) throw new Error("Discord rejected the emoji"); },
+    onOutcome: (_target, _action, outcome) => { outcomes.push(outcome); },
+    onError: () => { outcomes.push("failed"); },
+  }, { debounceMs: 0, maxWaitMs: 0, cooldownMs: 60_000 });
+  t.after(() => coordinator.stop());
+  coordinator.enqueue("thread", message("1"), false);
+  await sleep();
+  coordinator.enqueue("thread", message("2"), false);
+  await sleep();
+  assert.equal(attempts, 2);
+  assert.deepEqual(outcomes, ["failed", "delivered"]);
 });

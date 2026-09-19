@@ -12,7 +12,7 @@ import { join } from "node:path";
 const config = participationEvaluatorConfig({});
 const prompt = JSON.stringify({ candidateIds: ["1", "2"], cooldown: false, messages: [] });
 function choiceAnswer(choice: string, scores: Record<string, number>) {
-  const probabilities = { ignore: 0, direct_reply: 0, unsolicited_reply: 0, react: 0, ...scores };
+  const probabilities = { ignore: 0, direct_reply: 0, unsolicited_reply: 0, direct_react: 0, react: 0, ...scores };
   if (!("ignore" in scores)) probabilities.ignore = 1 - Object.values(probabilities).reduce((sum, value) => sum + value, 0);
   return { type: "choice", choice, probabilities };
 }
@@ -79,14 +79,14 @@ for (const [name, choice, scores, expected] of [
 }
 
 test("custom emoji are batched with actions and mapped back to host values", async () => {
-  const state = { candidateIds: ["1"], messages: [], availableEmojis: [{ value: "👍", name: "thumbs up" }, { value: "123456789012345678", name: "party_parrot" }] };
+  const state = { candidateIds: ["1"], messages: [], availableEmojis: [{ value: "👍", name: "thumbs up", custom: false }, { value: "123456789012345678", name: "party_parrot", custom: true }] };
   let calls = 0;
   const result = await evaluateWithJev(JSON.stringify(state), config, "test", async (_url, options) => {
     calls++;
     const body = JSON.parse(String(options?.body));
     assert.deepEqual(body.state, { candidateIds: state.candidateIds, messages: state.messages });
-    assert.deepEqual(Object.keys(body.questions.message_0.criteria), ["ignore", "direct_reply", "unsolicited_reply", "react"]);
-    assert.deepEqual(body.questions.emoji_0.criteria, { emoji_0: "thumbs up", emoji_1: "party_parrot" });
+    assert.deepEqual(Object.keys(body.questions.message_0.criteria), ["ignore", "direct_reply", "unsolicited_reply", "direct_react", "react"]);
+    assert.deepEqual(body.questions.emoji_0.criteria, { emoji_0: 'Standard Unicode emoji: "thumbs up"', emoji_1: 'Custom server emoji: "party_parrot"' });
     assert.match(body.questions.emoji_0.instructions, /Assuming.*candidate message "1"/);
     return response({ message_0: choiceAnswer("react", { react: 1 }), emoji_0: { type: "choice", choice: "emoji_1", probabilities: { emoji_0: 0.2, emoji_1: 0.8 } } })();
   });
@@ -215,7 +215,7 @@ test("Copilot startup timeout cleans up a late classification session", async ()
 
 test("large catalogs split bounded requests without dropping emoji or losing priority", async () => {
   const candidateIds = Array.from({ length: 12 }, (_, i) => String(i));
-  const availableEmojis = Array.from({ length: 300 }, (_, i) => ({ value: String(1000 + i), name: `server_celebration_${i}` }));
+  const availableEmojis = Array.from({ length: 300 }, (_, i) => ({ value: String(1000 + i), name: `server_celebration_${i}`, custom: true }));
   let calls = 0;
   let signal: AbortSignal | undefined;
   const result = await evaluateWithJev(JSON.stringify({ candidateIds, availableEmojis, messages: [] }), config, "test", async (_url, options) => {
@@ -239,7 +239,7 @@ test("large catalogs split bounded requests without dropping emoji or losing pri
 
 
 test("full conversation and 300 long-named server emoji fit without duplicated catalog", async () => {
-  const availableEmojis = Array.from({ length: 300 }, (_, i) => ({ value: String(123456789012345678n + BigInt(i)), name: `celebration_${i}`.padEnd(32, "x") }));
+  const availableEmojis = Array.from({ length: 300 }, (_, i) => ({ value: String(123456789012345678n + BigInt(i)), name: `celebration_${i}`.padEnd(32, "x"), custom: true }));
   const messages = Array.from({ length: 16 }, (_, i) => ({ id: String(i), authorId: "alice", authorName: "Alice", content: "x".repeat(1500), bot: false, attachmentCount: 0 }));
   let called = false;
   const result = await evaluateWithJev(JSON.stringify({ candidateIds: ["15"], availableEmojis, messages }), config, "test", async (_url, options) => {
@@ -253,4 +253,13 @@ test("full conversation and 300 long-named server emoji fit without duplicated c
   });
   assert.equal(called, true);
   assert.deepEqual(JSON.parse(result), { action: "react", messageId: "15", emoji: availableEmojis[299].value });
+});
+
+test("requested reaction wins over unsolicited reply and preserves cooldown bypass", async () => {
+  const result = await evaluateWithJev(prompt, config, "test", response({
+    message_0: choiceAnswer("direct_react", { direct_react: 1 }),
+    message_1: choiceAnswer("unsolicited_reply", { unsolicited_reply: 1 }),
+    emoji_0: { type: "choice", choice: "emoji_0", probabilities: { emoji_0: 1, emoji_1: 0, emoji_2: 0, emoji_3: 0, emoji_4: 0 } },
+  }) as typeof fetch);
+  assert.deepEqual(JSON.parse(result), { action: "react", messageId: "1", emoji: "👍", directed: true });
 });

@@ -10,13 +10,13 @@ export function participationEmojis(message: Pick<Message, "guild">): Participat
     .filter(emoji => emoji.available !== false && emoji.name &&
       (!emoji.roles.cache.size || emoji.roles.cache.some(role => roles.has(role.id))))
     .sort((a, b) => a.id.localeCompare(b.id))
-    .map(emoji => ({ value: emoji.id, name: emoji.name! }));
+    .map(emoji => ({ value: emoji.id, name: emoji.name!, custom: true }));
   return [...DEFAULT_PARTICIPATION_EMOJIS, ...custom];
 }
 
 /** Recheck the current guild catalog immediately before sending a reaction. */
 export async function reactWithParticipationEmoji(message: Message, value: string): Promise<void> {
-  if (!participationEmojis(message).some(emoji => emoji.value === value)) return;
+  if (!participationEmojis(message).some(emoji => emoji.value === value)) throw new Error("Participation emoji is no longer available.");
   await message.react(value);
 }
 
@@ -35,6 +35,9 @@ function snapshot(message: Message): ConversationMessage {
     authorName: (message.member?.displayName ?? message.author.globalName ?? message.author.username).slice(0, 100),
     content: message.content.slice(0, 1500), bot: message.author.bot,
     replyToId: message.reference?.messageId, attachmentCount: message.attachments.size,
+    assistantReactions: [...(message.reactions?.cache.values() ?? [])].filter(reaction => reaction.me).map(reaction => ({
+      value: reaction.emoji.id ?? reaction.emoji.name!, name: reaction.emoji.name ?? reaction.emoji.id!,
+    })),
     attachments: [...message.attachments.values()].map(({ url, contentType, name, size }) => ({ url, contentType, name, size })),
   };
 }
