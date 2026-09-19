@@ -1,7 +1,7 @@
 import { downloadFileAttachments, prepareDownloadedAttachments } from "./downloadAttachments.js";
 import { resolveMessageLinks } from "./resolveMessageLinks.js";
 import { enrichWithDiscordKnowledge } from "./discordKnowledge.js";
-export async function prepareSlashAttachments(prompt, client, requestingUserId, directAttachment, interaction, canIncludeContextAuthor = () => true, infer) {
+export async function prepareSlashAttachments(prompt, client, requestingUserId, directAttachment, interaction, canIncludeContextAuthor = () => true, infer, contextAttachments = []) {
     const linkedAttachments = [];
     const knowledgePrompt = interaction
         ? await enrichWithDiscordKnowledge(interaction, prompt, client, canIncludeContextAuthor, infer)
@@ -10,6 +10,7 @@ export async function prepareSlashAttachments(prompt, client, requestingUserId, 
     const result = await downloadFileAttachments([
         ...(directAttachment ? [directAttachment] : []),
         ...linkedAttachments,
+        ...contextAttachments,
     ]);
     try {
         const prepared = await prepareDownloadedAttachments(result.attachments);

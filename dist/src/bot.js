@@ -129,12 +129,12 @@ export function createBot(sessions) {
             case "chat":
                 await handleChat(cmd, sessions, contextAuthorPolicy(access, client, cmd.guildId), chatParticipationMode === "always" ? undefined : (key, run) => participation.runExplicit(key, run), chatParticipationMode === "always" ? undefined : async (source) => {
                     if (!source.channel.isThread() || source.channel.ownerId !== client.user?.id)
-                        return "";
+                        return [];
                     const context = await participationContext([source], client.user.id, contextAuthorPolicy(access, client, cmd.guildId), {
                         authorId: cmd.user.id, authorName: cmd.user.username,
                         content: cmd.options.getString("message", true),
                     });
-                    return participationReplyContext(context, [source.id]);
+                    return context;
                 });
                 break;
             case "reset":

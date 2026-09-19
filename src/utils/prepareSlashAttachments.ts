@@ -3,6 +3,7 @@ import { downloadFileAttachments, prepareDownloadedAttachments } from "./downloa
 import { resolveMessageLinks } from "./resolveMessageLinks.js";
 import { enrichWithDiscordKnowledge } from "./discordKnowledge.js";
 import type { ChatInputCommandInteraction } from "discord.js";
+import type { ConversationMessage } from "../common/chatParticipation.js";
 import type { SendAttachment } from "../providers/types.js";
 
 export async function prepareSlashAttachments(
@@ -13,6 +14,7 @@ export async function prepareSlashAttachments(
   interaction?: ChatInputCommandInteraction,
   canIncludeContextAuthor: (authorId: string) => boolean = () => true,
   infer?: (prompt: string) => Promise<string>,
+  contextAttachments: NonNullable<ConversationMessage["attachments"]> = [],
 ): Promise<{
   prompt: string;
   attachments: SendAttachment[];
@@ -37,6 +39,7 @@ export async function prepareSlashAttachments(
   const result = await downloadFileAttachments([
     ...(directAttachment ? [directAttachment] : []),
     ...linkedAttachments,
+    ...contextAttachments,
   ]);
 
   try {

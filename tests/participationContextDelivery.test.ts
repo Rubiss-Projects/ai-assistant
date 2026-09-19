@@ -70,3 +70,49 @@ test("an unmentioned follow-up receives earlier images as native inputs and clea
   const deniedContext = await participationContext([message as never], "bot", () => true);
   assert.deepEqual(participationAttachments(deniedContext), []);
 });
+
+for (const failProvider of [false, true]) {
+  test(`explicit /chat forwards history images and cleans up after provider ${failProvider ? "failure" : "success"}`, async t => {
+    const { handleChat } = await import("../src/handlers/slash/chat.js");
+    const { readFile, access } = await import("node:fs/promises");
+    t.mock.method(DiscordMemoryStore.prototype, "all", () => []);
+    if (failProvider) t.mock.method(console, "error", () => {});
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    const attachment = { url: "https://cdn.discordapp.com/attachments/chart.png", name: "chart.png", contentType: "image/png" };
+    const fetch = t.mock.method(globalThis, "fetch", async () => new Response(png));
+    let inTurn = false;
+    let sentPrompt = "";
+    let imagePath = "";
+    let imageKind = "";
+    let inputBytes: Buffer | undefined;
+    const reply = { id: "3", edit: async () => {}, reply: async () => {} };
+    const interaction = {
+      guildId: "test", channelId: "thread", user: { id: "alice" }, client: { user: { id: "bot" } },
+      options: { getString: (key: string) => key === "message" ? "Explain that chart" : null, getAttachment: () => failProvider ? attachment : null },
+      channel: { isDMBased: () => false, isThread: () => true },
+      deferReply: async () => {}, editReply: async () => {}, fetchReply: async () => reply,
+    };
+    await handleChat(interaction as never, { sendMessage: async (_key: string, prompt: string, attachments: Array<{ path: string; kind: string }>) => {
+      sentPrompt = prompt;
+      imagePath = attachments[0].path;
+      imageKind = attachments[0].kind;
+      inputBytes = await readFile(imagePath);
+      if (failProvider) throw new Error("provider failed");
+      return { content: "Explanation", attachments: [] };
+    } } as never, () => true, async (_key, run) => {
+      inTurn = true;
+      try { await run(); } finally { inTurn = false; }
+    }, async () => {
+      assert.equal(inTurn, true);
+      return [{ id: "1", authorId: "alice", authorName: "Alice", bot: false, content: "Earlier chart", attachmentCount: 1, attachments: [attachment] }];
+    });
+    assert.match(sentPrompt, /Earlier chart/);
+    assert.match(sentPrompt, /Current speaker: alice/);
+    assert.equal(imageKind, "image");
+    assert.deepEqual(inputBytes, png);
+    // The failure case also verifies direct/history URL deduplication.
+    assert.equal(fetch.mock.callCount(), 1);
+    assert.ok(imagePath);
+    await assert.rejects(access(imagePath), { code: "ENOENT" });
+  });
+}
