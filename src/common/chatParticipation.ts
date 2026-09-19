@@ -15,6 +15,7 @@ export interface ConversationMessage {
   replyToId?: string;
   replyToAuthorId?: string;
   attachmentCount: number;
+  attachments?: Array<{ url: string; contentType: string | null; name: string; size?: number }>;
 }
 
 export interface AssistantIdentity { id: string; names: string[] }

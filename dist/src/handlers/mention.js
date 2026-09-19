@@ -74,12 +74,13 @@ canIncludeContextAuthor = () => true, participation) {
         const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments, canIncludeContextAuthor);
         let enrichedPrompt = await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor, contextAttachments);
         // Add ambient conversation only after host-side intent/link processing so
-        // background messages cannot trigger memory writes, searches or downloads.
+        // background text cannot trigger memory writes, searches or link downloads.
         if (participation)
             enrichedPrompt = `${participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
         const result = await downloadFileAttachments([
             ...(participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
             ...contextAttachments,
+            ...(participation?.attachments ?? []),
         ]);
         cleanup = result.cleanup;
         const prepared = await prepareDownloadedAttachments(result.attachments);

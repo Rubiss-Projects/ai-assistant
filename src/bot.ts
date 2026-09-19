@@ -25,7 +25,7 @@ import { handleWorkspace } from "./handlers/slash/workspace.js";
 import { handleMcp } from "./handlers/slash/mcp.js";
 import { ChatParticipation, participationMode, parseParticipationDecision } from "./common/chatParticipation.js";
 import { participationEvaluatorConfig } from "./common/participationEvaluator.js";
-import { assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext } from "./common/discordParticipation.js";
+import { assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext, participationAttachments } from "./common/discordParticipation.js";
 import type { Message } from "discord.js";
 import { handleMention } from "./handlers/mention.js";
 
@@ -81,7 +81,7 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
       if (!subject || !access.canMessage(target.author.id, subject)) return;
       await handleMention(target, client, sessions, target.channelId,
         contextAuthorPolicy(access, client, target.guildId),
-        { context: participationReplyContext(context, requests.map(message => message.id)), requests });
+        { context: participationReplyContext(context, requests.map(message => message.id)), requests, attachments: participationAttachments(context) });
     },
     react: async (target, emoji) => {
       await target.react(emoji).catch(() => {});
