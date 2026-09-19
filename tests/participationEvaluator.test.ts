@@ -16,7 +16,10 @@ function choiceAnswer(choice: string, scores: Record<string, number>) {
   if (!("ignore" in scores)) probabilities.ignore = 1 - Object.values(probabilities).reduce((sum, value) => sum + value, 0);
   return { type: "choice", choice, probabilities };
 }
-function response(answers: unknown) { return async () => new Response(JSON.stringify({ answers }), { status: 200 }); }
+function response(answers: unknown) {
+  const scopes = answers && typeof answers === "object" ? Object.fromEntries(Object.keys(answers).filter(key => key.startsWith("message_")).map(key => [key.replace("message_", "emoji_scope_"), { type: "choice", choice: "any", probabilities: { custom: 0, unicode: 0, any: 1 } }])) : {};
+  return async () => new Response(JSON.stringify({ answers: { ...scopes, ...(answers as object) } }), { status: 200 });
+}
 
 test("evaluator settings default to provider and reject invalid configuration", () => {
   assert.equal(config.evaluator, "provider");
@@ -293,4 +296,23 @@ test("reported probabilities win when the service choice is below the maximum", 
     emoji_0: { type: "choice", choice: "emoji_4", probabilities: { emoji_0: 0.3, emoji_1: 0.2, emoji_2: 0.1, emoji_3: 0.11, emoji_4: 0.29 } },
   }) as typeof fetch);
   assert.deepEqual(JSON.parse(result), { action: "react", messageId: "1", directed: true, emoji: "👍" });
+});
+
+
+test("custom-only scope excludes Unicode even when its probability is higher", async () => {
+  const state = { candidateIds: ["1"], availableEmojis: [{ value: "👍", name: "👍", custom: false }, { value: "123", name: "party", custom: true }] };
+  const result = await evaluateWithJev(JSON.stringify(state), config, "test", response({
+    message_0: choiceAnswer("direct_react", { direct_react: 1 }),
+    emoji_scope_0: { type: "choice", choice: "custom", probabilities: { custom: 1, unicode: 0, any: 0 } },
+    emoji_0: { type: "choice", choice: "emoji_0", probabilities: { emoji_0: 0.9, emoji_1: 0.1 } },
+  }) as typeof fetch);
+  assert.deepEqual(JSON.parse(result), { action: "react", messageId: "1", directed: true, emoji: "123" });
+});
+
+test("requested emoji scope must validate and never substitutes Unicode for an empty custom catalog", async () => {
+  const state = { candidateIds: ["1"], availableEmojis: [{ value: "👍", name: "👍", custom: false }] };
+  const answers = { message_0: choiceAnswer("direct_react", { direct_react: 1 }), emoji_0: { type: "choice", choice: "emoji_0", probabilities: { emoji_0: 1 } } };
+  await assert.rejects(evaluateWithJev(JSON.stringify(state), config, "test", response({ ...answers, emoji_scope_0: undefined }) as typeof fetch), /Invalid TypeSafe emoji scope/);
+  const result = await evaluateWithJev(JSON.stringify(state), config, "test", response({ ...answers, emoji_scope_0: { type: "choice", choice: "custom", probabilities: { custom: 1, unicode: 0, any: 0 } } }) as typeof fetch);
+  assert.deepEqual(JSON.parse(result), { action: "ignore" });
 });
