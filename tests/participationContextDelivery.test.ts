@@ -52,7 +52,7 @@ test("an unmentioned follow-up receives earlier images as native inputs and clea
   let imagePath = "";
   const sessions = { sendMessage: async (_key: string, prompt: string, attachments: Array<{ path: string; kind: string }>) => {
     assert.match(prompt, /Our usage so far/);
-    assert.match(prompt, /chart.png/);
+    assert.doesNotMatch(prompt, /cdn\.discordapp\.com/);
     assert.equal(attachments.length, 1);
     assert.equal(attachments[0].kind, "image");
     imagePath = attachments[0].path;
