@@ -6,6 +6,8 @@ import { progressMessage } from "../../common/progressMessage.js";
 import { interactionSessionKey } from "../../common/discordSessionKey.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
 import type { AgentResponse } from "../../providers/types.js";
+import type { ConversationMessage } from "../../common/chatParticipation.js";
+import { participationAttachments, participationReplyContext } from "../../common/discordParticipation.js";
 import { userVisibleErrorMessage } from "../../common/userVisibleError.js";
 
 export async function handleChat(
@@ -13,7 +15,7 @@ export async function handleChat(
   sessions: SessionManager,
   canIncludeContextAuthor: (authorId: string) => boolean = () => true,
   runThreadTurn: (key: string, run: () => Promise<void>) => Promise<void> = (_key, run) => run(),
-  threadContext?: (source: Message) => Promise<string>,
+  threadContext?: (source: Message) => Promise<ConversationMessage[]>,
 ): Promise<void> {
   const message = interaction.options.getString("message", true);
   const workspace = interaction.options.getString("workspace", false);
@@ -84,8 +86,9 @@ export async function handleChat(
     const currentSessionKey = interaction.channel?.isThread()
       ? interactionSessionKey(interaction)
       : interaction.channelId;
-    // Resolve after defer to avoid hitting Discord's 3s interaction window
-    const prepared = await prepareSlashAttachments(
+    // Resolve direct, linked, and history attachments together so they share limits
+    // and URL deduplication. History text stays outside host-side intent processing.
+    const prepare = (context: ConversationMessage[] = []) => prepareSlashAttachments(
       message,
       interaction.client,
       interaction.user.id,
@@ -93,17 +96,21 @@ export async function handleChat(
       interaction,
       canIncludeContextAuthor,
       (internalPrompt) => sessions.runEphemeral(currentSessionKey, internalPrompt),
+      participationAttachments(context),
     );
 
-    try {
-      if (interaction.channel?.isThread()) {
-        // Can't create a thread inside a thread — use the current thread as the session
-        await runThreadTurn(currentSessionKey, async () => {
-          if (workspace) sessions.setSessionWorkingDir(currentSessionKey, workspace);
-          const context = threadContext ? await threadContext(durableReply!) : "";
+    if (interaction.channel?.isThread()) {
+      await runThreadTurn(currentSessionKey, async () => {
+        if (workspace) sessions.setSessionWorkingDir(currentSessionKey, workspace);
+        const context = threadContext ? await threadContext(durableReply!) : [];
+        const prepared = await prepare(context);
+        try {
+          const prompt = context.length
+            ? `${participationReplyContext(context, [durableReply!.id])}\n\nCurrent speaker: ${interaction.user.id}\n${prepared.prompt}`
+            : prepared.prompt;
           const response = await sessions.sendMessage(
             currentSessionKey,
-            context ? `${context}\n\nCurrent speaker: ${interaction.user.id}\n${prepared.prompt}` : prepared.prompt,
+            prompt,
             prepared.attachments.length ? prepared.attachments : undefined,
             { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
           );
@@ -113,10 +120,15 @@ export async function handleChat(
             await durableReply!.reply(discordTextOptions(chunk));
           }
           await deliverDiscordAttachments((options) => durableReply!.reply(options), response.attachments);
-        });
-        return;
-      }
+        } finally {
+          await prepared.cleanup();
+        }
+      });
+      return;
+    }
 
+    const prepared = await prepare();
+    try {
       const replyMsg = durableReply;
 
       const safeName = message.replace(/[\r\n]+/g, " ");
