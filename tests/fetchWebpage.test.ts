@@ -218,7 +218,7 @@ test("listing image and embedded-description URLs are discoverable without loadi
   let calls = 0;
   const result = await fetchWebpage("https://example.com/page", undefined, async () => {
     calls++;
-    return page('<head><base href="/listing/"><meta property="og:image" content="photo.jpg"></head><body><img src="photo.jpg"><img data-src="other.jpg" src="placeholder.jpg"><iframe src="description"></iframe><iframe src="javascript:bad()"></iframe><img src="https://user:secret@example.com/private"><div hidden><iframe src="hidden"></iframe><img src="hidden.jpg"></div></body>');
+    return page('<head><base href="/listing/"><meta property="og:image" content="photo.jpg"></head><body><h1>Listing</h1><img src="photo.jpg"><img data-src="other.jpg" src="placeholder.jpg"><iframe src="description"></iframe><iframe src="javascript:bad()"></iframe><img src="https://user:secret@example.com/private"><div hidden><iframe src="hidden"></iframe><img src="hidden.jpg"></div></body>');
   });
   assert.equal(calls, 1);
   assert.equal(result.status, "available");
