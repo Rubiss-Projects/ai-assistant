@@ -86,7 +86,7 @@ test("custom emoji are batched with actions and mapped back to host values", asy
     const body = JSON.parse(String(options?.body));
     assert.deepEqual(body.state, { candidateIds: state.candidateIds, messages: state.messages });
     assert.deepEqual(Object.keys(body.questions.message_0.criteria), ["ignore", "direct_reply", "unsolicited_reply", "direct_react", "react"]);
-    assert.deepEqual(body.questions.emoji_0.criteria, { emoji_0: 'Standard Unicode emoji: "thumbs up"', emoji_1: 'Custom server emoji: "party_parrot"' });
+    assert.deepEqual(body.questions.emoji_0.criteria, { emoji_0: "unicode:thumbs up", emoji_1: "custom:party_parrot" });
     assert.match(body.questions.emoji_0.instructions, /Assuming.*candidate message "1"/);
     return response({ message_0: choiceAnswer("react", { react: 1 }), emoji_0: { type: "choice", choice: "emoji_1", probabilities: { emoji_0: 0.2, emoji_1: 0.8 } } })();
   });
@@ -262,4 +262,26 @@ test("requested reaction wins over unsolicited reply and preserves cooldown bypa
     emoji_0: { type: "choice", choice: "emoji_0", probabilities: { emoji_0: 1, emoji_1: 0, emoji_2: 0, emoji_3: 0, emoji_4: 0 } },
   }) as typeof fetch);
   assert.deepEqual(JSON.parse(result), { action: "react", messageId: "1", emoji: "👍", directed: true });
+});
+
+
+test("dense observed reactions retain recent annotations without dropping text or emoji choices", async () => {
+  const availableEmojis = Array.from({ length: 300 }, (_, i) => ({ value: String(123456789012345678n + BigInt(i)), name: `celebration_${i}`.padEnd(32, "x"), custom: true }));
+  const messages = Array.from({ length: 50 }, (_, i) => ({
+    id: String(223456789012345678n + BigInt(i)), authorId: "323456789012345678", authorName: "a".repeat(100),
+    content: "x".repeat(480), bot: false, attachmentCount: 0,
+    assistantReactions: availableEmojis.slice(0, 8).map(({ value, name }) => ({ value, name })),
+  }));
+  const candidateIds = [messages.at(-1)!.id];
+  const result = await evaluateWithJev(JSON.stringify({ candidateIds, availableEmojis, messages }), config, "test", async (_url, options) => {
+    assert.ok(Buffer.byteLength(String(options?.body)) <= 60_000);
+    const body = JSON.parse(String(options?.body));
+    assert.equal(Object.keys(body.questions.emoji_0.criteria).length, 300);
+    assert.equal(body.state.messages.length, 50);
+    assert.equal(body.state.messages.reduce((n: number, m: any) => n + m.content.length, 0), 24_000);
+    assert.equal(body.state.messages[0].assistantReactions, undefined);
+    assert.deepEqual(body.state.messages.at(-1).assistantReactions, messages.at(-1)!.assistantReactions);
+    return response({ message_0: choiceAnswer("direct_reply", { direct_reply: 1 }) })();
+  });
+  assert.deepEqual(JSON.parse(result), { action: "reply", messageId: candidateIds[0], directed: true });
 });
