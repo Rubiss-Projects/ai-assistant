@@ -1,15 +1,20 @@
 import fs from "fs";
 import { ParticipationProcessRunner } from "./participationProcess.js";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import os from "os";
 import path from "path";
 import { Codex } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPromptForUser } from "../utils/userInstructions.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
-import { ArtifactToolSessions, artifactInputPrompt, codexArtifactMcpOverride } from "../common/artifactToolBridge.js";
+import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
+import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
+import { codexHostMcpOverride, codexHostMcpOverrides } from "../common/hostMcpConfig.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
+import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, RunTimeoutError, } from "./types.js";
@@ -80,8 +85,7 @@ function shellEnvironment(workingDirectory, childEnvironment) {
     return result;
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions(temporaryDirectory, artifacts) {
-    const systemPrompt = providerSystemPrompt();
+export function codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt = providerSystemPrompt()) {
     if (configuredSecurityMode() === "unrestricted") {
         return {
             ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
@@ -90,7 +94,7 @@ export function codexClientOptions(temporaryDirectory, artifacts) {
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
             ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
             config: { developer_instructions: systemPrompt },
-            ...(artifacts ? { configOverrides: [codexArtifactMcpOverride(artifacts, false)] } : {}),
+            ...(artifacts || rulesets ? { configOverrides: codexHostMcpOverrides(artifacts, rulesets, false) } : {}),
         };
     }
     if (!temporaryDirectory) {
@@ -158,7 +162,7 @@ export function codexClientOptions(temporaryDirectory, artifacts) {
             },
         },
         configOverrides: [
-            artifacts ? codexArtifactMcpOverride(artifacts) : "mcp_servers={}",
+            codexHostMcpOverride(artifacts, rulesets),
             codexFilesystemPermissionOverride(sitesEnabled),
             sitesEnabled
                 ? `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,domains={"${CODEX_SITES_GIT_HOST}"="allow"}}`
@@ -168,6 +172,9 @@ export function codexClientOptions(temporaryDirectory, artifacts) {
 }
 function configuredInlineAttachmentLimit() {
     return Math.min(configuredMilliseconds("CODEX_MAX_INLINE_ATTACHMENT_BYTES", DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES, 1), MAX_CODEX_INLINE_ATTACHMENT_BYTES);
+}
+function promptFingerprint(prompt) {
+    return createHash("sha256").update(prompt).digest("hex");
 }
 async function readCodexTextAttachment(attachment) {
     const displayName = attachment.displayName ?? path.basename(attachment.path);
@@ -319,6 +326,7 @@ async function runCodexCapturingEvents(thread, input, signal) {
 export class CodexProvider {
     participationProcesses = new ParticipationProcessRunner();
     artifactTools = new ArtifactToolSessions();
+    rulesetTools = new RulesetToolSessions();
     name = "codex";
     displayName = "OpenAI Codex";
     clients = new Map();
@@ -333,17 +341,21 @@ export class CodexProvider {
     modelOverrides = new Map();
     reasoningEffortOverrides = new Map();
     mcpToolOverrides = new Map();
-    clientFor(key, artifacts) {
+    clientFor(key, systemPrompt, artifacts, rulesets) {
+        const fingerprint = promptFingerprint(systemPrompt);
         const existing = this.clients.get(key);
-        if (existing)
+        if (existing && !("fingerprint" in existing) && "startThread" in existing) {
             return existing;
+        }
+        if (existing?.fingerprint === fingerprint)
+            return existing.client;
         let temporaryDirectory;
         if (configuredSecurityMode() === "shared") {
-            temporaryDirectory = createCodexSessionTemporaryDirectory();
+            temporaryDirectory = this.temporaryDirectories.get(key) ?? createCodexSessionTemporaryDirectory();
             this.temporaryDirectories.set(key, temporaryDirectory);
         }
-        const client = new Codex(codexClientOptions(temporaryDirectory, artifacts));
-        this.clients.set(key, client);
+        const client = new Codex(codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt));
+        this.clients.set(key, { fingerprint, client });
         return client;
     }
     threadOptions(key) {
@@ -359,17 +371,24 @@ export class CodexProvider {
         };
         return options;
     }
-    async getOrCreateSession(key) {
+    async getOrCreateSession(key, systemPrompt) {
         const existing = this.sessions.get(key);
-        if (existing)
+        const fingerprint = promptFingerprint(systemPrompt);
+        if (existing && !this.clients.has(key))
             return existing;
+        if (existing && this.clients.get(key)?.fingerprint === fingerprint)
+            return existing;
+        if (existing)
+            this.sessions.delete(key);
         const inFlight = this.pending.get(key);
         if (inFlight)
             return inFlight;
         const storedThreadId = this.store.get(key);
-        const client = this.clientFor(key, await this.artifactTools.config(key));
-        const creation = Promise.resolve(storedThreadId
-            ? client.resumeThread(storedThreadId, this.threadOptions(key))
+        const rulesetConfig = userInstructionFeaturesEnabled() ? await this.rulesetTools.config(key) : undefined;
+        const client = this.clientFor(key, systemPrompt, await this.artifactTools.config(key), rulesetConfig);
+        const resumeThread = client.resumeThread;
+        const creation = Promise.resolve(storedThreadId && typeof resumeThread === "function"
+            ? resumeThread.call(client, storedThreadId, this.threadOptions(key))
             : client.startThread(this.threadOptions(key)))
             .then((thread) => {
             if (this.pending.get(key) !== creation)
@@ -404,10 +423,10 @@ export class CodexProvider {
         this.sessionOperationQueues.delete(key);
         this.store.delete(key);
     }
-    async withLiveSession(key, operation) {
+    async withLiveSession(key, systemPrompt, operation) {
         return this.enqueueSessionOperation(key, async () => {
-            const thread = await this.getOrCreateSession(key);
-            return this.runWithSessionRecovery(key, thread, operation);
+            const thread = await this.getOrCreateSession(key, systemPrompt);
+            return this.runWithSessionRecovery(key, systemPrompt, thread, operation);
         });
     }
     async withExistingLiveSession(key, operation) {
@@ -415,7 +434,7 @@ export class CodexProvider {
             const thread = this.sessions.get(key);
             if (!thread)
                 return null;
-            return this.runWithSessionRecovery(key, thread, operation);
+            return this.runWithSessionRecovery(key, providerSystemPrompt(), thread, operation);
         });
     }
     enqueueSessionOperation(key, operation) {
@@ -430,7 +449,7 @@ export class CodexProvider {
         });
         return next;
     }
-    async runWithSessionRecovery(key, thread, operation) {
+    async runWithSessionRecovery(key, systemPrompt, thread, operation) {
         try {
             return await operation(thread);
         }
@@ -440,7 +459,7 @@ export class CodexProvider {
             console.warn(`[CodexProvider] Cached Codex thread for ${key} was not found; starting a new thread.`);
             this.evictCachedSession(key, thread);
             this.store.delete(key);
-            const fresh = await this.getOrCreateSession(key);
+            const fresh = await this.getOrCreateSession(key, systemPrompt);
             return operation(fresh);
         }
     }
@@ -454,11 +473,16 @@ export class CodexProvider {
             }));
             const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
+            const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
             const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-            const response = await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
+            const runWithRulesetTools = (action) => userInstructionFeaturesEnabled()
+                ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
+                : action();
+            const response = await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
                 runtime.providerSourceRoot = () => generatedImageThreadDirectory(this.sessions.get(userId)?.id ?? null);
                 const images = staged.filter((attachment) => attachment.kind !== "file");
-                const artifactPrompt = withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun);
+                const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun);
+                const artifactPrompt = rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt;
                 const input = images.length > 0
                     ? [
                         { type: "text", text: artifactPrompt },
@@ -474,7 +498,7 @@ export class CodexProvider {
                 const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
                 let result;
                 try {
-                    const run = this.withLiveSession(userId, (thread) => runCodexCapturingEvents(thread, input, controller.signal));
+                    const run = this.withLiveSession(userId, systemPrompt, (thread) => runCodexCapturingEvents(thread, input, controller.signal));
                     const deadline = new Promise((_resolve, reject) => {
                         timeout = setTimeout(() => {
                             timedOut = true;
@@ -516,7 +540,7 @@ export class CodexProvider {
                         displayName: `generated-image-${index + 1}${path.extname(savedPath)}`,
                     })),
                 };
-            }));
+            })));
             this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
             return response;
         });
@@ -707,6 +731,7 @@ export class CodexProvider {
     }
     async resetSession(key) {
         await this.artifactTools.reset(key);
+        await this.rulesetTools.reset(key);
         this.sessions.delete(key);
         this.pending.delete(key);
         this.sessionOperationQueues.delete(key);
@@ -748,6 +773,7 @@ export class CodexProvider {
     async shutdown() {
         await this.participationProcesses.shutdown();
         await this.artifactTools.shutdown();
+        await this.rulesetTools.shutdown();
         this.sessions.clear();
         this.pending.clear();
         this.sessionOperationQueues.clear();

@@ -392,6 +392,19 @@ test("OpenCode unrestricted mode restores its inherited environment and normal c
   );
 });
 
+test("OpenCode can add a generated primary agent for dynamic system prompts", () => {
+  const env = openCodeChildEnvironment(
+    { AI_ASSISTANT_SECURITY_MODE: "shared", PATH: "/usr/bin" },
+    undefined,
+    undefined,
+    "operator plus user rules",
+    "ai-assistant-test",
+  );
+  const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
+  assert.equal(config.agent["ai-assistant-test"].mode, "primary");
+  assert.equal(config.agent["ai-assistant-test"].prompt, "operator plus user rules");
+});
+
 test("OpenCode shared mode includes operator instructions exactly once", () => {
   const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
   const previousPrompt = process.env.AI_ASSISTANT_SYSTEM_PROMPT;

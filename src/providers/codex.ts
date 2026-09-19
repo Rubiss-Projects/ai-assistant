@@ -1,15 +1,21 @@
 import fs from "fs";
 import { ParticipationProcessRunner } from "./participationProcess.js";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import os from "os";
 import path from "path";
 import { Codex, Thread, type CodexOptions, type ThreadItem, type ThreadOptions, type UserInput } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPromptForUser } from "../utils/userInstructions.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
-import { ArtifactToolSessions, artifactInputPrompt, codexArtifactMcpOverride, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
+import { ArtifactToolSessions, artifactInputPrompt, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
+import { RulesetToolSessions, rulesetToolPrompt, type RulesetMcpConfig } from "../common/rulesetToolBridge.js";
+import type { RulesetTools } from "../common/rulesetTools.js";
+import { codexHostMcpOverride, codexHostMcpOverrides } from "../common/hostMcpConfig.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
+import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -121,8 +127,7 @@ function shellEnvironment(
 }
 
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions(temporaryDirectory?: string, artifacts?: ArtifactMcpConfig): CodexOptions {
-  const systemPrompt = providerSystemPrompt();
+export function codexClientOptions(temporaryDirectory?: string, artifacts?: ArtifactMcpConfig, rulesets?: RulesetMcpConfig, systemPrompt = providerSystemPrompt()): CodexOptions {
   if (configuredSecurityMode() === "unrestricted") {
     return {
       ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
@@ -131,7 +136,7 @@ export function codexClientOptions(temporaryDirectory?: string, artifacts?: Arti
       ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
       ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
       config: { developer_instructions: systemPrompt },
-      ...(artifacts ? { configOverrides: [codexArtifactMcpOverride(artifacts, false)] } : {}),
+      ...(artifacts || rulesets ? { configOverrides: codexHostMcpOverrides(artifacts, rulesets, false) } : {}),
     };
   }
 
@@ -206,7 +211,7 @@ export function codexClientOptions(temporaryDirectory?: string, artifacts?: Arti
       },
     },
     configOverrides: [
-      artifacts ? codexArtifactMcpOverride(artifacts) : "mcp_servers={}",
+      codexHostMcpOverride(artifacts, rulesets),
       codexFilesystemPermissionOverride(sitesEnabled),
       sitesEnabled
         ? `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,domains={"${CODEX_SITES_GIT_HOST}"="allow"}}`
@@ -220,6 +225,10 @@ function configuredInlineAttachmentLimit(): number {
     configuredMilliseconds("CODEX_MAX_INLINE_ATTACHMENT_BYTES", DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES, 1),
     MAX_CODEX_INLINE_ATTACHMENT_BYTES,
   );
+}
+
+function promptFingerprint(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex");
 }
 
 async function readCodexTextAttachment(attachment: SendAttachment): Promise<string> {
@@ -398,10 +407,11 @@ async function runCodexCapturingEvents(
 export class CodexProvider implements Provider {
   private readonly participationProcesses = new ParticipationProcessRunner();
   private artifactTools = new ArtifactToolSessions();
+  private rulesetTools = new RulesetToolSessions();
   readonly name = "codex" as const;
   readonly displayName = "OpenAI Codex";
 
-  private clients: Map<string, Codex> = new Map();
+  private clients: Map<string, { fingerprint: string; client: Codex }> = new Map();
   private temporaryDirectories: Map<string, string> = new Map();
   private sessions: Map<string, Thread> = new Map();
   private pending: Map<string, Promise<Thread>> = new Map();
@@ -414,18 +424,22 @@ export class CodexProvider implements Provider {
   private reasoningEffortOverrides: Map<string, ReasoningEffort> = new Map();
   private mcpToolOverrides: Map<string, Record<string, string[]>> = new Map();
 
-  private clientFor(key: string, artifacts?: ArtifactMcpConfig): Codex {
+  private clientFor(key: string, systemPrompt: string, artifacts?: ArtifactMcpConfig, rulesets?: RulesetMcpConfig): Codex {
+    const fingerprint = promptFingerprint(systemPrompt);
     const existing = this.clients.get(key);
-    if (existing) return existing;
+    if (existing && !("fingerprint" in existing) && "startThread" in existing) {
+      return existing as unknown as Codex;
+    }
+    if (existing?.fingerprint === fingerprint) return existing.client;
 
     let temporaryDirectory: string | undefined;
     if (configuredSecurityMode() === "shared") {
-      temporaryDirectory = createCodexSessionTemporaryDirectory();
+      temporaryDirectory = this.temporaryDirectories.get(key) ?? createCodexSessionTemporaryDirectory();
       this.temporaryDirectories.set(key, temporaryDirectory);
     }
 
-    const client = new Codex(codexClientOptions(temporaryDirectory, artifacts));
-    this.clients.set(key, client);
+    const client = new Codex(codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt));
+    this.clients.set(key, { fingerprint, client });
     return client;
   }
 
@@ -444,18 +458,23 @@ export class CodexProvider implements Provider {
     return options;
   }
 
-  private async getOrCreateSession(key: string): Promise<Thread> {
+  private async getOrCreateSession(key: string, systemPrompt: string): Promise<Thread> {
     const existing = this.sessions.get(key);
-    if (existing) return existing;
+    const fingerprint = promptFingerprint(systemPrompt);
+    if (existing && !this.clients.has(key)) return existing;
+    if (existing && this.clients.get(key)?.fingerprint === fingerprint) return existing;
+    if (existing) this.sessions.delete(key);
 
     const inFlight = this.pending.get(key);
     if (inFlight) return inFlight;
 
     const storedThreadId = this.store.get(key);
-    const client = this.clientFor(key, await this.artifactTools.config(key));
+    const rulesetConfig = userInstructionFeaturesEnabled() ? await this.rulesetTools.config(key) : undefined;
+    const client = this.clientFor(key, systemPrompt, await this.artifactTools.config(key), rulesetConfig);
+    const resumeThread = (client as unknown as { resumeThread?: Codex["resumeThread"] }).resumeThread;
     const creation = Promise.resolve(
-      storedThreadId
-        ? client.resumeThread(storedThreadId, this.threadOptions(key))
+      storedThreadId && typeof resumeThread === "function"
+        ? resumeThread.call(client, storedThreadId, this.threadOptions(key))
         : client.startThread(this.threadOptions(key))
     )
       .then((thread) => {
@@ -495,11 +514,12 @@ export class CodexProvider implements Provider {
 
   private async withLiveSession<T>(
     key: string,
+    systemPrompt: string,
     operation: (thread: Thread) => Promise<T>
   ): Promise<T> {
     return this.enqueueSessionOperation(key, async () => {
-      const thread = await this.getOrCreateSession(key);
-      return this.runWithSessionRecovery(key, thread, operation);
+      const thread = await this.getOrCreateSession(key, systemPrompt);
+      return this.runWithSessionRecovery(key, systemPrompt, thread, operation);
     });
   }
 
@@ -510,7 +530,7 @@ export class CodexProvider implements Provider {
     return this.enqueueSessionOperation(key, async () => {
       const thread = this.sessions.get(key);
       if (!thread) return null;
-      return this.runWithSessionRecovery(key, thread, operation);
+      return this.runWithSessionRecovery(key, providerSystemPrompt(), thread, operation);
     });
   }
 
@@ -529,6 +549,7 @@ export class CodexProvider implements Provider {
 
   private async runWithSessionRecovery<T>(
     key: string,
+    systemPrompt: string,
     thread: Thread,
     operation: (thread: Thread) => Promise<T>
   ): Promise<T> {
@@ -540,7 +561,7 @@ export class CodexProvider implements Provider {
       console.warn(`[CodexProvider] Cached Codex thread for ${key} was not found; starting a new thread.`);
       this.evictCachedSession(key, thread);
       this.store.delete(key);
-      const fresh = await this.getOrCreateSession(key);
+      const fresh = await this.getOrCreateSession(key, systemPrompt);
       return operation(fresh);
     }
   }
@@ -560,11 +581,17 @@ export class CodexProvider implements Provider {
       }));
       const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
+      const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
       const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-      const response = await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
+      const runWithRulesetTools = <T>(action: (rulesetRuntime?: RulesetTools) => Promise<T>) =>
+        userInstructionFeaturesEnabled()
+          ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
+          : action();
+      const response = await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
         runtime.providerSourceRoot = () => generatedImageThreadDirectory(this.sessions.get(userId)?.id ?? null);
         const images = staged.filter((attachment) => attachment.kind !== "file");
-        const artifactPrompt = withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun);
+        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun);
+        const artifactPrompt = rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt;
         const input: string | UserInput[] =
           images.length > 0
             ? [
@@ -581,7 +608,7 @@ export class CodexProvider implements Provider {
         const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
         let result;
         try {
-          const run = this.withLiveSession(userId, (thread) =>
+          const run = this.withLiveSession(userId, systemPrompt, (thread) =>
             runCodexCapturingEvents(thread, input, controller.signal)
           );
           const deadline = new Promise<never>((_resolve, reject) => {
@@ -624,7 +651,7 @@ export class CodexProvider implements Provider {
             displayName: `generated-image-${index + 1}${path.extname(savedPath)}`,
           })),
         };
-      }));
+      })));
       this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;
     });
@@ -849,6 +876,7 @@ export class CodexProvider implements Provider {
 
   async resetSession(key: string): Promise<void> {
     await this.artifactTools.reset(key);
+    await this.rulesetTools.reset(key);
     this.sessions.delete(key);
     this.pending.delete(key);
     this.sessionOperationQueues.delete(key);
@@ -892,6 +920,7 @@ export class CodexProvider implements Provider {
   async shutdown(): Promise<void> {
     await this.participationProcesses.shutdown();
     await this.artifactTools.shutdown();
+    await this.rulesetTools.shutdown();
     this.sessions.clear();
     this.pending.clear();
     this.sessionOperationQueues.clear();

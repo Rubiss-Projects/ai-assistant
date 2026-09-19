@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
+import { configuredUserInstructionMode } from "./userInstructionStore.js";
 
 export const CAPABILITIES = [
   "chat.use", "ask.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
-  "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
+  "ruleset.manage", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
 ] as const;
 export type Capability = typeof CAPABILITIES[number];
 export interface AccessSubject { userId: string; guildId?: string | null; roleIds?: readonly string[] }
@@ -12,7 +13,7 @@ export interface AccessResource { guildId?: string | null; ownerId?: string }
 const PRESETS = {
   member: ["chat.use"],
   scheduler: ["chat.use", "schedule.message.create", "schedule.manage.own"],
-  "server-admin": ["chat.use", "schedule.message.create", "schedule.manage.own", "schedule.manage.guild"],
+  "server-admin": ["chat.use", "ruleset.manage", "schedule.message.create", "schedule.manage.own", "schedule.manage.guild"],
   "bot-admin": [...CAPABILITIES],
 } satisfies Record<string, Capability[]>;
 interface Grant { userId?: string; roleId?: string; guildId?: string; roles?: (keyof typeof PRESETS)[]; capabilities?: Capability[] }
@@ -98,12 +99,17 @@ export function slashCommandCapability({ commandName: command, subcommand: sub, 
     || (command === "agent" && ["select", "deselect"].includes(sub ?? ""))) return "session.configure";
   if (command === "workspace" && ["list", "read", "create"].includes(sub ?? "")) return "workspace.manage";
   if (command === "mcp" && ["list", "enable", "disable", "workspace"].includes(sub ?? "")) return "mcp.manage";
+  if (command === "ruleset" && ["get", "list", "set", "append", "delete", "clear", "enable", "disable", "preview"].includes(sub ?? "")) return "ruleset.manage";
   return undefined;
 }
 export function slashCommandRequiresAdmin(request: SlashCommandRequest): boolean {
   return slashCommandCapability(request) !== "chat.use";
 }
 export function canInvokeSlashCommand(access: AccessPolicy, userId: string, request: SlashCommandRequest, subject: AccessSubject = { userId }): boolean {
+  if (request.commandName === "ruleset") {
+    if (configuredUserInstructionMode() === "off") return false;
+    return access.can(subject, "ruleset.manage") || access.can(subject, "chat.use");
+  }
   const capability = slashCommandCapability(request);
   // Preserve legacy unknown-command classification; the dispatcher never executes unmapped commands.
   return capability ? access.can(subject, capability) : access.canUseAdminCommands(userId);

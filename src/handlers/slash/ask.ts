@@ -4,13 +4,14 @@ import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessio
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
 import { progressMessage } from "../../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../../common/discordResponse.js";
-import type { AgentResponse } from "../../providers/types.js";
+import type { AgentResponse, SendMessageOptions } from "../../providers/types.js";
 import { userVisibleErrorMessage } from "../../common/userVisibleError.js";
 
 export async function handleAsk(
   interaction: ChatInputCommandInteraction,
   sessions: SessionManager,
   canIncludeContextAuthor: (authorId: string) => boolean = () => true,
+  rulesetContext?: SendMessageOptions["rulesetContext"],
 ): Promise<void> {
   const prompt = interaction.options.getString("prompt", true);
   const workspace = interaction.options.getString("workspace", false);
@@ -46,7 +47,12 @@ export async function handleAsk(
           tempKey,
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
-          { resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor), onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}) },
+          {
+            rulesetContext,
+            userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+            resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
+            onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}),
+          },
         );
       } finally {
         // Temp file cleanup is independent of session reset — always run both

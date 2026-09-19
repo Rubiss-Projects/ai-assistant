@@ -52,7 +52,8 @@ export async function deliverMentionResponse(sourceMessage, progressReply, respo
     await deliverDiscordAttachments((options) => sourceMessage.reply(options), response.attachments);
 }
 export async function handleMention(message, client, sessions, sessionKey, // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
-canIncludeContextAuthor = () => true, participation) {
+canIncludeContextAuthor = () => true, options = {}) {
+    const mentionOptions = "context" in options ? { participation: options } : options;
     // Strip all @mentions of the bot and trim
     const botMentionPattern = new RegExp(`<@!?${client.user.id}>`, "g");
     const prompt = message.content.replace(botMentionPattern, "").trim();
@@ -75,12 +76,12 @@ canIncludeContextAuthor = () => true, participation) {
         let enrichedPrompt = await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor, contextAttachments);
         // Add ambient conversation only after host-side intent/link processing so
         // background text cannot trigger memory writes, searches or link downloads.
-        if (participation)
-            enrichedPrompt = `${participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
+        if (mentionOptions.participation)
+            enrichedPrompt = `${mentionOptions.participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
         const result = await downloadFileAttachments([
-            ...(participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
+            ...(mentionOptions.participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
             ...contextAttachments,
-            ...(participation?.attachments ?? []),
+            ...(mentionOptions.participation?.attachments ?? []),
         ]);
         cleanup = result.cleanup;
         const prepared = await prepareDownloadedAttachments(result.attachments);
@@ -98,6 +99,8 @@ canIncludeContextAuthor = () => true, participation) {
             }, 8000);
         }
         const response = await sessions.sendMessage(key, enrichedPrompt, prepared.fileAttachments.length ? prepared.fileAttachments : undefined, {
+            rulesetContext: mentionOptions.rulesetContext,
+            userInstructionContext: { guildId: message.guildId, userId: message.author.id, userDisplayName: message.author.displayName ?? message.author.username },
             resolveArtifactMessage: artifactMessageResolver(client, message.author.id, canIncludeContextAuthor),
             onProgress: ({ elapsedMs }) => {
                 progressUpdates = progressUpdates.catch(() => { }).then(async () => {

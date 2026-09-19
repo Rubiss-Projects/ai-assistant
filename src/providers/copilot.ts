@@ -1,12 +1,17 @@
 import os from "os";
 import path from "path";
+import { createHash } from "node:crypto";
 import { BuiltInTools, CopilotClient, CopilotSession, MCPServerConfig, ToolSet, approveAll } from "@github/copilot-sdk";
 import type { CopilotClientOptions, PermissionHandler, SessionConfigBase, SessionEvent } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
+import { providerSystemPromptForUser } from "../utils/userInstructions.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
+import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
+import type { RulesetTools } from "../common/rulesetTools.js";
+import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -38,6 +43,10 @@ import {
 } from "./types.js";
 
 const DEFAULT_MODEL = process.env.COPILOT_MODEL?.trim() || "claude-haiku-4.5";
+
+function promptFingerprint(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex");
+}
 
 const COPILOT_LOCAL_TOOLS = [
   "view",
@@ -73,7 +82,7 @@ export function createCopilotPermissionHandler(workingDirectory: string): Permis
           ? { kind: "approve-once" }
           : reject("Writes are limited to non-sensitive files in the assigned workspace.");
       case "mcp":
-        return request.serverName === "artifact_tools" || request.readOnly
+        return request.serverName === "artifact_tools" || request.serverName === "ruleset_tools" || request.readOnly
           ? { kind: "approve-once" }
           : reject("Mutating connector and MCP tools are disabled for Discord sessions.");
       case "url":
@@ -204,6 +213,7 @@ async function sendUntilIdle(
  */
 export class CopilotProvider implements Provider {
   private artifactTools = new ArtifactToolSessions();
+  private rulesetTools = new RulesetToolSessions();
   readonly name = "copilot" as const;
   readonly displayName = "GitHub Copilot";
 
@@ -222,6 +232,8 @@ export class CopilotProvider implements Provider {
   private workingDirOverrides: Map<string, string> = new Map();
   // Directory actually bound into each live SDK session.
   private sessionWorkingDirectories: Map<string, string> = new Map();
+  // System prompt fingerprint bound to each live SDK session connection.
+  private sessionPromptFingerprints: Map<string, string> = new Map();
   // Per-session MCP tool overrides: server name → tools array (["*"] = enabled, [] = disabled)
   private mcpToolOverrides: Map<string, Record<string, string[]>> = new Map();
   // Per-session reasoning-effort override (host tracks the effective value)
@@ -231,9 +243,19 @@ export class CopilotProvider implements Provider {
     this.client = new CopilotClient(copilotClientOptions());
   }
 
-  private async getOrCreateSession(key: string): Promise<CopilotSession> {
+  private async getOrCreateSession(key: string, systemPrompt = providerSystemPrompt()): Promise<CopilotSession> {
     const existing = this.sessions.get(key);
-    if (existing) return existing;
+    const fingerprint = promptFingerprint(systemPrompt);
+    if (existing && !this.sessionPromptFingerprints.has(key)) return existing;
+    if (existing && this.sessionPromptFingerprints.get(key) === fingerprint) return existing;
+    if (existing) {
+      this.sessions.delete(key);
+      this.sessionWorkingDirectories.delete(key);
+      this.sessionPromptFingerprints.delete(key);
+      await existing.disconnect().catch((err) =>
+        console.warn(`[CopilotProvider] Failed to disconnect prompt-stale session ${existing.sessionId}:`, err)
+      );
+    }
 
     const inFlight = this.pending.get(key);
     if (inFlight) return inFlight;
@@ -246,7 +268,9 @@ export class CopilotProvider implements Provider {
     // would execute repository-controlled code before the permission handler can intervene.
     const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
     mcpServers.artifact_tools = { ...(await this.artifactTools.config(key)), type: "local", tools: ["*"], timeout: 960_000 };
-    const configuredPrompt = providerSystemPrompt();
+    if (userInstructionFeaturesEnabled()) {
+      mcpServers.ruleset_tools = { ...(await this.rulesetTools.config(key)), type: "local", tools: ["*"], timeout: 120_000 };
+    }
     const sessionConfig: SessionConfigBase = shared
       ? {
           onPermissionRequest: createCopilotPermissionHandler(workingDir!),
@@ -254,14 +278,14 @@ export class CopilotProvider implements Provider {
           enableSessionStore: true,
           workingDirectory: workingDir!,
           ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-          systemMessage: { mode: "append", content: secureSystemPrompt(configuredPrompt) },
+          systemMessage: { mode: "append", content: secureSystemPrompt(systemPrompt) },
         }
       : {
           onPermissionRequest: approveAll,
           skillDirectories: [path.join(os.homedir(), ".agents", "skills")],
           ...(workingDir ? { workingDirectory: workingDir } : {}),
           ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-          systemMessage: { mode: "append", content: configuredPrompt },
+          systemMessage: { mode: "append", content: systemPrompt },
         };
 
     const storedSessionId = this.store.get(key);
@@ -286,6 +310,7 @@ export class CopilotProvider implements Provider {
         }
         this.sessions.set(key, session);
         this.sessionWorkingDirectories.set(key, workingDir ?? ensureProviderWorkingDirectory());
+        this.sessionPromptFingerprints.set(key, fingerprint);
         this.pending.delete(key);
         this.store.set(key, session.sessionId);
         return session;
@@ -305,6 +330,7 @@ export class CopilotProvider implements Provider {
     if (this.sessions.get(key) === session) {
       this.sessions.delete(key);
       this.sessionWorkingDirectories.delete(key);
+      this.sessionPromptFingerprints.delete(key);
     }
     await session.disconnect().catch((err) =>
       console.warn(`[CopilotProvider] Failed to disconnect stale session ${session.sessionId}:`, err)
@@ -315,6 +341,7 @@ export class CopilotProvider implements Provider {
     if (this.sessions.get(key) === session) {
       this.sessions.delete(key);
       this.sessionWorkingDirectories.delete(key);
+      this.sessionPromptFingerprints.delete(key);
     }
     this.store.delete(key);
     session.disconnect().catch((err) =>
@@ -324,11 +351,12 @@ export class CopilotProvider implements Provider {
 
   private async withLiveSession<T>(
     key: string,
-    operation: (session: CopilotSession) => Promise<T>
+    operation: (session: CopilotSession) => Promise<T>,
+    systemPrompt = providerSystemPrompt(),
   ): Promise<T> {
     return this.enqueueSessionOperation(key, async () => {
-      const session = await this.getOrCreateSession(key);
-      return this.runWithSessionRecovery(key, session, operation);
+      const session = await this.getOrCreateSession(key, systemPrompt);
+      return this.runWithSessionRecovery(key, systemPrompt, session, operation);
     });
   }
 
@@ -339,7 +367,7 @@ export class CopilotProvider implements Provider {
     return this.enqueueSessionOperation(key, async () => {
       const session = this.sessions.get(key);
       if (!session) return null;
-      return this.runWithSessionRecovery(key, session, operation);
+      return this.runWithSessionRecovery(key, providerSystemPrompt(), session, operation);
     });
   }
 
@@ -358,6 +386,7 @@ export class CopilotProvider implements Provider {
 
   private async runWithSessionRecovery<T>(
     key: string,
+    systemPrompt: string,
     session: CopilotSession,
     operation: (session: CopilotSession) => Promise<T>
   ): Promise<T> {
@@ -370,7 +399,7 @@ export class CopilotProvider implements Provider {
         `[CopilotProvider] Cached session ${session.sessionId} for ${key} was not found by Copilot; evicting stale session and reinitializing.`
       );
       await this.evictCachedSession(key, session);
-      const resumed = await this.getOrCreateSession(key);
+      const resumed = await this.getOrCreateSession(key, systemPrompt);
       return operation(resumed);
     }
   }
@@ -383,30 +412,35 @@ export class CopilotProvider implements Provider {
   ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
+      const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
       return this.withLiveSession(userId, async (session) => {
         try {
           const workingDirectory = this.sessionWorkingDirectories.get(userId)
             ?? this.workingDirOverrides.get(userId)
             ?? ensureProviderWorkingDirectory();
-          return await captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
+          const runWithRulesetTools = <T>(action: (rulesetRuntime?: RulesetTools) => Promise<T>) =>
+            userInstructionFeaturesEnabled()
+              ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
+              : action();
+          return await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
             const attachments = staged.filter((file) => !file.binary).map((file) => ({ type: "file" as const, path: file.path, displayName: file.displayName }));
+            const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun);
             return sendUntilIdle(
               session,
               {
-                prompt: withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun),
+                prompt: rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt,
                 ...(attachments?.length ? { attachments } : {}),
               },
               options,
             );
-          })
-          );
+          })));
         } catch (error) {
           if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
             this.abandonTimedOutSession(userId, session);
           }
           throw error;
         }
-      });
+      }, systemPrompt);
     });
     this.messageQueues.set(userId, next.catch(() => {}));
     return next;
@@ -589,11 +623,13 @@ export class CopilotProvider implements Provider {
 
   async resetSession(key: string): Promise<void> {
     await this.artifactTools.reset(key);
+    await this.rulesetTools.reset(key);
     const session = this.sessions.get(key);
     const storedSessionId = this.store.get(key);
 
     this.sessions.delete(key);
     this.sessionWorkingDirectories.delete(key);
+    this.sessionPromptFingerprints.delete(key);
     this.pending.delete(key);
     this.sessionOperationQueues.delete(key);
     this.messageQueues.delete(key);
@@ -650,6 +686,7 @@ export class CopilotProvider implements Provider {
       const existing = this.sessions.get(key);
       this.sessions.delete(key);
       this.sessionWorkingDirectories.delete(key);
+      this.sessionPromptFingerprints.delete(key);
       this.store.delete(key);
       if (existing) await existing.disconnect().catch((error) => {
         console.warn(`[CopilotProvider] Could not disconnect session after workspace change for ${key}:`, error);
@@ -685,6 +722,7 @@ export class CopilotProvider implements Provider {
 
   async shutdown(): Promise<void> {
     await this.artifactTools.shutdown();
+    await this.rulesetTools.shutdown();
     const allSessions = Array.from(this.sessions.values());
     this.sessions.clear();
     this.sessionWorkingDirectories.clear();

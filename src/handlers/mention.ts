@@ -8,7 +8,13 @@ import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../common/discordResponse.js";
 import { userVisibleErrorMessage } from "../common/userVisibleError.js";
-import type { AgentResponse } from "../providers/types.js";
+import type { AgentResponse, SendMessageOptions } from "../providers/types.js";
+
+interface MentionParticipation {
+  context: string;
+  requests: Message[];
+  attachments?: Array<{ url: string; contentType: string | null; name: string; size?: number }>;
+}
 
 export function mentionSessionKey(message: Pick<Message, "guildId" | "channelId" | "author">): string {
   return message.guildId ? `${message.author.id}:${message.channelId}` : message.author.id;
@@ -74,8 +80,12 @@ export async function handleMention(
   sessions: SessionManager,
   sessionKey?: string,  // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
   canIncludeContextAuthor: (authorId: string) => boolean = () => true,
-  participation?: { context: string; requests: Message[]; attachments?: Array<{ url: string; contentType: string | null; name: string; size?: number }> },
+  options: {
+    participation?: MentionParticipation;
+    rulesetContext?: SendMessageOptions["rulesetContext"];
+  } | MentionParticipation = {},
 ): Promise<void> {
+  const mentionOptions = "context" in options ? { participation: options } : options;
   // Strip all @mentions of the bot and trim
   const botMentionPattern = new RegExp(`<@!?${client.user!.id}>`, "g");
   const prompt = message.content.replace(botMentionPattern, "").trim();
@@ -115,11 +125,11 @@ export async function handleMention(
     );
     // Add ambient conversation only after host-side intent/link processing so
     // background text cannot trigger memory writes, searches or link downloads.
-    if (participation) enrichedPrompt = `${participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
+    if (mentionOptions.participation) enrichedPrompt = `${mentionOptions.participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
     const result = await downloadFileAttachments([
-      ...(participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
+      ...(mentionOptions.participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
       ...contextAttachments,
-      ...(participation?.attachments ?? []),
+      ...(mentionOptions.participation?.attachments ?? []),
     ]);
     cleanup = result.cleanup;
     const prepared = await prepareDownloadedAttachments(result.attachments);
@@ -141,6 +151,8 @@ export async function handleMention(
       enrichedPrompt,
       prepared.fileAttachments.length ? prepared.fileAttachments : undefined,
       {
+        rulesetContext: mentionOptions.rulesetContext,
+        userInstructionContext: { guildId: message.guildId, userId: message.author.id, userDisplayName: message.author.displayName ?? message.author.username },
         resolveArtifactMessage: artifactMessageResolver(client, message.author.id, canIncludeContextAuthor),
         onProgress: ({ elapsedMs }) => {
           progressUpdates = progressUpdates.catch(() => {}).then(async () => {
