@@ -25,7 +25,7 @@ import { handleWorkspace } from "./handlers/slash/workspace.js";
 import { handleMcp } from "./handlers/slash/mcp.js";
 import { ChatParticipation, participationMode, parseParticipationDecision } from "./common/chatParticipation.js";
 import { participationEvaluatorConfig } from "./common/participationEvaluator.js";
-import { assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext, participationAttachments } from "./common/discordParticipation.js";
+import { participationEmojis, reactWithParticipationEmoji, assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext, participationAttachments } from "./common/discordParticipation.js";
 import type { Message } from "discord.js";
 import { handleMention } from "./handlers/mention.js";
 
@@ -56,6 +56,7 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildExpressions,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.DirectMessages,
@@ -66,13 +67,15 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
   const participation = new ChatParticipation<Message>({
     id: message => message.id,
     identity: message => assistantIdentity(message, client.user!),
+    emojis: participationEmojis,
     context: messages => participationContext(messages, client.user!.id,
       contextAuthorPolicy(access, client, messages[0].guildId)),
     classify: async (prompt, target) => {
       const started = Date.now();
       const result = await sessions.evaluateParticipation(target.channelId, prompt);
       // Log routing only, never conversation text or raw model output.
-      const decision = parseParticipationDecision(result, JSON.parse(prompt).candidateIds);
+      const state = JSON.parse(prompt);
+      const decision = parseParticipationDecision(result, state.candidateIds, state.availableEmojis);
       console.info(`[participation] thread=${target.channelId} action=${decision.action} elapsedMs=${Date.now() - started}`);
       return result;
     },
@@ -84,7 +87,7 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
         { context: participationReplyContext(context, requests.map(message => message.id)), requests, attachments: participationAttachments(context) });
     },
     react: async (target, emoji) => {
-      await target.react(emoji).catch(() => {});
+      await reactWithParticipationEmoji(target, emoji);
     },
     onError: () => console.warn("[participation] Evaluation failed; staying silent. Check evaluator access, model and timeout settings."),
   });
