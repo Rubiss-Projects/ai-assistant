@@ -50,7 +50,6 @@ test("Jev reports malformed distributions instead of disguising them as silence"
     { type: "choice", choice: "reaction_99", probabilities: { reaction_99: 1 } },
     { type: "choice", choice: "direct_reply", probabilities: { direct_reply: 2 } },
     { type: "choice", choice: "direct_reply", probabilities: { direct_reply: "0.95" } },
-    choiceAnswer("direct_reply", { direct_reply: 0.2, ignore: 0.8 }),
     choiceAnswer("direct_reply", { direct_reply: 0.8, ignore: 0.8 }),
     choiceAnswer("direct_reply", { direct_reply: 0.2, ignore: 0.1 }),
     choiceAnswer("direct_reply", { direct_reply: 0, ignore: 0 }),
@@ -284,4 +283,14 @@ test("dense observed reactions retain recent annotations without dropping text o
     return response({ message_0: choiceAnswer("direct_reply", { direct_reply: 1 }) })();
   });
   assert.deepEqual(JSON.parse(result), { action: "reply", messageId: candidateIds[0], directed: true });
+});
+
+
+test("reported probabilities win when the service choice is below the maximum", async () => {
+  const result = await evaluateWithJev(prompt, config, "test", response({
+    message_0: choiceAnswer("ignore", { ignore: 0.1, direct_react: 0.9 }),
+    message_1: choiceAnswer("direct_reply", { direct_reply: 0.2, ignore: 0.8 }),
+    emoji_0: { type: "choice", choice: "emoji_4", probabilities: { emoji_0: 0.3, emoji_1: 0.2, emoji_2: 0.1, emoji_3: 0.11, emoji_4: 0.29 } },
+  }) as typeof fetch);
+  assert.deepEqual(JSON.parse(result), { action: "react", messageId: "1", directed: true, emoji: "👍" });
 });

@@ -39,8 +39,10 @@ function winningJevChoice(answer: unknown, choices: readonly string[]): string |
   const total = Object.values(scores).reduce((sum, value) => sum + value, 0);
   // Small rounding drift is allowed; this is shape validation, not a confidence gate.
   if (Math.abs(total - 1) > 0.02 + Number.EPSILON) return;
-  if (scores[choice] !== Math.max(...Object.values(scores))) return;
-  return choice;
+  const maximum = Math.max(...Object.values(scores));
+  // Live responses can name a choice below the reported maximum. Follow the
+  // distribution, retaining the service's choice only when it is among the maxima.
+  return scores[choice] === maximum ? choice : choices.find(key => scores[key] === maximum);
 }
 
 /** Jev evaluates fixed choices per candidate; only the host selects IDs and emoji. */
