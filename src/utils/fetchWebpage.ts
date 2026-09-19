@@ -4,6 +4,7 @@ import { operationSignal } from "../common/operationSignal.js";
 import { contentCharset, fetchPublicResource, PublicFetchError, type PublicResource } from "./fetchArtifact.js";
 import { ebayListingUrl } from "./fetchEbayListing.js";
 import { fetchBrowserResource } from "./browserClient.js";
+import { diagnosticUrl, isChallengePage, type BrowserDiagnostics } from "./browserDiagnostics.js";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT = 24_000;
@@ -21,10 +22,10 @@ export interface LookupRecord {
 export type WebpageResult = {
   status: "available"; url: string; finalUrl: string; fetchedAt: string;
   title: string; text: string; structuredData: string[]; truncated: boolean;
-  links?: string[]; nextOffset?: string; reader?: "http" | "browser";
+  links?: string[]; images?: string[]; embeddedPages?: string[]; nextOffset?: string; reader?: "http" | "browser"; diagnostics?: BrowserDiagnostics;
 } | {
   status: "unavailable"; url: string; fetchedAt: string;
-  errorCode: string; message: string; httpStatus?: number;
+  errorCode: string; message: string; httpStatus?: number; diagnostics?: BrowserDiagnostics; nextStep?: string;
 };
 
 export function lookupUrl(raw: string): string {
@@ -40,6 +41,7 @@ export function extractWebpage(html: string, maxText = MAX_TEXT) {
   let truncated = false;
   const structuredData: string[] = [];
   const links: string[] = [];
+  const images: string[] = [], embeddedPages: string[] = [];
   let baseHref: string | undefined;
   let titleSeen = false;
   const stack: Array<{ name: string; hidden: boolean; inert: boolean; baseInert: boolean; title: boolean; json: boolean; block: boolean; titleScope: boolean }> = [];
@@ -69,6 +71,12 @@ export function extractWebpage(html: string, maxText = MAX_TEXT) {
       if (name === "base" && !current.baseInert && baseHref === undefined && attributes.href !== undefined) baseHref = attributes.href;
       // Web components also expose article destinations through href attributes.
       if (!current.hidden && attributes.href && links.length < 120) links.push(attributes.href);
+      if (!current.hidden && name === "iframe" && attributes.src && embeddedPages.length < 12) embeddedPages.push(attributes.src);
+      if (!current.hidden && name === "img" && images.length < 24) {
+        const source = attributes["data-src"] || attributes.src;
+        if (source) images.push(source);
+      }
+      if (!current.inert && name === "meta" && attributes.property === "og:image" && attributes.content && images.length < 24) images.push(attributes.content);
       if (current.block && !current.hidden) separator();
     },
     ontext(value) {
@@ -100,7 +108,7 @@ export function extractWebpage(html: string, maxText = MAX_TEXT) {
     },
   }, { decodeEntities: true });
   parser.end(html);
-  return { title: title.trim(), text: text.replace(/ *\n[\n ]*/g, "\n").trim(), structuredData, truncated, links, baseHref };
+  return { title: title.trim(), text: text.replace(/ *\n[\n ]*/g, "\n").trim(), structuredData, truncated, links, images, embeddedPages, baseHref };
 }
 
 /** Prefer BOM, HTTP charset, then the document's declaration; never silently replace invalid bytes. */
@@ -156,7 +164,7 @@ export async function fetchWebpage(rawUrl: string, signal?: AbortSignal,
     for (let attempt = 0; attempt < 2; attempt++) {
       operation.signal.throwIfAborted();
       try {
-        file = await (reader === "browser" ? browserReader : fetchResource)(url, { signal: operation.signal, maxBytes: MAX_BYTES, standardPortsOnly: true });
+        file = await (reader === "browser" ? browserReader : fetchResource)(reader === "browser" ? ebayListingUrl(url) ?? url : url, { signal: operation.signal, maxBytes: MAX_BYTES, standardPortsOnly: true });
         break;
       } catch (error) {
         // Browser fallback is a normal anonymous read, never a retry of private-network policy failures.
@@ -187,23 +195,25 @@ export async function fetchWebpage(rawUrl: string, signal?: AbortSignal,
     }
     else if (["text/plain", "application/json"].includes(resource.contentType)) {
       const text = decodeWebpage(resource);
-      page = { title: "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: [], baseHref: undefined };
+      page = { title: "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: [], images: [], embeddedPages: [], baseHref: undefined };
     } else if (["application/rss+xml", "application/atom+xml", "application/xml", "text/xml"].includes(resource.contentType)) {
       const feed = parseFeed(decodeWebpage(resource));
       if (!feed) throw new PublicFetchError("unsupported", "The XML document is not an RSS or Atom feed.");
       const text = feed.items.map(item => [item.title, item.link, item.pubDate && Number.isFinite(item.pubDate.getTime()) ? item.pubDate.toISOString() : "", extractWebpage(item.description ?? "").text.slice(0,2000)].filter(Boolean).join("\n")).join("\n\n");
-      page = { title: feed.title ?? "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: feed.items.flatMap(item => item.link ? [item.link] : []).slice(0,120), baseHref: undefined };
+      page = { title: feed.title ?? "", text: text.slice(0, MAX_DOCUMENT_TEXT), structuredData: [], truncated: text.length > MAX_DOCUMENT_TEXT, links: feed.items.flatMap(item => item.link ? [item.link] : []).slice(0,120), images: [], embeddedPages: [], baseHref: undefined };
     } else throw new PublicFetchError("unsupported", "This URL did not return a webpage, text, JSON, RSS, or Atom. Use fetch_artifact for files.");
-    if (/^(?:pardon our interruption|just a moment|access denied|robot check|verify you are human|security check|checking your browser)\b/i.test(page.title)
-      || (!page.structuredData.length && page.text.length < 1500 && /^(?:please )?(?:verify (?:that )?you are human|checking your browser|pardon our interruption)\b/i.test(page.text))) {
-      return { status: "unavailable", url, fetchedAt: fetchedAt(), errorCode: "challenge", message: "The source returned a verification/challenge page; its content is unavailable." };
+    if (isChallengePage(page.title, !page.structuredData.length && page.text.length < 1500 ? page.text : "")) {
+      throw new PublicFetchError("challenge", "The source returned a verification/challenge page; its content is unavailable.", undefined,
+        { ...resource.diagnostics, navigations: resource.diagnostics?.navigations ?? [], finalUrl: diagnosticUrl(resource.url), title: page.title, excerpt: page.text.slice(0, 2000) });
     }
+    if (ebayListingUrl(url) && ebayListingUrl(resource.url) !== ebayListingUrl(url)) throw new PublicFetchError("listing_mismatch", "The source returned a different page instead of the requested eBay listing.", undefined, resource.diagnostics);
     if (!page.text && !page.structuredData.length) return { status: "unavailable", url, fetchedAt: fetchedAt(), errorCode: "unreadable", message: "The page has no readable content; it may require JavaScript or authentication." };
     let baseUrl = resource.url;
     try { if (page.baseHref !== undefined) baseUrl = new URL(page.baseHref, resource.url).href; } catch { /* Invalid base URLs use the document URL. */ }
-    const links = [...new Set(page.links.flatMap(link => { try { const target = new URL(link, baseUrl); return ["http:", "https:"].includes(target.protocol) && !target.username && !target.password ? [target.href] : []; } catch { return []; } }))];
+    const resolveLinks = (values: string[]) => [...new Set(values.flatMap(link => { try { const target = new URL(link, baseUrl); return ["http:", "https:"].includes(target.protocol) && !target.username && !target.password ? [target.href] : []; } catch { return []; } }))];
+    const links = resolveLinks(page.links);
     const nextOffset = offset + textLimit < page.text.length ? offset + textLimit : undefined;
-    return { status: "available", url, finalUrl: resource.url, fetchedAt: fetchedAt(), ...page, links, reader: ebayListingUrl(url) && fetchResource === fetchWebpageResource ? "browser" : reader,
+    return { status: "available", url, finalUrl: resource.url, fetchedAt: fetchedAt(), ...page, links, images: resolveLinks(page.images), embeddedPages: resolveLinks(page.embeddedPages), diagnostics: resource.diagnostics, reader: ebayListingUrl(url) && fetchResource === fetchWebpageResource ? "browser" : reader,
       text: page.text.slice(offset, offset + textLimit), truncated: page.truncated || nextOffset !== undefined,
       ...(nextOffset !== undefined ? { nextOffset: String(nextOffset) } : {}) };
   } catch (error) {
@@ -211,6 +221,11 @@ export async function fetchWebpage(rawUrl: string, signal?: AbortSignal,
     const code = operation.signal.aborted ? "timeout" : error instanceof PublicFetchError ? error.code : "network_error";
     return { status: "unavailable", url, fetchedAt: fetchedAt(), errorCode: code,
       message: code === "timeout" ? "The webpage request timed out." : error instanceof PublicFetchError ? error.message : "Could not connect to the public source.",
+      ...(error instanceof PublicFetchError && error.diagnostics ? { diagnostics: error.diagnostics } : {}),
+      nextStep: code === "challenge" ? "Use another public source for the same item, or request user-provided listing content. Do not retry a human-verification challenge."
+        : ["navigation_limit", "navigation_loop"].includes(code) ? "Inspect the navigation diagnostics and try the canonical URL with mode=auto or hosted article reading; do not repeat the same failing browser request."
+        : code === "listing_mismatch" ? "Confirm the requested item URL or find another source for that exact item. Do not substitute facts from the redirected page."
+        : "Use hosted article reading or another public source; report only facts supported by the retrieved content.",
       ...(error instanceof PublicFetchError && error.status ? { httpStatus: error.status } : {}) };
   } finally { operation.dispose(); }
 }

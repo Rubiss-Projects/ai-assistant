@@ -16,6 +16,30 @@ const read = fetchBrowserResource("general");
 const fixture = http.createServer((request, response) => {
     seen.push(`${request.method} ${request.url}`);
     response.setHeader("Content-Type", "text/html");
+    if (request.url === "/public-redirect") {
+        response.writeHead(302, { Location: "/tamper?token=hidden-diagnostic-token" });
+        response.end();
+        return;
+    }
+    if (request.url === "/navigation-loop") {
+        response.writeHead(302, { Location: "/navigation-loop" });
+        response.end();
+        return;
+    }
+    if (request.url?.startsWith("/navigation-chain/")) {
+        response.writeHead(302, { Location: `/navigation-chain/${Number(request.url.split("/").at(-1)) + 1}` });
+        response.end();
+        return;
+    }
+    if (request.url === "/challenge-redirect") {
+        response.writeHead(307, { Location: "/splashui/challenge?token=hidden-diagnostic-token" });
+        response.end();
+        return;
+    }
+    if (request.url?.startsWith("/splashui/challenge")) {
+        response.end("<title>Pardon Our Interruption</title>");
+        return;
+    }
     if (request.url === "/redirect") {
         response.writeHead(302, { Location: "http://private-fixture.test/private" });
         response.end();
@@ -43,7 +67,7 @@ const fixture = http.createServer((request, response) => {
         response.end('<body><script>for(let i=0;i<60000;i++)document.body.append(document.createElement("span"))</script></body>');
         return;
     }
-    if (request.url === "/tamper") {
+    if (request.url?.startsWith("/tamper")) {
         response.end('<body><p>Real article</p><script>window.TextEncoder=class {encode(){return {byteLength:0}}};Array.prototype.join=()=>"Fabricated text";</script></body>');
         return;
     }
@@ -85,11 +109,23 @@ try {
         read("http://research-fixture.test/tamper", { maxBytes: 1024 * 1024 }),
     ]);
     assert.equal(extractWebpage(concurrent.data.toString()).text, "Real article");
+    assert.ok(seen.every(value => value === "GET /" || value === "GET /data" || value === "GET /tamper" || value === "GET /favicon.ico"), JSON.stringify(seen));
+    const redirected = await read("http://research-fixture.test/public-redirect", { maxBytes: 1024 * 1024 });
+    assert.equal(extractWebpage(redirected.data.toString()).text, "Real article");
+    assert.deepEqual(redirected.diagnostics?.navigations.map(entry => entry.status), [302, 200]);
+    assert.doesNotMatch(JSON.stringify(redirected.diagnostics), /hidden-diagnostic-token/);
+    for (const [path, code] of [["navigation-loop", "navigation_loop"], ["navigation-chain/0", "navigation_limit"], ["challenge-redirect", "challenge"]]) {
+        await assert.rejects(read(`http://research-fixture.test/${path}`, { maxBytes: 1024 * 1024 }), (error) => {
+            assert.equal(error.code, code);
+            assert.ok(error.diagnostics.navigations.length > 0 && error.diagnostics.navigations.length <= 12);
+            assert.doesNotMatch(JSON.stringify(error.diagnostics), /hidden-diagnostic-token/);
+            return true;
+        });
+    }
     const page = extractWebpage(resource.data.toString());
     assert.match(page.text, /New panel details 2026-09-12T22:30:00Z/);
     assert.doesNotMatch(page.text, /WORKER_RAN/);
     assert.ok(seen.includes("GET /data"));
-    assert.ok(seen.every(value => value === "GET /" || value === "GET /data" || value === "GET /tamper" || value === "GET /favicon.ico"), JSON.stringify(seen));
     await assert.rejects(read("http://research-fixture.test/redirect", { maxBytes: 1024 * 1024 }), /public internet|HTTP 502|anonymous browser/);
     await assert.rejects(read("http://research-fixture.test/redirect-loopback", { maxBytes: 1024 * 1024 }), /standard ports|HTTP 502|anonymous browser/);
     await assert.rejects(read("http://research-fixture.test/script-redirect", { maxBytes: 1024 * 1024 }), /HTTP 404/);

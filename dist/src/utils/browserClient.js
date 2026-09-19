@@ -26,13 +26,13 @@ export const fetchBrowserResource = (kind) => async (url, options) => {
         }
         const result = JSON.parse(Buffer.concat(parts).toString("utf8"));
         if (!response.ok || !result.ok)
-            throw new PublicFetchError(result.code ?? "network_error", result.message ?? "Browser worker unavailable.", result.status);
+            throw new PublicFetchError(result.code ?? "network_error", result.message ?? "Browser worker unavailable.", result.status, result.diagnostics);
         if (typeof result.data !== "string" || result.data.length > Math.ceil(options.maxBytes / 3) * 4 + 4 || typeof result.url !== "string" || typeof result.contentType !== "string")
             throw new Error("Invalid browser response");
         const data = Buffer.from(result.data, "base64");
         if (data.length > options.maxBytes)
             throw new PublicFetchError("too_large", "Browser document exceeded its limit.");
-        return { data, url: result.url, contentType: result.contentType, charset: result.charset, filename: "page.html" };
+        return { data, url: result.url, contentType: result.contentType, charset: result.charset, filename: "page.html", diagnostics: result.diagnostics };
     }
     catch (error) {
         if (options.signal?.aborted)

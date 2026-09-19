@@ -223,8 +223,28 @@ ArrayBuffer, Wasm, native DOM allocations and any child processes. An isolated-w
 depth and serialized-byte limits before returning HTML to the bot; it never
 materializes an unbounded `page.content()` result.
 
-HTTPS eBay item URLs retain their tested, smaller browser path: only the canonical
-listing is read, with scripts, subresources and redirects disabled. Chromium is
+HTTPS eBay item URLs use a smaller browser path with scripts and subresources
+disabled. Up to five redirects to the same item on `https://www.ebay.com` may
+continue; each destination is checked before Chromium follows it and the host's
+public DNS address remains pinned. Redirects to another item/host are rejected,
+repeated URLs stop as `navigation_loop`, and verification redirects return
+`challenge`. Start listings with their canonical `/itm/ITEM_ID` URL in `mode=auto`.
+Explicit JavaScript rendering also checks the final eBay item identity.
+Page results expose bounded `images` and `embeddedPages` URL lists, so the agent
+can read seller descriptions hosted in separate frames and inspect product
+photos through existing tools. Extraction never automatically loads those URLs;
+subsequent reads still pass through the public-network policy.
+
+Browser results include bounded `diagnostics`: main-frame URLs, HTTP statuses,
+redirect destinations, and the last response URL. Queries, fragments and URL
+credentials are omitted from this trace. A title and short text excerpt are
+included when a bounded document was readable; these are untrusted evidence,
+not verified listing facts. Failures distinguish `challenge`, `navigation_loop`,
+`navigation_limit`, and `listing_mismatch`, and include `nextStep` guidance.
+The general reader stops on a third visit to the same URL or its existing
+eight-navigation limit. No separate `agent-browser` CLI or plugin is required.
+
+Chromium is
 included in the container; other installs can set `AI_ASSISTANT_BROWSER_EXECUTABLE`.
 The supplied `compose.yaml` uses `seccomp.json` to permit Chromium's user namespace
 sandbox while retaining syscall filtering and dropping host capabilities. Keep
