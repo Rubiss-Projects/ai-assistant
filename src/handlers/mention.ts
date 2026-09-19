@@ -74,7 +74,7 @@ export async function handleMention(
   sessions: SessionManager,
   sessionKey?: string,  // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
   canIncludeContextAuthor: (authorId: string) => boolean = () => true,
-  participation?: { context: string; requests: Message[] },
+  participation?: { context: string; requests: Message[]; attachments?: Array<{ url: string; contentType: string | null; name: string; size?: number }> },
 ): Promise<void> {
   // Strip all @mentions of the bot and trim
   const botMentionPattern = new RegExp(`<@!?${client.user!.id}>`, "g");
@@ -114,11 +114,12 @@ export async function handleMention(
       contextAttachments,
     );
     // Add ambient conversation only after host-side intent/link processing so
-    // background messages cannot trigger memory writes, searches or downloads.
+    // background text cannot trigger memory writes, searches or link downloads.
     if (participation) enrichedPrompt = `${participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
     const result = await downloadFileAttachments([
       ...(participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
       ...contextAttachments,
+      ...(participation?.attachments ?? []),
     ]);
     cleanup = result.cleanup;
     const prepared = await prepareDownloadedAttachments(result.attachments);
