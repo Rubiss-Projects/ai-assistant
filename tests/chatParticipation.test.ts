@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ChatParticipation, parseParticipationDecision, participationMode, type ConversationMessage } from "../src/common/chatParticipation.js";
-import { assistantIdentity, explicitlyMentionsBot, participationContext } from "../src/common/discordParticipation.js";
+import { assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext, participationAttachments } from "../src/common/discordParticipation.js";
 import { evaluateWithJev, participationEvaluatorConfig } from "../src/common/participationEvaluator.js";
 
 const sleep = (ms = 15) => new Promise(resolve => setTimeout(resolve, ms));
@@ -262,4 +262,19 @@ test("classification excludes attachment references while answers retain them", 
   assert.equal("attachments" in JSON.parse(classifierPrompt).messages[0], false);
   assert.doesNotMatch(classifierPrompt, /signature=private|private-chart/);
   assert.deepEqual(answerContext[0].attachments, [attachment]);
+});
+
+
+test("answer context excludes unbounded attachment metadata without losing download references", () => {
+  const attachments = Array.from({ length: 100 }, (_, index) => ({
+    url: `https://cdn.discordapp.com/${index}?signature=${"x".repeat(2000)}`,
+    name: `chart-${index}.png`, contentType: "image/png",
+  }));
+  const context = [{ ...message("1", "Earlier chart"), attachmentCount: attachments.length, attachments }];
+  const prompt = participationReplyContext(context, ["1"]);
+  assert.match(prompt, /Earlier chart/);
+  assert.match(prompt, /"attachmentCount":100/);
+  assert.doesNotMatch(prompt, /cdn\.discordapp\.com|signature|chart-99/);
+  assert.ok(prompt.length < 1000);
+  assert.deepEqual(participationAttachments(context), attachments);
 });
