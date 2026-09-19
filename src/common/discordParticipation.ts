@@ -1,5 +1,24 @@
 import { PermissionFlagsBits, type Message } from "discord.js";
-import type { ConversationMessage } from "./chatParticipation.js";
+import { DEFAULT_PARTICIPATION_EMOJIS, type ParticipationEmoji, type ConversationMessage } from "./chatParticipation.js";
+
+/** Guild cache is initialized by GUILD_CREATE and refreshed by GuildExpressions events. */
+export function participationEmojis(message: Pick<Message, "guild">): ParticipationEmoji[] {
+  const guild = message.guild;
+  if (!guild?.members.me) return [...DEFAULT_PARTICIPATION_EMOJIS];
+  const roles = guild.members.me.roles.cache;
+  const custom = [...guild.emojis.cache.values()]
+    .filter(emoji => emoji.available !== false && emoji.name &&
+      (!emoji.roles.cache.size || emoji.roles.cache.some(role => roles.has(role.id))))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(emoji => ({ value: emoji.id, name: emoji.name! }));
+  return [...DEFAULT_PARTICIPATION_EMOJIS, ...custom];
+}
+
+/** Recheck the current guild catalog immediately before sending a reaction. */
+export async function reactWithParticipationEmoji(message: Message, value: string): Promise<void> {
+  if (!participationEmojis(message).some(emoji => emoji.value === value)) return;
+  await message.react(value);
+}
 
 export function assistantIdentity(message: Message, bot: { id: string; username: string; globalName: string | null }) {
   return { id: bot.id, names: [...new Set([message.guild?.members.me?.displayName, bot.globalName, bot.username].filter((name): name is string => Boolean(name)))] };

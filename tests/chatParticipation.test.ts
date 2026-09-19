@@ -83,7 +83,7 @@ test("cooldown suppresses ranked unsolicited replies but permits a sub-70-percen
     return evaluateWithJev(prompt, participationEvaluatorConfig({}), "test", async () => new Response(JSON.stringify({ answers: {
       message_0: { type: "choice", choice, probabilities: {
         ignore: 0.25, direct_reply: 0.05, unsolicited_reply: 0.05,
-        reaction_0: 0.1, reaction_1: 0, reaction_2: 0, reaction_3: 0, reaction_4: 0,
+        react: 0.1,
         [choice]: 0.6,
       } },
     } })));
