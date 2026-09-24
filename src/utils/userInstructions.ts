@@ -26,10 +26,10 @@ export function formatUserInstructionBlock(
 export function applyUserInstructions(
   prompt: string,
   context: UserInstructionContext,
-  store = new UserInstructionStore(),
+  store?: UserInstructionStore,
 ): string {
   if (configuredUserInstructionMode() === "off") return prompt;
-  const rulesets = store.listForUser(context.guildId ?? null, context.userId, false);
+  const rulesets = (store ?? new UserInstructionStore()).listForUser(context.guildId ?? null, context.userId, false);
   const block = formatUserInstructionBlock(context, rulesets);
   if (!block) return prompt;
   return `${block}\n\nUser message:\n${prompt}`;
@@ -37,16 +37,16 @@ export function applyUserInstructions(
 
 export function activeUserInstructionBlock(
   context?: UserInstructionContext,
-  store = new UserInstructionStore(),
+  store?: UserInstructionStore,
 ): string {
   if (!context || configuredUserInstructionMode() === "off") return "";
-  const rulesets = store.listForUser(context.guildId ?? null, context.userId, false);
+  const rulesets = (store ?? new UserInstructionStore()).listForUser(context.guildId ?? null, context.userId, false);
   return formatUserInstructionBlock(context, rulesets);
 }
 
 export function providerSystemPromptForUser(
   context?: UserInstructionContext,
-  store = new UserInstructionStore(),
+  store?: UserInstructionStore,
 ): string {
   return [providerSystemPrompt(), activeUserInstructionBlock(context, store)]
     .filter(Boolean)

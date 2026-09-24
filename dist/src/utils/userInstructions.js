@@ -8,22 +8,22 @@ export function formatUserInstructionBlock(context, rulesets) {
     }
     return content;
 }
-export function applyUserInstructions(prompt, context, store = new UserInstructionStore()) {
+export function applyUserInstructions(prompt, context, store) {
     if (configuredUserInstructionMode() === "off")
         return prompt;
-    const rulesets = store.listForUser(context.guildId ?? null, context.userId, false);
+    const rulesets = (store ?? new UserInstructionStore()).listForUser(context.guildId ?? null, context.userId, false);
     const block = formatUserInstructionBlock(context, rulesets);
     if (!block)
         return prompt;
     return `${block}\n\nUser message:\n${prompt}`;
 }
-export function activeUserInstructionBlock(context, store = new UserInstructionStore()) {
+export function activeUserInstructionBlock(context, store) {
     if (!context || configuredUserInstructionMode() === "off")
         return "";
-    const rulesets = store.listForUser(context.guildId ?? null, context.userId, false);
+    const rulesets = (store ?? new UserInstructionStore()).listForUser(context.guildId ?? null, context.userId, false);
     return formatUserInstructionBlock(context, rulesets);
 }
-export function providerSystemPromptForUser(context, store = new UserInstructionStore()) {
+export function providerSystemPromptForUser(context, store) {
     return [providerSystemPrompt(), activeUserInstructionBlock(context, store)]
         .filter(Boolean)
         .join("\n\n");

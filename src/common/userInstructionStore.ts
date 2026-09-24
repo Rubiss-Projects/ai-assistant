@@ -2,6 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "node:crypto";
+import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
 
 export type UserInstructionMode = "off" | "admin_only" | "admin_and_self" | "unfiltered";
 export type UserInstructionScope = "guild" | "global";
@@ -77,8 +78,22 @@ export function canManageUserInstructions(
 }
 
 export function userInstructionRulesetsFile(env: NodeJS.ProcessEnv = process.env): string {
-  return env.USER_INSTRUCTION_RULESETS_FILE?.trim()
+  const file = env.USER_INSTRUCTION_RULESETS_FILE?.trim()
     || path.join(os.homedir(), ".config", "ai-assistant", "user-instructions.json");
+  validateStoragePath(file, env);
+  return file;
+}
+
+/** Rules are host-managed policy, so provider file tools must not be able to edit them. */
+function validateStoragePath(file: string, env: NodeJS.ProcessEnv = process.env): void {
+  const workspace = configuredWorkspaceRoot(env);
+  if (!workspace) return;
+  const relative = path.relative(path.resolve(workspace), path.resolve(file));
+  const lexicallyInside = relative === ""
+    || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative));
+  if (lexicallyInside || pathIsWithin(workspace, file)) {
+    throw new Error("USER_INSTRUCTION_RULESETS_FILE must be outside the provider workspace root, including symlink targets.");
+  }
 }
 
 export function normalizeRulesetName(value: string): string {
@@ -154,6 +169,7 @@ export class UserInstructionStore {
   }
 
   private load(): void {
+    validateStoragePath(this.filePath);
     try {
       const value: unknown = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
       if (!Array.isArray(value) || !value.every(isRuleset)) throw new Error("Invalid ruleset storage format.");
@@ -291,6 +307,7 @@ export class UserInstructionStore {
   }
 
   private persist(): void {
+    validateStoragePath(this.filePath);
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
     const temporary = `${this.filePath}.tmp`;

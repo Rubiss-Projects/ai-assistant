@@ -10,13 +10,52 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { createAccessPolicy } from "../src/common/accessPolicy.js";
 import { RulesetToolSessions, rulesetToolPrompt } from "../src/common/rulesetToolBridge.js";
 import { RulesetTools, createRulesetToolRun } from "../src/common/rulesetTools.js";
-import { USER_RULESET_LIMITS, UserInstructionStore } from "../src/common/userInstructionStore.js";
-import { applyUserInstructions, previewUserInstructions, providerSystemPromptForUser } from "../src/utils/userInstructions.js";
+import { USER_RULESET_LIMITS, UserInstructionStore, userInstructionRulesetsFile } from "../src/common/userInstructionStore.js";
+import { activeUserInstructionBlock, applyUserInstructions, previewUserInstructions, providerSystemPromptForUser } from "../src/utils/userInstructions.js";
 
 function tempFile(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "user-rulesets-"));
   return path.join(dir, "rules.json");
 }
+
+test("ruleset storage rejects workspace paths and symlinked ancestors in shared mode", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ruleset-boundary-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace);
+  const alias = path.join(root, "alias");
+  fs.symlinkSync(workspace, alias, "junction");
+  const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: workspace };
+  for (const file of [path.join(workspace, "rules.json"), path.join(alias, "future", "rules.json")]) {
+    assert.throws(() => userInstructionRulesetsFile({ ...env, USER_INSTRUCTION_RULESETS_FILE: file }), /outside.*workspace.*symlink/);
+  }
+  const outside = path.join(root, "host-config", "rules.json");
+  assert.equal(userInstructionRulesetsFile({ ...env, USER_INSTRUCTION_RULESETS_FILE: outside }), outside);
+  assert.equal(userInstructionRulesetsFile({ ...env, AI_ASSISTANT_SECURITY_MODE: "unrestricted", USER_INSTRUCTION_RULESETS_FILE: path.join(workspace, "rules.json") }), path.join(workspace, "rules.json"));
+});
+
+test("disabled rulesets and absent user context do not read broken storage", () => {
+  const file = tempFile();
+  fs.writeFileSync(file, "{invalid");
+  const previous = process.env.USER_INSTRUCTION_RULESETS_FILE;
+  process.env.USER_INSTRUCTION_RULESETS_FILE = file;
+  try {
+    withMode("off", () => {
+      assert.equal(applyUserInstructions("hello", { userId: "u" }), "hello");
+      assert.equal(activeUserInstructionBlock({ userId: "u" }), "");
+      assert.doesNotThrow(() => providerSystemPromptForUser({ userId: "u" }));
+    });
+    withMode("admin_only", () => {
+      assert.equal(activeUserInstructionBlock(), "");
+      assert.doesNotThrow(() => providerSystemPromptForUser());
+      assert.throws(() => activeUserInstructionBlock({ userId: "u" }));
+    });
+  } finally {
+    if (previous === undefined) delete process.env.USER_INSTRUCTION_RULESETS_FILE;
+    else process.env.USER_INSTRUCTION_RULESETS_FILE = previous;
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  }
+});
 
 function withMode<T>(mode: string, action: () => T): T {
   const previous = process.env.USER_INSTRUCTION_MODE;
