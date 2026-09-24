@@ -1,3 +1,3 @@
 # Contribution broker proof
 
-Temporary integration fixture. The fork writer authored this commit.
+Temporary integration fixture. The fork writer authored and revised this commit.
