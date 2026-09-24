@@ -236,6 +236,8 @@ export class UserInstructionStore {
         const guildIds = new Set([changed.guildId]);
         if (changed.scope === "global") {
             guildIds.add(null);
+            // Global rules also apply in future guilds; Discord snowflakes can occupy 20 digits.
+            guildIds.add("18446744073709551615");
             for (const ruleset of nextRulesets) {
                 if (ruleset.targetUserId === changed.targetUserId && ruleset.guildId !== null)
                     guildIds.add(ruleset.guildId);
