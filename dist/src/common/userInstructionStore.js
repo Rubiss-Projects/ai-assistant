@@ -130,6 +130,17 @@ export class UserInstructionStore {
             && ruleset.name === normalizedName
             && ruleset.guildId === normalizedGuild);
     }
+    /** Choose an unused generated name; explicit names still update the existing rule. */
+    availableName(guildId, targetUserId, desired) {
+        const base = normalizeRulesetName(desired) || "user-rule";
+        for (let index = 1; index <= 99; index++) {
+            const suffix = index === 1 ? "" : `-${index}`;
+            const candidate = `${base.slice(0, USER_RULESET_LIMITS.maxNameLength - suffix.length)}${suffix}`;
+            if (!this.get(guildId, targetUserId, candidate))
+                return candidate;
+        }
+        throw new Error("Could not generate a unique ruleset name.");
+    }
     set(input) {
         this.load();
         const now = new Date().toISOString();

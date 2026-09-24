@@ -3,7 +3,6 @@ import type { AccessPolicy, AccessSubject } from "./accessPolicy.js";
 import {
   canManageUserInstructions,
   generatedRulesetName,
-  normalizeRulesetName,
   UserInstructionStore,
   userInstructionFeaturesEnabled,
   validateInstructions,
@@ -119,9 +118,9 @@ export class RulesetTools {
     const target = this.target(args);
     const requester = this.requireManage(target);
     const instructions = validateInstructions(String(args.instructions));
-    const name = args.name ? validateRulesetName(String(args.name)) : this.availableName(target, generatedRulesetName(instructions));
-    const priority = args.priority ? Number(args.priority) : 100;
-    if (!Number.isSafeInteger(priority)) throw new Error("Priority must be an integer.");
+    const name = args.name ? validateRulesetName(String(args.name)) : this.store.availableName(this.context.guildId, target, generatedRulesetName(instructions));
+    const priority = args.priority == null || args.priority === "" ? undefined : Number(args.priority);
+    if (priority !== undefined && !Number.isSafeInteger(priority)) throw new Error("Priority must be an integer.");
     const ruleset = this.store.set({
       guildId: this.context.guildId ?? null,
       targetUserId: target,
@@ -180,15 +179,7 @@ export class RulesetTools {
     };
   }
 
-  private availableName(targetUserId: string, desired: string): string {
-    const base = normalizeRulesetName(desired) || "user-rule";
-    if (!this.store.get(this.context.guildId ?? null, targetUserId, base)) return base;
-    for (let index = 2; index <= 99; index++) {
-      const candidate = normalizeRulesetName(`${base}-${index}`);
-      if (!this.store.get(this.context.guildId ?? null, targetUserId, candidate)) return candidate;
-    }
-    throw new Error("Could not generate a unique ruleset name.");
-  }
+
 }
 
 function toolRuleset(ruleset: UserInstructionRuleset): Record<string, unknown> {
