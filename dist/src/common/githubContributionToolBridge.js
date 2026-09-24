@@ -73,7 +73,8 @@ class GitHubContributionConnection {
                 let bytes = 0;
                 for await (const chunk of request) {
                     bytes += chunk.length;
-                    if (bytes > 1_500_000) {
+                    // One MB of text can expand sixfold as JSON escapes; also allow the bounded metadata.
+                    if (bytes > 6_500_000) {
                         response.writeHead(413).end();
                         request.destroy();
                         return;

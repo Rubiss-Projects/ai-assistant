@@ -61,7 +61,8 @@ class GitHubContributionConnection {
         let bytes = 0;
         for await (const chunk of request) {
           bytes += chunk.length;
-          if (bytes > 1_500_000) { response.writeHead(413).end(); request.destroy(); return; }
+          // One MB of text can expand sixfold as JSON escapes; also allow the bounded metadata.
+          if (bytes > 6_500_000) { response.writeHead(413).end(); request.destroy(); return; }
           chunks.push(Buffer.from(chunk));
         }
         const call = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { name: string; arguments: Record<string, unknown> };
