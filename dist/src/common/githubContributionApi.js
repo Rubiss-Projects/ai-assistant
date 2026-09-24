@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createPrivateKey, sign } from "node:crypto";
+import { operationSignal } from "./operationSignal.js";
 export class GitHubRequestError extends Error {
     status;
     constructor(status) {
@@ -20,25 +21,31 @@ export class GitHubContributionApi {
     }
     async send(token, method, endpoint, body, signal) {
         signal.throwIfAborted();
-        const response = await this.fetcher(`https://api.github.com${endpoint}`, {
-            method, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-            headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "content-type": "application/json", "x-github-api-version": "2026-03-10" },
-            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        });
-        if (!response.ok) {
-            await response.body?.cancel();
-            throw new GitHubRequestError(response.status);
-        }
-        const chunks = [];
-        let size = 0;
-        for await (const chunk of response.body ?? []) {
-            size += chunk.byteLength;
-            if (size > 8_000_000) {
-                throw new Error("GitHub response exceeds the contribution size limit.");
+        const operation = operationSignal(signal, 30_000);
+        try {
+            const response = await this.fetcher(`https://api.github.com${endpoint}`, {
+                method, redirect: "error", signal: operation.signal,
+                headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "content-type": "application/json", "x-github-api-version": "2026-03-10" },
+                ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            });
+            if (!response.ok) {
+                await response.body?.cancel();
+                throw new GitHubRequestError(response.status);
             }
-            chunks.push(chunk);
+            const chunks = [];
+            let size = 0;
+            for await (const chunk of response.body ?? []) {
+                size += chunk.byteLength;
+                if (size > 8_000_000) {
+                    throw new Error("GitHub response exceeds the contribution size limit.");
+                }
+                chunks.push(chunk);
+            }
+            return JSON.parse(Buffer.concat(chunks).toString("utf8"));
         }
-        return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        finally {
+            operation.dispose();
+        }
     }
     jwt(role, app) {
         const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");

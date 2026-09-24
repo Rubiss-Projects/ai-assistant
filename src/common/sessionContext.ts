@@ -10,7 +10,7 @@ import { configuredSecurityMode, configuredSitesEnabled, secureSystemPrompt } fr
 import { activeUserInstructionBlock } from "../utils/userInstructions.js";
 import { userInstructionFeaturesEnabled, type UserInstructionContext } from "./userInstructionStore.js";
 
-export type ContextProfile = "conversation" | "scheduled" | "ephemeral";
+export type ContextProfile = "conversation" | "one-shot" | "scheduled" | "ephemeral";
 
 export interface ContextRequest {
   profile?: ContextProfile;
@@ -54,8 +54,8 @@ export function contextFingerprint(value: unknown): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-const allProfiles = ["conversation", "scheduled", "ephemeral"] as const;
-const userProfiles = ["conversation", "scheduled"] as const;
+const allProfiles = ["conversation", "one-shot", "scheduled", "ephemeral"] as const;
+const userProfiles = ["conversation", "one-shot", "scheduled"] as const;
 
 /** Add application-owned context here; provider adapters consume the same snapshot. */
 export const CONTEXT_CONTRIBUTORS: readonly ContextContributor[] = [
