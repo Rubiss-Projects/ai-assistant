@@ -44,8 +44,8 @@ export async function handleRuleset(interaction, subject, access) {
         if (sub === "set") {
             const instructions = validateInstructions(interaction.options.getString("instructions", true));
             const requestedName = interaction.options.getString("name", false);
-            const name = requestedName ? validateRulesetName(requestedName) : generatedRulesetName(instructions);
-            const priority = interaction.options.getInteger("priority", false) ?? 100;
+            const name = requestedName ? validateRulesetName(requestedName) : store.availableName(guildId, target.id, generatedRulesetName(instructions));
+            const priority = interaction.options.getInteger("priority", false) ?? undefined;
             const ruleset = store.set({ guildId, targetUserId: target.id, name, instructions, priority, createdBy: interaction.user.id, updatedBy: interaction.user.id });
             await interaction.editReply(`Updated ruleset \`${ruleset.name}\` for ${target.label}. It will apply on the next message.`);
             return;

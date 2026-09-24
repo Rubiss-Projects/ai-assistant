@@ -255,12 +255,13 @@ test("ruleset slash commands resolve storage after environment initialization", 
   process.env.USER_INSTRUCTION_RULESETS_FILE = file;
   try {
     const replies: unknown[] = [];
+    let priority: number | null = 7;
     const values: Record<string, string> = { name: "tone", instructions: "Use short sentences." };
     const interaction = {
       guildId: "guild-1", user: { id: "admin" }, deferred: false,
       options: {
         getSubcommand: () => "set", getUser: () => ({ id: "123", toString: () => "<@123>" }),
-        getString: (name: string) => values[name] ?? null, getInteger: () => null,
+        getString: (name: string) => values[name] ?? null, getInteger: () => priority,
       },
       deferReply: async () => { interaction.deferred = true; },
       editReply: async (content: unknown) => { replies.push(content); },
@@ -268,7 +269,28 @@ test("ruleset slash commands resolve storage after environment initialization", 
     await handleRuleset(interaction as unknown as ChatInputCommandInteraction,
       { userId: "admin", guildId: "guild-1" }, createAccessPolicy({ DISCORD_ADMIN_USERS: "admin" }));
     assert.match(String(replies[0]), /Updated ruleset/);
-    assert.equal(new UserInstructionStore(file).get("guild-1", "123", "tone")?.instructions, values.instructions);
+    const store = new UserInstructionStore(file);
+    assert.equal(store.get("guild-1", "123", "tone")?.instructions, values.instructions);
+    priority = null;
+    const runSlash = () => handleRuleset(interaction as unknown as ChatInputCommandInteraction,
+      { userId: "admin", guildId: "guild-1" }, createAccessPolicy({ DISCORD_ADMIN_USERS: "admin" }));
+    await runSlash();
+    assert.equal(store.get("guild-1", "123", "tone")?.priority, 7);
+    const runtime = new RulesetTools(createRulesetToolRun(), {
+      access: createAccessPolicy({ DISCORD_ADMIN_USERS: "admin" }), requester: { userId: "admin", guildId: "guild-1" }, guildId: "guild-1",
+    }, store);
+    try {
+      await runtime.call("set_user_ruleset", { run_id: runtime.id, user: "123", name: "tone", instructions: "Updated by a tool." });
+      assert.equal(store.get("guild-1", "123", "tone")?.priority, 7);
+    } finally { await runtime.close(); }
+    delete values.name;
+    await runSlash();
+    values.instructions = "Use brief paragraphs.";
+    await runSlash();
+    const generated = store.listForUser("guild-1", "123").filter(rule => rule.name.startsWith("short-replies"));
+    assert.deepEqual(generated.map(rule => rule.name), ["short-replies", "short-replies-2"]);
+    assert.equal(generated[0].instructions, "Use short sentences.");
+    assert.equal(generated[1].instructions, "Use brief paragraphs.");
   } finally {
     if (previous === undefined) delete process.env.USER_INSTRUCTION_RULESETS_FILE;
     else process.env.USER_INSTRUCTION_RULESETS_FILE = previous;

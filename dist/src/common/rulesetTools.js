@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { canManageUserInstructions, generatedRulesetName, normalizeRulesetName, UserInstructionStore, userInstructionFeaturesEnabled, validateInstructions, validateRulesetName, } from "./userInstructionStore.js";
+import { canManageUserInstructions, generatedRulesetName, UserInstructionStore, userInstructionFeaturesEnabled, validateInstructions, validateRulesetName, } from "./userInstructionStore.js";
 import { previewUserInstructions } from "../utils/userInstructions.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
 export { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
@@ -103,9 +103,9 @@ export class RulesetTools {
         const target = this.target(args);
         const requester = this.requireManage(target);
         const instructions = validateInstructions(String(args.instructions));
-        const name = args.name ? validateRulesetName(String(args.name)) : this.availableName(target, generatedRulesetName(instructions));
-        const priority = args.priority ? Number(args.priority) : 100;
-        if (!Number.isSafeInteger(priority))
+        const name = args.name ? validateRulesetName(String(args.name)) : this.store.availableName(this.context.guildId, target, generatedRulesetName(instructions));
+        const priority = args.priority == null || args.priority === "" ? undefined : Number(args.priority);
+        if (priority !== undefined && !Number.isSafeInteger(priority))
             throw new Error("Priority must be an integer.");
         const ruleset = this.store.set({
             guildId: this.context.guildId ?? null,
@@ -154,17 +154,6 @@ export class RulesetTools {
         return {
             preview: previewUserInstructions({ guildId: this.context.guildId ?? null, userId }, args.include_disabled === "true", this.store),
         };
-    }
-    availableName(targetUserId, desired) {
-        const base = normalizeRulesetName(desired) || "user-rule";
-        if (!this.store.get(this.context.guildId ?? null, targetUserId, base))
-            return base;
-        for (let index = 2; index <= 99; index++) {
-            const candidate = normalizeRulesetName(`${base}-${index}`);
-            if (!this.store.get(this.context.guildId ?? null, targetUserId, candidate))
-                return candidate;
-        }
-        throw new Error("Could not generate a unique ruleset name.");
     }
 }
 function toolRuleset(ruleset) {

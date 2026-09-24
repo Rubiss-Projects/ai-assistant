@@ -33,11 +33,15 @@ test("failed research sources remain diagnostic while a useful sourced update is
     setSessionProvider: async () => {}, setSessionWorkingDir: () => {}, setModel: async () => {}, forgetSession: async () => {},
     sendMessage: async (_key: string, prompt: string, _attachments: unknown, options: any) => {
       assert.match(prompt, /hosted web search and article opening/);
+      assert.deepEqual(options.rulesetContext.requester.roleIds, ["400"]);
       options.onLookup({ url: "https://blocked.example", status: "unavailable", checkedAt: new Date().toISOString(), summary: "HTTP 403" });
       return { content, attachments: [] };
     },
   };
-  const adapter = new DiscordScheduleAdapter({} as any, createAccessPolicy({}), sessions as any);
+  const client = { guilds: { fetch: async () => ({ members: {
+    fetch: async () => ({ roles: { cache: new Map([["400", {}]]) } }),
+  } }) } };
+  const adapter = new DiscordScheduleAdapter(client as unknown as ConstructorParameters<typeof DiscordScheduleAdapter>[0], createAccessPolicy({}), sessions as any);
   const task = { ...input, id: "research", kind: "ai", provider: "codex", model: "test" } as ScheduledTask;
   const run = { id: "run", startedAt: Date.now() } as any;
   assert.deepEqual(await adapter.generate(task, run, 1000), [{ content }]);
