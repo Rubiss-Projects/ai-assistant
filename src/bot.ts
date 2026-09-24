@@ -35,6 +35,8 @@ import path from "node:path";
 import { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
 import { sharedSecurityEnabled } from "./common/providerSecurity.js";
 import { userInstructionFeaturesEnabled, userInstructionRulesetsFile } from "./common/userInstructionStore.js";
+import { githubContributionsEnabled } from "./common/githubContributionConfig.js";
+import { githubContributionService } from "./common/githubContributions.js";
 import { Scheduler } from "./scheduling/engine.js";
 import { ScheduleStore } from "./scheduling/store.js";
 import { discordSubject, contextAuthorPolicy } from "./common/discordAccess.js";
@@ -47,6 +49,10 @@ export function createBot(sessions: SessionManager): Client & { stopScheduler():
   // Computed here so dotenv.config() has already run in index.ts.
   const access = createAccessPolicy();
   if (userInstructionFeaturesEnabled()) userInstructionRulesetsFile();
+  if (githubContributionsEnabled()) {
+    const contributions = githubContributionService();
+    console.info(`[github-contribution] enabled repositories=${contributions.config.repositories.map(repo => repo.upstream).join(",")}`);
+  }
   const sharedMode = sharedSecurityEnabled();
   const chatParticipationMode = participationMode(sharedMode);
   if (chatParticipationMode === "smart") participationEvaluatorConfig();

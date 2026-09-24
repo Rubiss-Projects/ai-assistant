@@ -649,6 +649,21 @@ These are advanced runtime inputs, usually supplied by the operating system. The
 
 ## Access and security
 
+### Bot-authored GitHub contributions
+
+The optional [GitHub contribution tools](docs/github-contributions.md) let
+authorized Discord users propose and revise draft PRs in the AI Assistant and
+Docker repositories using dedicated bot identities. A publisher App has PR-write
+and content-read access upstream; a separate writer App can change only the
+selected contribution forks. Neither gets upstream content-write or merge access.
+The existing bot host holds credentials outside the agent sandbox.
+
+Enable with `AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS=true` in shared mode and a
+protected `GITHUB_CONTRIBUTIONS_CONFIG_FILE`. `GITHUB_CONTRIBUTIONS_ACCESS=granted`
+(default) uses explicit `github.contribute` grants or the `contributor` rights
+preset; `chat` admits everyone already allowed to chat. See the linked guide for
+App setup, limits, and recovery. Dependabot's existing merge path is unchanged.
+
 ### Discord permissions
 
 With `AI_ASSISTANT_SECURITY_MODE=shared`, incoming DM messages are ignored and all DM slash commands are rejected before execution, including for admins. Server `/ask` is restricted to users in `DISCORD_ADMIN_USERS`, with a global `bot-admin` rights grant, or with an explicit `ask.use` capability grant; the legacy open-admin fallback does not qualify. Discord Administrator permission or the `server-admin` preset alone does not qualify either. Grant `ask.use` to a guild-scoped role to allow private one-shot requests without granting other bot-admin privileges. The normal `chat.use` check still applies, and the optional `workspace` argument still requires `workspace.manage`. This is enforced at runtime, so already registered commands cannot bypass it; `/ask` may still appear in the command picker for non-admins. Restart the bot after changing security mode. Other commands can still return ephemeral responses, and channel/thread visibility still follows Discord permissions.

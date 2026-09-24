@@ -4,6 +4,8 @@ import { ARTIFACT_INSTRUCTIONS } from "./agentResponse.js";
 import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
 import { RULESET_INSTRUCTIONS } from "./rulesetToolBridge.js";
+import { githubContributionsEnabled, githubContributionAccess } from "./githubContributionConfig.js";
+import { GITHUB_CONTRIBUTION_INSTRUCTIONS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
 import { configuredSecurityMode, configuredSitesEnabled, secureSystemPrompt } from "./providerSecurity.js";
 import { activeUserInstructionBlock } from "../utils/userInstructions.js";
 import { userInstructionFeaturesEnabled, type UserInstructionContext } from "./userInstructionStore.js";
@@ -37,6 +39,7 @@ export interface SessionContext {
   applied: AppliedContext;
   fingerprint: string;
   rulesetsEnabled: boolean;
+  githubContributionsEnabled: boolean;
 }
 
 /** Sort object keys, preserving meaningful array order. Only the digest is persisted. */
@@ -78,6 +81,14 @@ export const CONTEXT_CONTRIBUTORS: readonly ContextContributor[] = [
     } : undefined,
   },
   {
+    id: "github-contributions",
+    profiles: ["conversation"],
+    resolve: () => githubContributionsEnabled() ? {
+      instructions: GITHUB_CONTRIBUTION_INSTRUCTIONS,
+      capabilities: { tools: GITHUB_CONTRIBUTION_TOOLS, access: githubContributionAccess() },
+    } : undefined,
+  },
+  {
     id: "security",
     profiles: allProfiles,
     resolve: () => ({
@@ -109,6 +120,7 @@ export function resolveSessionContext(
     applied,
     fingerprint: contextFingerprint(applied),
     rulesetsEnabled: resolved.some(part => part.id === "user-rulesets"),
+    githubContributionsEnabled: resolved.some(part => part.id === "github-contributions"),
   };
 }
 

@@ -93,7 +93,7 @@ export interface SendMessageOptions {
   resolveArtifactMessage?: (url: string) => Promise<ArtifactMessage>;
   /** Host-observed webpage results and source-backed summaries for scheduled lookups. */
   onLookup?: (record: LookupRecord) => void;
-  /** Host-captured Discord permissions for ruleset tool calls. Never supplied by the model. */
+  /** Host-captured Discord permissions shared by ruleset and contribution tools. Never model-supplied. */
   rulesetContext?: {
     requester: AccessSubject;
     access: AccessPolicy;
