@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { RulesetTools, createRulesetToolRun } from "./rulesetTools.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
@@ -52,7 +52,7 @@ class RulesetConnection {
                 }
                 const development = import.meta.url.endsWith(".ts");
                 const script = fileURLToPath(new URL(`../rulesetMcp.${development ? "ts" : "js"}`, import.meta.url));
-                const args = development ? ["--import", createRequire(import.meta.url).resolve("tsx"), script] : [script];
+                const args = development ? ["--import", pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href, script] : [script];
                 resolve({ command: process.execPath, args, env: {
                         AI_RULESET_BRIDGE_URL: `http://127.0.0.1:${address.port}/call`, AI_RULESET_BRIDGE_TOKEN: this.token,
                     } });
@@ -105,10 +105,11 @@ export class RulesetToolSessions {
     }
     async shutdown() { await Promise.all([...this.connections.keys()].map((key) => this.reset(key))); }
 }
+export const RULESET_INSTRUCTIONS = "The host exposes Discord user ruleset tools. When asked to add, update, delete, clear, enable, disable, list, get, or preview user-specific rules, use ruleset_tools with the current turn's run_id. The host enforces USER_INSTRUCTION_MODE authorization for the target user. Do not claim a ruleset was changed until the tool reports success.";
 export function rulesetToolPrompt(prompt, runtime) {
     if (!userInstructionFeaturesEnabled())
         return prompt;
-    return `${prompt}\n\n<ruleset-tools>The host exposes Discord user ruleset tools for this response. If the requester asks you to add, update, delete, clear, enable, disable, list, get, or preview user-specific rules, call ruleset_tools with run_id ${JSON.stringify(runtime.id)}. The host enforces the configured USER_INSTRUCTION_MODE authorization for the target user. Do not claim a ruleset was changed until the tool reports success.</ruleset-tools>`;
+    return `${prompt}\n\n<ruleset-tools>Current run_id: ${JSON.stringify(runtime.id)}</ruleset-tools>`;
 }
 function rulesetMcpServerToml(config) {
     const env = Object.entries(config.env).map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(",");

@@ -6,10 +6,25 @@ import { join } from "node:path";
 import { SessionManager, isUnsupported } from "../src/sessionManager.js";
 import { createProvider } from "../src/providers/index.js";
 import { CopilotProvider } from "../src/providers/copilot.js";
+import type { Thread } from "@openai/codex-sdk";
+import { SessionStore } from "../src/common/sessionStore.js";
 import { CodexProvider } from "../src/providers/codex.js";
 import { OpenCodeProvider } from "../src/providers/opencode.js";
 import { RunTimeoutError, UnsupportedError } from "../src/providers/types.js";
 import { ProviderStore } from "../src/common/providerStore.js";
+
+// These transport/artifact tests inject threads directly. Context transitions have
+// separate tests exercising the real session creation path and the Codex runtime.
+function testCodex(): CodexProvider {
+  const provider = new CodexProvider(undefined, new SessionStore("test", join(mkdtempSync(join(tmpdir(), "codex-provider-test-")), "sessions.json")));
+  const internal = provider as unknown as {
+    sessions: Map<string, Thread>;
+    getOrCreateSession: (key: string, ...args: unknown[]) => Promise<Thread>;
+  };
+  const create = internal.getOrCreateSession.bind(provider);
+  internal.getOrCreateSession = async (key, ...args) => internal.sessions.get(key) ?? create(key, ...args);
+  return provider;
+}
 
 function makeStore(): ProviderStore {
   const dir = mkdtempSync(join(tmpdir(), "ai-provider-"));
@@ -37,7 +52,7 @@ test("SessionManager facade selects and exposes the active provider", () => {
 });
 
 test("Codex provider reports unsupported features via UnsupportedError", async () => {
-  const codex = new CodexProvider();
+  const codex = testCodex();
   const err = await codex.listAgents().catch((e: unknown) => e);
   assert.ok(err instanceof UnsupportedError);
   assert.ok(isUnsupported(err));
@@ -48,7 +63,7 @@ test("Codex provider reads the default reasoning effort from the environment", a
   const previous = process.env.CODEX_REASONING_EFFORT;
   process.env.CODEX_REASONING_EFFORT = "max";
   try {
-    const codex = new CodexProvider();
+    const codex = testCodex();
     assert.equal(await codex.getCurrentReasoningEffort("user-1"), "max");
   } finally {
     if (previous === undefined) delete process.env.CODEX_REASONING_EFFORT;
@@ -62,7 +77,15 @@ test("Codex prepares fresh shared workspaces before starting a thread", async t 
   const root = mkdtempSync(join(tmpdir(), "codex-fresh-workspace-"));
   process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
   process.env.AI_ASSISTANT_WORKSPACE_ROOT = root;
-  const codex = new CodexProvider();
+  let expectedWorkspace = root;
+  const codex = new CodexProvider(() => ({
+    startThread: options => {
+      assert.equal(options?.workingDirectory, expectedWorkspace);
+      assert.equal(statSync(join(expectedWorkspace, ".codex")).isDirectory(), true);
+      return { run: async () => ({ finalResponse: "Ready", items: [] }) } as unknown as Thread;
+    },
+    resumeThread: () => { throw new Error("Unexpected resume"); },
+  }), new SessionStore("test", join(root, "sessions.json")));
   t.after(async () => {
     await codex.shutdown();
     if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
@@ -71,7 +94,6 @@ test("Codex prepares fresh shared workspaces before starting a thread", async t 
     else process.env.AI_ASSISTANT_WORKSPACE_ROOT = previousRoot;
     rmSync(root, { recursive: true, force: true });
   });
-  const internal = codex as unknown as { clients: Map<string, unknown> };
   for (const key of ["default-workspace", "scheduled-workspace"]) {
     const workspace = key === "default-workspace" ? root : join(root, ".scheduled-runs", "run-fresh");
     if (key === "scheduled-workspace") {
@@ -79,11 +101,7 @@ test("Codex prepares fresh shared workspaces before starting a thread", async t 
       codex.setSessionWorkingDir(key, workspace);
     }
     assert.equal(existsSync(join(workspace, ".codex")), false);
-    internal.clients.set(key, { startThread: (options: { workingDirectory: string }) => {
-      assert.equal(options.workingDirectory, workspace);
-      assert.equal(statSync(join(workspace, ".codex")).isDirectory(), true);
-      return { run: async () => ({ finalResponse: "Ready", items: [] }) };
-    } });
+    expectedWorkspace = workspace;
     assert.equal((await codex.sendMessage(key, "Check workspace")).content, "Ready");
   }
 });
@@ -94,7 +112,7 @@ test("Codex long runs report progress and abort at the hard timeout", async () =
   process.env.AI_PROGRESS_INTERVAL_MS = "10";
   process.env.CODEX_TIMEOUT_MS = "40";
   try {
-    const codex = new CodexProvider();
+    const codex = testCodex();
     const internal = codex as unknown as {
       sessions: Map<string, { id: string; run: (_input: unknown, options: { signal: AbortSignal }) => Promise<never> }>;
     };
@@ -131,7 +149,7 @@ test("Codex hard deadline releases the request when abort does not settle", asyn
   process.env.CODEX_TIMEOUT_MS = "30";
   process.env.AI_CANCELLATION_GRACE_MS = "20";
   try {
-    const codex = new CodexProvider();
+    const codex = testCodex();
     const internal = codex as unknown as {
       sessions: Map<string, { id: string; run: () => Promise<never> }>;
     };
@@ -159,7 +177,7 @@ test("Codex rejects oversized text attachments before invoking a turn", async ()
   const file = join(directory, "large.svg");
   writeFileSync(file, "x".repeat(20));
   try {
-    const codex = new CodexProvider();
+    const codex = testCodex();
     const internal = codex as unknown as { sessions: Map<string, { id: string; run: () => Promise<never> }> };
     let invoked = false;
     internal.sessions.set("large-file", { id: "thread", run: async () => { invoked = true; throw new Error(); } });
@@ -176,7 +194,7 @@ test("Codex rejects oversized text attachments before invoking a turn", async ()
 
 test("Codex receives a readable binary input path instead of UTF-8 video contents", async () => {
   const { readFileSync } = await import("node:fs");
-  const codex = new CodexProvider();
+  const codex = testCodex();
   const workspace = mkdtempSync(join(tmpdir(), "codex-binary-"));
   const input = join(workspace, "video.mp4");
   const video = Buffer.from([0, 255, 128, 0, 24, 102, 116, 121, 112]);
@@ -209,7 +227,7 @@ test("Codex captures completed image-generation paths without an artifact marker
   process.env.CODEX_HOME = codexHome;
   process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
   try {
-    const codex = new CodexProvider();
+    const codex = testCodex();
     const internal = codex as unknown as { sessions: Map<string, unknown> };
     const workspace = mkdtempSync(join(tmpdir(), "codex-image-workspace-"));
     codex.setSessionWorkingDir("image-run", workspace);
@@ -244,7 +262,7 @@ test("Codex delivers the selected final artifact instead of discovered intermedi
   process.env.CODEX_HOME = codexHome;
   process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
   try {
-    const codex = new CodexProvider();
+    const codex = testCodex();
     const internal = codex as unknown as { sessions: Map<string, unknown> };
     const workspace = mkdtempSync(join(tmpdir(), "codex-image-workspace-"));
     codex.setSessionWorkingDir("selected-output", workspace);
@@ -294,7 +312,7 @@ test("Codex finds new thread-scoped generated images omitted from the SDK stream
   process.env.CODEX_HOME = codexHome;
   process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
   try {
-    const codex = new CodexProvider();
+    const codex = testCodex();
     const internal = codex as unknown as { sessions: Map<string, unknown> };
     const workspace = mkdtempSync(join(tmpdir(), "codex-image-workspace-"));
     codex.setSessionWorkingDir("image-fallback", workspace);

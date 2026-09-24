@@ -147,7 +147,7 @@ export class SessionManager {
         const provider = this.providerFor(key);
         const temporaryKey = `internal_${randomUUID()}`;
         try {
-            return (await provider.sendMessage(temporaryKey, prompt)).content;
+            return (await provider.sendMessage(temporaryKey, prompt, undefined, { contextProfile: "ephemeral" })).content;
         }
         finally {
             await provider.resetSession(temporaryKey).catch((error) => {

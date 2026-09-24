@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { randomBytes } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { ArtifactTools } from "./artifactTools.js";
 import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
@@ -51,7 +51,7 @@ class ArtifactConnection {
         if (!address || typeof address === "string") { reject(new Error("Could not start artifact bridge.")); return; }
         const development = import.meta.url.endsWith(".ts");
         const script = fileURLToPath(new URL(`../artifactMcp.${development ? "ts" : "js"}`, import.meta.url));
-        const args = development ? ["--import", createRequire(import.meta.url).resolve("tsx"), script] : [script];
+        const args = development ? ["--import", pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href, script] : [script];
         resolve({ command: process.execPath, args, env: {
           AI_ARTIFACT_BRIDGE_URL: `http://127.0.0.1:${address.port}/call`, AI_ARTIFACT_BRIDGE_TOKEN: this.token,
         } });

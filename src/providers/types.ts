@@ -1,4 +1,5 @@
 import type { LookupRecord } from "../utils/fetchWebpage.js";
+import type { ContextProfile } from "../common/sessionContext.js";
 import type { AccessPolicy, AccessSubject } from "../common/accessPolicy.js";
 import type { UserInstructionContext } from "../utils/userInstructions.js";
 
@@ -84,6 +85,7 @@ export interface SendAttachment {
 }
 
 export interface SendMessageOptions {
+  contextProfile?: ContextProfile;
   /** Host-selected cap; never extends the provider timeout. */
   timeoutMs?: number;
   onProgress?: (update: { elapsedMs: number; message: string }) => void | Promise<void>;

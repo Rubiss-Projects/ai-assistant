@@ -44,6 +44,7 @@ type TestableCopilotProvider = {
   sessionWorkingDirectories: Map<string, string>;
   store: StoreLike;
   client: ClientLike;
+  getOrCreateSession: (key: string, context?: unknown) => Promise<SessionLike>;
 };
 
 function createTestManager(storedSessions: Record<string, string> = {}): TestableCopilotProvider {
@@ -57,6 +58,9 @@ function createTestManager(storedSessions: Record<string, string> = {}): Testabl
       delete storedSessions[key];
     },
   };
+  // These tests isolate transport recovery; context invalidation is covered separately.
+  const create = manager.getOrCreateSession.bind(manager);
+  manager.getOrCreateSession = async (key, context) => manager.sessions.get(key) ?? create(key, context);
   return manager;
 }
 

@@ -520,6 +520,8 @@ AI_ASSISTANT_SYSTEM_PROMPT="Use a playful tone, but be concise."
 
 For a longer prompt, set `AI_ASSISTANT_SYSTEM_PROMPT_FILE` to a file readable by the bot, such as `/data/system-prompt.txt` in Docker.
 
+Prompt-file edits and ruleset changes apply to existing conversations on their next turn. Copilot resumes with updated configuration, OpenCode supplies current instructions each turn, and Codex transfers a bounded historical summary into a fresh thread when context changes. See [session context lifecycle and contributor guidelines](docs/context-lifecycle.md) for tool enrollment, compaction behavior, and failure recovery.
+
 ### Discord
 
 | Variable | Default / accepted values | What it does |
