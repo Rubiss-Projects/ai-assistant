@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { AccessPolicy, AccessSubject } from "./accessPolicy.js";
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "./githubContributionConfig.js";
+import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion, type ReviewThread } from "./githubContributionReviews.js";
 
 export interface ContributionCaller { session: string; requester: AccessSubject; access: AccessPolicy; signal: AbortSignal }
 interface Contribution {
@@ -277,6 +278,99 @@ export class GitHubContributions {
       const record = this.owned(caller, id);
       const pull = await this.refresh(caller, record);
       return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha };
+    });
+  }
+
+  private reviewRequest<T>(caller: ContributionCaller, record: Contribution, query: string, variables: Record<string, unknown>) {
+    this.authorize(caller);
+    return this.api.graphql<T>(this.repository(record.repository), query, variables, caller.signal);
+  }
+
+  /** Review tools never recover pending writes or accept a model-selected PR/repository identity. */
+  private async reviewPull(caller: ContributionCaller, record: Contribution, expectedHead?: string) {
+    if (!record.published || !record.pull || record.pendingSha) throw new Error("Publish this contribution and finish pending writes before working with reviews.");
+    const pull = await this.currentPull(caller, record);
+    if (!pull || record.closed || pull.state !== "open") throw new Error("This contribution is closed or unavailable.");
+    if (pull.head.sha !== record.headSha || (expectedHead !== undefined && sha(expectedHead) !== record.headSha)) {
+      throw new Error("Contribution head changed. Refresh the contribution before acting on reviews.");
+    }
+    return pull;
+  }
+
+  private validateReviewThread(record: Contribution, thread: ReviewThread | null): asserts thread is ReviewThread {
+    if (!thread?.id || thread.pullRequest.number !== record.pull
+      || thread.pullRequest.repository.databaseId !== this.repository(record.repository).upstreamId) {
+      throw new Error("Review thread does not belong to this contribution.");
+    }
+    if (thread.pullRequest.state !== "OPEN" || thread.pullRequest.headRefOid !== record.headSha) throw new Error("Contribution head or state changed. Refresh its reviews.");
+  }
+
+  reviews(caller: ContributionCaller, id: string, after?: string) {
+    return this.serial(caller, async () => {
+      const record = this.owned(caller, id);
+      await this.reviewPull(caller, record);
+      if (after !== undefined && (typeof after !== "string" || after.length > 1024)) throw new Error("Invalid review pagination cursor.");
+      const [owner, name] = record.repository.split("/");
+      const result = await this.reviewRequest<{ repository: { pullRequest: { reviewThreads: {
+        nodes: ReviewThread[]; pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      } } } }>(caller, record, REVIEW_THREADS_QUERY, { owner, name, number: record.pull, after: after || null });
+      const threads = result.repository?.pullRequest?.reviewThreads;
+      if (!threads) throw new Error("Contribution review threads are unavailable.");
+      for (const thread of threads.nodes) this.validateReviewThread(record, thread);
+      return { ...this.summary(record), threads: threads.nodes.map(reviewThreadSummary),
+        next_cursor: threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null };
+    });
+  }
+
+  private async reviewThread(caller: ContributionCaller, record: Contribution, threadId: string, expectedHead: string) {
+    if (!/^[A-Za-z0-9_=-]{1,256}$/.test(threadId)) throw new Error("Invalid review thread ID.");
+    await this.reviewPull(caller, record, expectedHead);
+    const result = await this.reviewRequest<{ node: ReviewThread | null }>(caller, record, REVIEW_THREAD_QUERY, { id: threadId });
+    this.validateReviewThread(record, result.node);
+    if (result.node.comments.pageInfo.hasNextPage) throw new Error("This thread exceeds 100 comments; handle it on GitHub.");
+    if (!result.node.comments.nodes.length || result.node.comments.nodes.some(comment => comment.pullRequestReview?.state === "PENDING")) {
+      throw new Error("Only published review threads can be changed.");
+    }
+    return result.node;
+  }
+
+  replyReview(caller: ContributionCaller, id: string, threadId: string, expectedHead: string, expectedVersion: string, body: string) {
+    return this.serial(caller, async () => {
+      const record = this.owned(caller, id);
+      if (!body.trim() || body.length > 6000 || /\x00|@codex\b/i.test(body)) throw new Error("Use a nonempty review reply under 6,000 characters without Codex commands.");
+      rejectCredentials(body);
+      const thread = await this.reviewThread(caller, record, threadId, expectedHead);
+      const reply = `AI Assistant: ${body.trim()}\n\nPublished commit: \`${record.headSha}\`.`;
+      const last = thread.comments.nodes.at(-1)!;
+      // A lost response can be retried safely, even after a host restart.
+      if (isPublisherComment(last, this.config.publisherBotLogin) && last.body === reply) {
+        return { thread_id: threadId, comment_id: last.id, comment_url: last.url, already_replied: true };
+      }
+      if (thread.isResolved) throw new Error("This review thread is already resolved.");
+      if (reviewThreadVersion(thread) !== expectedVersion) throw new Error("Review thread changed. Read the latest feedback before replying.");
+      const result = await this.reviewRequest<{ addPullRequestReviewThreadReply: { comment: { id: string; url: string } } }>(caller, record, REPLY_REVIEW_THREAD, { thread: threadId, body: reply });
+      console.info(`[github-contribution] review-reply id=${record.id} pr=${record.pull} thread=${threadId}`);
+      return { thread_id: threadId, comment_id: result.addPullRequestReviewThreadReply.comment.id, comment_url: result.addPullRequestReviewThreadReply.comment.url, already_replied: false };
+    });
+  }
+
+  resolveReview(caller: ContributionCaller, id: string, threadId: string, expectedHead: string, expectedVersion: string) {
+    return this.serial(caller, async () => {
+      const record = this.owned(caller, id);
+      const thread = await this.reviewThread(caller, record, threadId, expectedHead);
+      if (thread.isResolved) return { thread_id: threadId, resolved: true, already_resolved: true };
+      if (reviewThreadVersion(thread) !== expectedVersion) throw new Error("Review thread changed. Read the latest feedback before resolving.");
+      const first = thread.comments.nodes[0];
+      const last = thread.comments.nodes.at(-1)!;
+      if (!first.commit || first.commit.oid === record.headSha
+        || !isPublisherComment(last, this.config.publisherBotLogin) || !last.body.endsWith(`\n\nPublished commit: \`${record.headSha}\`.`)) {
+        throw new Error("Publish the fix and reply explaining it at the current head before resolving this thread.");
+      }
+      if (!thread.viewerCanResolve) throw new Error("The publisher App cannot resolve this review thread.");
+      const result = await this.reviewRequest<{ resolveReviewThread: { thread: { id: string; isResolved: boolean } } }>(caller, record, RESOLVE_REVIEW_THREAD, { thread: threadId });
+      if (!result.resolveReviewThread?.thread.isResolved) throw new Error("GitHub did not confirm review thread resolution.");
+      console.info(`[github-contribution] review-resolve id=${record.id} pr=${record.pull} thread=${threadId}`);
+      return { thread_id: threadId, resolved: true, already_resolved: false };
     });
   }
 }

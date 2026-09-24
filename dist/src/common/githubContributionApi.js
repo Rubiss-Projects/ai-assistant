@@ -53,10 +53,9 @@ export class GitHubContributionApi {
         const data = `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ iss: app.appId, iat: now - 60, exp: now + 540 })}`;
         return `${data}.${sign("RSA-SHA256", Buffer.from(data), this.keys[role]).toString("base64url")}`;
     }
-    async request(role, repository, method, suffix, body, signal) {
+    async authenticated(role, repository, method, endpoint, body, signal) {
         const app = this.config[role];
         const repositoryId = role === "publisher" ? repository.upstreamId : repository.forkId;
-        const repositoryName = role === "publisher" ? repository.upstream : repository.fork;
         const key = `${role}:${repositoryId}`;
         let token = this.tokens.get(key);
         if (!token || token.expires < Date.now() + 60_000) {
@@ -70,12 +69,23 @@ export class GitHubContributionApi {
             this.tokens.set(key, token);
         }
         try {
-            return await this.send(token.value, method, `/repos/${repositoryName}${suffix}`, body, signal);
+            return await this.send(token.value, method, endpoint, body, signal);
         }
         catch (error) {
             if (error instanceof GitHubRequestError && error.status === 401)
                 this.tokens.delete(key);
             throw error; // No automatic mutation retries: the broker reconciles remote state first.
         }
+    }
+    request(role, repository, method, suffix, body, signal) {
+        const name = role === "publisher" ? repository.upstream : repository.fork;
+        return this.authenticated(role, repository, method, `/repos/${name}${suffix}`, body, signal);
+    }
+    /** Only host-owned review documents reach this transport; no query is accepted from tools. */
+    async graphql(repository, query, variables, signal) {
+        const response = await this.authenticated("publisher", repository, "POST", "/graphql", { query, variables }, signal);
+        if (response.errors?.length || !response.data)
+            throw new Error("GitHub review operation failed. Refresh the contribution reviews before retrying.");
+        return response.data;
     }
 }

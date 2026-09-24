@@ -2,7 +2,8 @@
 
 Authorized Discord users can ask the assistant to propose a change to
 `Rubiss-Projects/ai-assistant` or `Rubiss-Projects/docker`, then revise the resulting
-draft pull request in the same conversation. For example: “Implement a clearer
+draft pull request in the same conversation, read its review threads, reply to
+feedback, and resolve addressed findings. For example: “Implement a clearer
 error message for missing attachments and open a draft PR in AI Assistant.”
 Maintainers review, mark ready, and merge on GitHub. The bot cannot approve,
 merge, or enable auto-merge. Existing Dependabot workflows and branch rules do
@@ -97,7 +98,8 @@ bot host, never in tool responses, provider environments, or local Git config.
   is lost, check status and retry with the returned head; an already-created PR is
   discovered instead of duplicated. Preserve the state file across deployments.
 - Each response allows 200 file reads, 10 begin/resume calls, 10 status checks, and
-  3 publish attempts, with independent budgets. Exhausting reads cannot block
+  3 publish attempts, plus 20 review reads, 10 review replies, and 10 thread
+  resolutions, with independent budgets. Exhausting reads cannot block
   publishing or checking an interrupted write. Results include `remaining_calls`;
   stop calling an exhausted tool until the next user turn. Failed operations also
   consume their tool's budget. Reuse downloaded files instead of reading them again.
@@ -118,10 +120,42 @@ bot host, never in tool responses, provider environments, or local Git config.
   should state what was actually tested. The host does not run package installs,
   build scripts, shell commands, or arbitrary Git commands for contributions.
 
-GitHub's PR-write permission includes more than PR creation, so the host API
-exposes only the four contribution operations and enforces ownership on every
-call. It has no arbitrary API, review, merge, auto-merge, or workflow-dispatch
-operation. Read-only personal connector behavior remains unchanged.
+## Review discussions
+
+Ask in the original contribution conversation: “Address the Codex findings,
+reply with what changed, and resolve the threads you fixed.” The original
+requester's contribution access is required, including for reading feedback.
+Existing PRs can use these tools without recreating the contribution.
+
+- Reviews returns 25 threads per page and a `next_cursor` for the next page.
+  Each thread includes its published comments, resolution state, and
+  `thread_version`. Pending reviews are excluded. Threads with more than 100
+  comments are marked truncated and must be handled on GitHub.
+- Reply posts only inside an existing unresolved review thread on the owned PR.
+  The host attributes the message to AI Assistant and includes the current
+  published commit. Replies are limited to 6,000 characters, checked for
+  recognizable credentials, and cannot contain `@codex` commands. A repeated
+  identical latest reply is returned without posting it again after a lost response.
+- Resolve requires a newer published commit than the original finding and a
+  latest reply from the publisher App explaining the fix at the current head.
+  Refresh reviews after replying and provide that latest `thread_version`.
+  The agent must assess whether the fix actually addresses the finding; a newer
+  commit alone does not demonstrate correctness.
+- Every write checks the stored PR identity, current head, thread membership,
+  and feedback version. New or edited feedback, external branch changes, and
+  closed PRs stop the operation. GitHub does not offer an atomic conditional
+  thread mutation, so another actor can still change remote state between the
+  final check and the write. The host serializes its own operations.
+
+These tools use the publisher App's existing pull-requests-write permission;
+credentials remain outside the provider environment. Review resolution is not
+approval or merging. Codex automatic-review settings are separate, and the bot
+does not enforce a cap on reviews independently triggered by Codex.
+
+GitHub's PR-write permission includes more than these operations, so the host
+exposes only the seven contribution tools and enforces ownership on every call.
+It has no arbitrary API/comment, review-approval, merge, auto-merge, or
+workflow-dispatch operation. Read-only personal connector behavior remains unchanged.
 
 ## Rollout and rollback
 
