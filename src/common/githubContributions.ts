@@ -188,7 +188,7 @@ export class GitHubContributions {
       }
       if (!record) {
         const owned = this.records.filter(item => item.user === caller.requester.userId);
-        if (owned.filter(item => !item.closed).length >= 5 || owned.filter(item => item.createdAt > Date.now() - 86_400_000).length >= 10 || this.records.length >= 1000) throw new Error("Contribution limit reached. Close completed PRs and check their status before starting more.");
+        if (owned.filter(item => item.createdAt > Date.now() - 86_400_000).length >= 10 || this.records.length >= 1000) throw new Error("Contribution start limit reached. Wait for the daily limit or ask the operator to archive old records.");
         const base = await this.request<{ object: { sha: string } }>(caller, repository, "publisher", "GET", `/git/ref/heads/${encodeURIComponent(upstream.default_branch)}`);
         const id = randomUUID();
         record = { id, session: caller.session, user: caller.requester.userId, guild: caller.requester.guildId ?? null, repository: repositoryName,
@@ -219,6 +219,9 @@ export class GitHubContributions {
     return this.serial(caller, async () => {
       const record = this.owned(caller, id);
       const repository = this.repository(record.repository);
+      if (!record.published && !record.pendingSha && this.records.filter(item => item.user === record.user && !item.closed && (item.published || item.pendingSha)).length >= 5) {
+        throw new Error("Five unfinished published contributions are already open. Close completed PRs and check their status before publishing another.");
+      }
       if (!title.trim() || title.length > 160 || /[\r\n]/.test(title) || body.length > 12_000) throw new Error("Use a one-line title under 160 characters and a description under 12,000 characters.");
       rejectCredentials(title); rejectCredentials(body);
       validateContributionChanges(changes);
