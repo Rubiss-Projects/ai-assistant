@@ -259,6 +259,28 @@ test("simultaneous revisions cannot overwrite an accepted publish", async t => {
   assert.equal((await service.read(caller, started.contribution_id, "README.md")).content, "first");
 });
 
+test("abandoned inspections do not consume the quota, while publishing enforces it", async t => {
+  const { service, api, caller } = fixture(t);
+  const starts = [];
+  for (let index = 0; index < 6; index++) {
+    const requester = { ...caller, session: `thread:${index}` };
+    starts.push({ requester, contribution: await service.begin(requester, repository.upstream) });
+  }
+  const changes = [{ path: "README.md", content: "Updated" }];
+  for (const { requester, contribution } of starts.slice(0, 5)) {
+    await service.publish(requester, contribution.contribution_id, contribution.head_sha, "docs: update", "", changes);
+  }
+  const last = starts[5];
+  const publish = () => service.publish(last.requester, last.contribution.contribution_id, last.contribution.head_sha, "docs: update", "", changes);
+  const mutations = api.calls.filter(call => call.method !== "GET").length;
+  await assert.rejects(publish(), /Five unfinished published/);
+  assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations);
+  api.pulls[0].state = "closed";
+  await service.status(starts[0].requester, starts[0].contribution.contribution_id);
+  await publish();
+  assert.equal(api.pulls.length, 6);
+});
+
 test("provider policies expose only the contribution bridge and refresh its capability fingerprint", async t => {
   const { directory } = fixture(t);
   const bridge = { command: "node", args: ["githubContributionMcp.js"], env: { AI_GITHUB_BRIDGE_TOKEN: "session-only" } };

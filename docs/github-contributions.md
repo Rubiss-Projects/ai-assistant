@@ -95,9 +95,11 @@ bot host, never in tool responses, provider environments, or local Git config.
   is lost, check status and retry with the returned head; an already-created PR is
   discovered instead of duplicated. Preserve the state file across deployments.
 - Limits are 30 files and 1 MB per publish, 200 KB per text file, 3 publishes and
-  40 tool calls per response, 5 unfinished contributions and 10 starts/day per
+  40 tool calls per response, 5 unfinished published contributions and 10 starts/day per
   user, and 1,000 retained records per installation. An operator can archive old
-  closed records while the bot is stopped if the installation cap is reached.
+  closed or never-published records without pending writes while the bot is stopped
+  if the installation cap is reached. Repository inspection alone does not consume
+  the five-contribution publishing quota; interrupted branch writes do.
 - Workflow/automation files under `.github`, submodules, symlinks, credential
   paths, binary files, and recognizable private keys/GitHub tokens are rejected.
   This is not a complete secret scanner: review all proposed public content.
