@@ -89,6 +89,8 @@ bot host, never in tool responses, provider environments, or local Git config.
   close it and begin a fresh contribution.
 - Closed/merged PRs cannot be revised. Begin resumes an open contribution for the
   same requester/session/repository; status records closure for quota accounting.
+  Before denying a new publish at the active limit, the host checks that user's
+  earlier PRs for closure, including contributions from unavailable conversations.
 - Durable pending-commit state recovers interrupted branch writes. Status and
   resumed begin finish an already-requested pending branch write before returning
   its current head, unless the PR closed or the branch changed externally. If a response
@@ -100,6 +102,10 @@ bot host, never in tool responses, provider environments, or local Git config.
   closed or never-published records without pending writes while the bot is stopped
   if the installation cap is reached. Repository inspection alone does not consume
   the five-contribution publishing quota; interrupted branch writes do.
+- Each tool operation has a 100-second budget covering queueing, token minting,
+  and all GitHub requests. Its cancellation reaches the host before the adapter's
+  115-second transport timeout. After a timeout, check status before retrying:
+  GitHub may already have accepted the last request before cancellation arrived.
 - Workflow/automation files under `.github`, submodules, symlinks, credential
   paths, binary files, and recognizable private keys/GitHub tokens are rejected.
   This is not a complete secret scanner: review all proposed public content.

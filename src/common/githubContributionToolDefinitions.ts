@@ -1,3 +1,4 @@
+export const GITHUB_CONTRIBUTION_TIMEOUT_MS = 100_000;
 const run = { type: "string", description: "The current turn's host-provided GitHub contribution run_id." } as const;
 const id = { type: "string", description: "Contribution ID returned by begin; owned by this Discord requester and session." } as const;
 export const GITHUB_CONTRIBUTION_TOOLS = [
