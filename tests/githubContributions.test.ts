@@ -319,7 +319,17 @@ test("bridge credentials are session-specific and expired runs reject requests",
     const response = await fetch(one.env.AI_GITHUB_BRIDGE_URL, { method: "POST", headers: { authorization: `Bearer ${one.env.AI_GITHUB_BRIDGE_TOKEN}` }, body: JSON.stringify({ name: "github_contribution_begin", arguments: { run_id: run!.id, repository: repository.upstream } }) });
     const result = await response.json() as { content: { text: string }[]; isError?: boolean };
     assert.equal(result.isError, undefined);
-    assert.equal(JSON.parse(result.content[0].text).repository, repository.upstream);
+    const started = JSON.parse(result.content[0].text) as { repository: string; contribution_id: string; head_sha: string };
+    assert.equal(started.repository, repository.upstream);
+    const content = "\u0001".repeat(200_000);
+    const body = JSON.stringify({ name: "github_contribution_publish", arguments: { run_id: run!.id, contribution_id: started.contribution_id, expected_head_sha: started.head_sha,
+      title: "test: escaped text", body: "", changes: Array.from({ length: 5 }, (_, index) => ({ path: `escaped-${index}.txt`, content })) } });
+    assert.ok(Buffer.byteLength(body) > 6_000_000, "exercise worst-case JSON expansion of one MB of permitted text");
+    const published = await fetch(one.env.AI_GITHUB_BRIDGE_URL, { method: "POST", headers: { authorization: `Bearer ${one.env.AI_GITHUB_BRIDGE_TOKEN}` }, body });
+    assert.equal(published.status, 200);
+    const publishResult = await published.json() as { isError?: boolean; content: { text: string }[] };
+    assert.equal(publishResult.isError, undefined);
+    assert.equal(JSON.parse(publishResult.content[0].text).draft, true);
   });
 });
 
