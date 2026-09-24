@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
 import { sharedSecurityEnabled } from "./common/providerSecurity.js";
+import { userInstructionFeaturesEnabled, userInstructionRulesetsFile } from "./common/userInstructionStore.js";
 import { Scheduler } from "./scheduling/engine.js";
 import { ScheduleStore } from "./scheduling/store.js";
 import { discordSubject, contextAuthorPolicy } from "./common/discordAccess.js";
@@ -34,6 +35,8 @@ export { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } 
 export function createBot(sessions) {
     // Computed here so dotenv.config() has already run in index.ts.
     const access = createAccessPolicy();
+    if (userInstructionFeaturesEnabled())
+        userInstructionRulesetsFile();
     const sharedMode = sharedSecurityEnabled();
     const chatParticipationMode = participationMode(sharedMode);
     if (chatParticipationMode === "smart")

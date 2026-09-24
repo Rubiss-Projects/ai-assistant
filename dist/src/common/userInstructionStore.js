@@ -2,6 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "node:crypto";
+import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
 export const USER_RULESET_LIMITS = {
     maxRulesetsPerUserGuild: 10,
     maxInstructionLength: 4000,
@@ -29,8 +30,22 @@ export function canManageUserInstructions(requester, targetUserId, isAdmin, mode
     return isAdmin || Boolean(requester && requester.userId === targetUserId);
 }
 export function userInstructionRulesetsFile(env = process.env) {
-    return env.USER_INSTRUCTION_RULESETS_FILE?.trim()
+    const file = env.USER_INSTRUCTION_RULESETS_FILE?.trim()
         || path.join(os.homedir(), ".config", "ai-assistant", "user-instructions.json");
+    validateStoragePath(file, env);
+    return file;
+}
+/** Rules are host-managed policy, so provider file tools must not be able to edit them. */
+function validateStoragePath(file, env = process.env) {
+    const workspace = configuredWorkspaceRoot(env);
+    if (!workspace)
+        return;
+    const relative = path.relative(path.resolve(workspace), path.resolve(file));
+    const lexicallyInside = relative === ""
+        || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative));
+    if (lexicallyInside || pathIsWithin(workspace, file)) {
+        throw new Error("USER_INSTRUCTION_RULESETS_FILE must be outside the provider workspace root, including symlink targets.");
+    }
 }
 export function normalizeRulesetName(value) {
     return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, USER_RULESET_LIMITS.maxNameLength);
@@ -97,6 +112,7 @@ export class UserInstructionStore {
         this.load();
     }
     load() {
+        validateStoragePath(this.filePath);
         try {
             const value = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
             if (!Array.isArray(value) || !value.every(isRuleset))
@@ -230,6 +246,7 @@ export class UserInstructionStore {
         }
     }
     persist() {
+        validateStoragePath(this.filePath);
         const dir = path.dirname(this.filePath);
         fs.mkdirSync(dir, { recursive: true });
         const temporary = `${this.filePath}.tmp`;
