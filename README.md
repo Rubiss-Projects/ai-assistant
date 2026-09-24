@@ -806,3 +806,21 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 2. Register it in the [`createProvider()`](src/providers/index.ts) factory.
 3. Add it to the `PROVIDERS` list and the CLI wizard (`src/cli.ts`).
 4. Any method you can't implement throws `UnsupportedError`, and the matching slash command automatically reports "provider does not support X".
+
+
+### Channel summaries
+
+Mention the bot in the channel to catch up on its conversation, or use the same request with `/chat` (and `/ask` where permitted):
+
+- `@Rook summarize everything since my last message`
+- `@Rook summarize the last 50 messages`
+- `@Rook recap messages from the last 2 hours`
+- `@Rook summarize messages since https://discord.com/channels/GUILD/CHANNEL/MESSAGE`
+
+The bot retrieves messages chronologically from the channel where the request is made. “Since my last message” finds the requesting user’s most recent message before the request, including when the request says “at 1:37”; it uses the actual message rather than guessing a timezone. A starting message link must be from that same channel and is excluded from the summary. Bare clock times or other unsupported date ranges ask for an unambiguous range. With no range, the default is the latest 100 messages.
+
+Each request scans at most 1,000 messages, in pages of up to 100, and includes at most 60,000 characters of source records. Recent-message counts apply before author filtering. Retrieval or text truncation is reported as partial coverage. If the user’s previous message cannot be found within the scan limit, the bot asks for a starting link or recent-message count instead of claiming to summarize everything.
+
+Both requester and bot need View Channel and Read Message History; private threads also require verified membership or Manage Threads. Existing context-author rules apply, bot messages are omitted, and attachments are counted without downloading or interpreting their contents. Summary records are untrusted quoted data; links inside retrieved history do not trigger additional link expansion. No new slash-command registration or configuration is needed.
+
+The shared session-context registry includes the durable summary instructions and static capability contract for conversation and one-shot (`/ask`) profiles. After deployment, existing conversations refresh through the provider's context lifecycle on their next turn. Changes to policy, retrieval limits, or the explicit behavior revision change the fingerprint; request-specific messages, identities, timestamps, and anchors do not. Scheduled and internal ephemeral profiles do not advertise this host enrichment.

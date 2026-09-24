@@ -49,8 +49,9 @@ export async function resolveMessageLinks(
   requestingUserId?: string,
   contextAttachments: Array<{ url: string; contentType: string | null; name: string; size?: number }> = [],
   canIncludeAuthor: (author: string) => boolean = () => true,
+  linkSource = content,
 ): Promise<string> {
-  const matches = [...content.matchAll(MESSAGE_URL_RE)];
+  const matches = [...linkSource.matchAll(MESSAGE_URL_RE)];
   if (matches.length === 0) return content;
 
   const contextBlocks: string[] = [];
