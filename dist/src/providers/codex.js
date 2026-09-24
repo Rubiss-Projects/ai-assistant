@@ -385,19 +385,30 @@ export class CodexProvider {
         if (existing && sameContext(this.sessionContexts.get(key)?.applied, context.applied)
             && previousClient === client)
             return existing;
-        const stored = this.store.getState(key);
+        let stored = this.store.getState(key);
         let handoff = stored?.handoff;
         if (stored && !sameContext(stored.context, context.applied)) {
             const summaryClient = this.makeClient(codexHandoffOptions(codexClientOptions(this.temporaryDirectories.get(key))));
             const summaryThread = summaryClient.resumeThread(stored.sessionId, {
                 ...this.threadOptions(key), sandboxMode: "read-only", networkAccessEnabled: false, webSearchMode: "disabled",
             });
-            const summary = await summaryThread.run(HANDOFF_PROMPT, { signal, outputSchema: HANDOFF_SCHEMA });
-            signal.throwIfAborted();
-            if (summary.items.some(item => item.type !== "agent_message" && item.type !== "reasoning")) {
-                throw new Error("Codex handoff attempted a tool operation; the existing session has been retained.");
+            try {
+                const summary = await summaryThread.run(HANDOFF_PROMPT, { signal, outputSchema: HANDOFF_SCHEMA });
+                signal.throwIfAborted();
+                if (summary.items.some(item => item.type !== "agent_message" && item.type !== "reasoning")) {
+                    throw new Error("Codex handoff attempted a tool operation; the existing session has been retained.");
+                }
+                handoff = parseHandoff(summary.finalResponse);
             }
-            handoff = parseHandoff(summary.finalResponse);
+            catch (error) {
+                signal.throwIfAborted();
+                if (!isThreadNotFoundError(error))
+                    throw error;
+                console.warn(`[CodexProvider] Handoff source for ${key} no longer exists; starting a fresh thread.`);
+                this.store.delete(key);
+                stored = undefined;
+                // A previously saved handoff is still useful if a replacement thread vanished.
+            }
         }
         signal.throwIfAborted();
         const thread = stored && sameContext(stored.context, context.applied)
