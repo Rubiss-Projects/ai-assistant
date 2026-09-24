@@ -29,6 +29,7 @@ class RepositoryApi implements ContributionApi {
   readonly pulls: MockPull[] = [];
   readonly base: string;
   invalidFork = false;
+  failBeforeRef = false;
   failAfterRef = false;
   failAfterPull = false;
   beforeMutation?: () => void;
@@ -77,6 +78,7 @@ class RepositoryApi implements ContributionApi {
       const id = digest(body); this.commits.set(id, { tree: body!.tree as string, parent: (body!.parents as string[])[0] }); result = { sha: id };
     } else if (suffix.startsWith("/git/refs")) {
       assert.equal(role, "writer");
+      if (this.failBeforeRef) { this.failBeforeRef = false; throw new Error("Simulated failed reference request"); }
       const branch = method === "POST" ? (body!.ref as string).slice("refs/heads/".length) : suffix.slice("/git/refs/heads/".length);
       if (method === "PATCH") { assert.equal(body!.force, false); assert.equal(this.commits.get(body!.sha as string)!.parent, this.refs.get(branch)); }
       else assert.equal(this.refs.has(branch), false);
@@ -154,14 +156,16 @@ test("publishing fails closed for invalid changes, identity changes, stale heads
   assert.throws(() => validateContributionChanges([{ path: "x", content: "x" }, { path: "X", content: "y" }]), /Duplicate/);
 });
 
-test("lost remote responses recover after restart without duplicate PRs or force pushes", async t => {
+for (const resume of ["status", "begin"] as const) test(`${resume} recovers lost remote responses after restart without duplicate PRs or force pushes`, async t => {
   const { service, config, api, caller } = fixture(t);
   const started = await service.begin(caller, repository.upstream);
   const changes = [{ path: "README.md", content: "Changed\n" }];
   api.failAfterRef = true;
   await assert.rejects(service.publish(caller, started.contribution_id, started.head_sha, "docs: test", "", changes), /lost reference/);
   const restarted = new GitHubContributions(config, api);
-  await assert.rejects(restarted.publish(caller, started.contribution_id, started.head_sha, "docs: test", "", changes), /head changed/);
+  const resumed = resume === "status" ? await restarted.status(caller, started.contribution_id) : await restarted.begin(caller, repository.upstream);
+  assert.equal(resumed.head_sha, [...api.refs.values()][0]);
+  assert.notEqual(resumed.head_sha, started.head_sha);
   const status = await restarted.status(caller, started.contribution_id);
   assert.equal(status.pending_publish, false);
   api.failAfterPull = true;
@@ -172,6 +176,25 @@ test("lost remote responses recover after restart without duplicate PRs or force
   assert.equal(api.pulls.length, 1);
   assert.equal(api.calls.filter(call => call.method === "POST" && call.suffix === "/git/commits").length, 1);
   assert.doesNotMatch(readFileSync(config.stateFile, "utf8"), /PRIVATE KEY|token/);
+});
+
+test("status finishes a failed branch write but never resumes a closed PR", async t => {
+  const { service, api, caller } = fixture(t);
+  const started = await service.begin(caller, repository.upstream);
+  const changes = [{ path: "README.md", content: "Changed\n" }];
+  api.failBeforeRef = true;
+  await assert.rejects(service.publish(caller, started.contribution_id, started.head_sha, "docs: test", "", changes), /failed reference/);
+  const status = await service.status(caller, started.contribution_id);
+  assert.equal(status.pending_publish, false);
+  assert.equal(status.head_sha, [...api.refs.values()][0]);
+  const published = await service.publish(caller, started.contribution_id, status.head_sha, "docs: test", "", changes);
+  api.failBeforeRef = true;
+  await assert.rejects(service.publish(caller, started.contribution_id, published.head_sha, "docs: revision", "", [{ path: "README.md", content: "Revised" }]), /failed reference/);
+  api.pulls[0].state = "closed";
+  const mutations = api.calls.filter(call => call.method !== "GET").length;
+  assert.equal((await service.status(caller, started.contribution_id)).closed, true);
+  assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations);
+  assert.equal([...api.refs.values()][0], published.head_sha);
 });
 
 test("authorization and cancellation are rechecked before each network mutation", async t => {

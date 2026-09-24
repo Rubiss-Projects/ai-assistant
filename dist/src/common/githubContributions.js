@@ -177,6 +177,20 @@ export class GitHubContributions {
         return { contribution_id: record.id, repository: record.repository, base_branch: record.baseBranch, base_sha: record.baseSha, head_sha: record.headSha,
             pull_request_url: record.pull ? `https://github.com/${record.repository}/pull/${record.pull}` : undefined, closed: record.closed };
     }
+    /** Reconcile an already-authorized publish before advertising a head for the next edit. */
+    async refresh(caller, record) {
+        const pull = record.published || record.pendingSha ? await this.currentPull(caller, record) : undefined;
+        if (pull?.state === "closed") {
+            record.closed = true;
+            this.save(record);
+        }
+        if (!record.closed && record.pendingSha) {
+            await this.verify(caller, this.repository(record.repository));
+            await this.recover(caller, record);
+            return this.currentPull(caller, record);
+        }
+        return pull;
+    }
     begin(caller, repositoryName) {
         return this.serial(caller, async () => {
             const repository = this.repository(repositoryName);
@@ -184,12 +198,9 @@ export class GitHubContributions {
             let record = this.records.find(item => item.session === caller.session && item.user === caller.requester.userId && item.guild === (caller.requester.guildId ?? null) && item.repository === repositoryName && !item.closed);
             if (record) {
                 record = { ...record };
-                const pull = record.published ? await this.currentPull(caller, record) : undefined;
-                if (pull?.state === "closed") {
-                    record.closed = true;
-                    this.save(record);
+                await this.refresh(caller, record);
+                if (record.closed)
                     record = undefined;
-                }
             }
             if (!record) {
                 const owned = this.records.filter(item => item.user === caller.requester.userId);
@@ -278,11 +289,7 @@ export class GitHubContributions {
     status(caller, id) {
         return this.serial(caller, async () => {
             const record = this.owned(caller, id);
-            const pull = record.published ? await this.currentPull(caller, record) : undefined;
-            if (pull?.state === "closed") {
-                record.closed = true;
-                this.save(record);
-            }
+            const pull = await this.refresh(caller, record);
             return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha };
         });
     }
