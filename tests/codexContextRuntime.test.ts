@@ -128,7 +128,9 @@ test("real Codex runtime refreshes instructions through a restricted handoff and
   failUserTurn = false;
   await provider.sendMessage("conversation", "Retry the report.", undefined, { timeoutMs: 20_000 });
   const recovered = new SessionStore("test", join(directory, "sessions.json")).getState("conversation");
-  assert.equal(recovered?.sessionId, pending?.sessionId);
+  // Native resume can reject an interrupted first turn. The adapter may transfer
+  // the saved handoff once more, without needing to summarize that broken thread.
+  assert.ok(recovered?.sessionId);
   assert.equal(recovered?.handoff, undefined);
   assert.match(JSON.stringify(requests.at(-1)?.input), /PROJECT_ORCHID/);
   assert.match(developerText(requests.at(-1)!), /POLICY_DELTA/);

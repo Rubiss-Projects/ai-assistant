@@ -376,17 +376,17 @@ export class CodexProvider {
         };
         return options;
     }
-    async getOrCreateSession(key, context, signal) {
+    async getOrCreateSession(key, context, signal, forceNew = false) {
         signal.throwIfAborted();
         const previousClient = this.clients.get(key)?.client;
         const rulesets = context.rulesetsEnabled ? await this.rulesetTools.config(key) : undefined;
         const client = this.clientFor(key, context, await this.artifactTools.config(key), rulesets);
         const existing = this.sessions.get(key);
-        if (existing && sameContext(this.sessionContexts.get(key)?.applied, context.applied)
+        if (!forceNew && existing && sameContext(this.sessionContexts.get(key)?.applied, context.applied)
             && previousClient === client)
             return existing;
-        let stored = this.store.getState(key);
-        let handoff = stored?.handoff;
+        let stored = forceNew ? undefined : this.store.getState(key);
+        let handoff = forceNew ? this.handoffs.get(key) : stored?.handoff;
         if (stored && !sameContext(stored.context, context.applied)) {
             const summaryClient = this.makeClient(codexHandoffOptions(codexClientOptions(this.temporaryDirectories.get(key))));
             const summaryThread = summaryClient.resumeThread(stored.sessionId, {
@@ -405,7 +405,6 @@ export class CodexProvider {
                 if (!isThreadNotFoundError(error))
                     throw error;
                 console.warn(`[CodexProvider] Handoff source for ${key} no longer exists; starting a fresh thread.`);
-                this.store.delete(key);
                 stored = undefined;
                 // A previously saved handoff is still useful if a replacement thread vanished.
             }
@@ -449,12 +448,18 @@ export class CodexProvider {
             return await operation(thread);
         }
         catch (err) {
-            if (!isThreadNotFoundError(err))
+            const handoff = this.handoffs.get(key);
+            // Some native runtimes cannot resume an interrupted thread's first turn.
+            // A saved handoff lets us recover without reading or rewriting native history.
+            const incompleteHistory = handoff && err instanceof Error
+                && /list_turns is not supported yet|failed to load a bounded thread history page/i.test(err.message);
+            if (!isThreadNotFoundError(err) && !incompleteHistory)
                 throw err;
-            console.warn(`[CodexProvider] Cached Codex thread for ${key} was not found; starting a new thread.`);
+            console.warn(`[CodexProvider] Cached Codex history for ${key} is unavailable; starting a new thread.`);
             this.evictCachedSession(key, thread);
-            this.store.delete(key);
-            const fresh = await this.getOrCreateSession(key, context, signal);
+            // Keep the previous mapping and pending summary durable until the new ID
+            // is acknowledged. Even failure during replacement startup must be recoverable.
+            const fresh = await this.getOrCreateSession(key, context, signal, true);
             return operation(fresh);
         }
     }
@@ -488,6 +493,7 @@ export class CodexProvider {
                 const controller = new AbortController();
                 let timedOut = false;
                 let userTurnStarted = false;
+                let startedThreadId = null;
                 const stopProgress = startProgressUpdates(options);
                 let abortGrace;
                 let timeout;
@@ -498,9 +504,10 @@ export class CodexProvider {
                         const thread = await this.getOrCreateSession(userId, context, controller.signal);
                         return this.runWithSessionRecovery(userId, context, controller.signal, thread, current => runCodexCapturingEvents(current, inputFor(this.handoffs.get(userId)), controller.signal, () => {
                             controller.signal.throwIfAborted();
-                            if (!current.id || userTurnStarted)
+                            if (!current.id || current.id === startedThreadId)
                                 return;
                             this.store.set(userId, current.id, context.applied, this.handoffs.get(userId));
+                            startedThreadId = current.id;
                             userTurnStarted = true;
                         }));
                     });

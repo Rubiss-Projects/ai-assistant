@@ -39,6 +39,35 @@ test("Codex recovers a missing legacy handoff source without discarding ordinary
   assert.ok(store.getState("conversation")?.context);
 });
 
+test("Codex retains a saved handoff while replacing unreadable first-turn history", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "interrupted-handoff-"));
+  const store = new SessionStore("test", join(directory, "sessions.json"));
+  store.set("conversation", "interrupted-thread", resolveSessionContext().applied, "Historical PROJECT_ORCHID facts");
+  const provider = new CodexProvider(() => ({
+    resumeThread: () => ({ id: "interrupted-thread", runStreamed: async () => ({
+      events: (async function* () {
+        yield { type: "thread.started", thread_id: "interrupted-thread" };
+        throw new Error("thread/resume failed: list_turns is not supported yet");
+      })(),
+    }) }) as unknown as Thread,
+    startThread: () => ({ id: "recovered-thread", runStreamed: async (input: unknown) => ({
+      events: (async function* () {
+        assert.match(String(input), /PROJECT_ORCHID/);
+        yield { type: "thread.started", thread_id: "recovered-thread" };
+        assert.equal(store.get("conversation"), "recovered-thread");
+        assert.match(store.getState("conversation")?.handoff ?? "", /PROJECT_ORCHID/);
+        yield { type: "item.completed", item: { id: "answer", type: "agent_message", text: "Recovered" } };
+        yield { type: "turn.completed", usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 } };
+      })(),
+    }) }) as unknown as Thread,
+  }), store);
+  provider.setSessionWorkingDir("conversation", directory);
+  t.after(() => provider.shutdown());
+  assert.equal((await provider.sendMessage("conversation", "Retry")).content, "Recovered");
+  assert.equal(store.get("conversation"), "recovered-thread");
+  assert.equal(store.getState("conversation")?.handoff, undefined);
+});
+
 test("Copilot refreshes the same native session at dequeue time and fails closed on resume or persistence errors", async t => {
   const names = ["AI_ASSISTANT_SYSTEM_PROMPT", "AI_ASSISTANT_SYSTEM_PROMPT_FILE", "AI_ASSISTANT_SECURITY_MODE", "USER_INSTRUCTION_MODE"] as const;
   const before = Object.fromEntries(names.map(name => [name, process.env[name]]));
