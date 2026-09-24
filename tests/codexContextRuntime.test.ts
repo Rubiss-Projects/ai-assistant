@@ -44,7 +44,7 @@ test("real Codex runtime refreshes instructions through a restricted handoff and
       response.end(JSON.stringify({ error: { message: "Test request rejected", type: "invalid_request_error" } }));
       return;
     }
-    const text = handoff ? invalidHandoff ? "invalid handoff" : JSON.stringify({ summary: "Alice chose PROJECT_ORCHID. Pending: finish the report." }) : "Ready.";
+    const text = handoff ? invalidHandoff ? "invalid handoff" : JSON.stringify({ summary: "Alice chose PROJECT_ORCHID. Pending: finish the report.".padEnd(12_857, ".") }) : "Ready.";
     const item = handoff && attemptPatch
       ? { type: "custom_tool_call", name: "apply_patch", id: "patch_attempt", call_id: "patch_attempt", input: `*** Begin Patch\n*** Add File: ${join(workspace, "handoff-forbidden.txt").replaceAll("\\", "/")}\n+must not be written\n*** End Patch` }
       : { type: "message", role: "assistant", id: "answer", content: [{ type: "output_text", text }] };
