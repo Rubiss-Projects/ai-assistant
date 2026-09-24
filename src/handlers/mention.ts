@@ -115,7 +115,7 @@ export async function handleMention(
       canIncludeContextAuthor,
       (internalPrompt) => sessions.runEphemeral(key, internalPrompt),
     );
-    const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments, canIncludeContextAuthor);
+    const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments, canIncludeContextAuthor, basePrompt);
     let enrichedPrompt = await resolveDiscordContext(
       message,
       linkedPrompt,
@@ -178,3 +178,4 @@ export async function handleMention(
     await cleanup();
   }
 }
+

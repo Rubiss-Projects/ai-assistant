@@ -35,6 +35,7 @@ export async function prepareSlashAttachments(
     requestingUserId,
     linkedAttachments,
     canIncludeContextAuthor,
+    prompt,
   );
   const result = await downloadFileAttachments([
     ...(directAttachment ? [directAttachment] : []),
@@ -54,3 +55,4 @@ export async function prepareSlashAttachments(
     throw error;
   }
 }
+

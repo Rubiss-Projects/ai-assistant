@@ -1,3 +1,4 @@
+import { channelSummaryContext } from "./channelSummary.js";
 import { randomUUID } from "crypto";
 import {
   ChannelType,
@@ -298,6 +299,8 @@ function userId(invocation: Invocation): string {
 }
 
 export async function enrichWithDiscordKnowledge(invocation: Invocation, prompt: string, client: Client, canIncludeAuthor: (authorId: string) => boolean = () => true, infer?: AgentInference): Promise<string> {
+  const summary = await channelSummaryContext(invocation, prompt, client, canIncludeAuthor);
+  if (summary !== null) return summary;
   const guildId = invocation.guildId;
   if (!guildId) return prompt;
   const requester = userId(invocation);
@@ -371,3 +374,4 @@ export async function enrichWithDiscordKnowledge(invocation: Invocation, prompt:
   }
   return blocks.length ? `${blocks.join("\n\n")}\n\n${prompt}` : prompt;
 }
+
