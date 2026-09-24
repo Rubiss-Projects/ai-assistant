@@ -2,12 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { configuredWorkspaceRoot, pathIsWithin } from "./providerSecurity.js";
 import { configuredUserInstructionMode } from "./userInstructionStore.js";
+import { githubContributionAccess } from "./githubContributionConfig.js";
 export const CAPABILITIES = [
     "chat.use", "ask.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
-    "ruleset.manage", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
+    "ruleset.manage", "github.contribute", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
 ];
 const PRESETS = {
     member: ["chat.use"],
+    contributor: ["chat.use", "github.contribute"],
     scheduler: ["chat.use", "schedule.message.create", "schedule.manage.own"],
     "server-admin": ["chat.use", "ruleset.manage", "schedule.message.create", "schedule.manage.own", "schedule.manage.guild"],
     "bot-admin": [...CAPABILITIES],
@@ -37,6 +39,7 @@ export function parseGrants(value) {
     });
 }
 export function createAccessPolicy(env = process.env) {
+    const contributionAccess = githubContributionAccess(env);
     const allowed = ids(env.DISCORD_ALLOWED_USERS);
     const admins = ids(env.DISCORD_ADMIN_USERS);
     const rightsFile = env.DISCORD_RIGHTS_FILE?.trim();
@@ -72,6 +75,9 @@ export function createAccessPolicy(env = process.env) {
             // Private one-shot requests require an explicit grant, never the legacy open-admin fallback.
             if (capability === "ask.use")
                 return explicitAdmin(s) || granted(s, capability);
+            if (capability === "github.contribute")
+                return explicitAdmin(s) || granted(s, capability)
+                    || (contributionAccess === "chat" && (legacyMessage(s.userId) || legacyAdmin(s.userId) || granted(s, "chat.use")));
             if (capability.startsWith("schedule.")) {
                 if (!s.guildId)
                     return false;

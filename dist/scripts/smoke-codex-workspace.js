@@ -7,6 +7,9 @@ import { codexFilesystemPermissionOverride, createCodexSessionTemporaryDirectory
 // Exercise the production sandbox without model calls, credentials, or Discord.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-workspace-smoke-"));
 const temporary = createCodexSessionTemporaryDirectory();
+const hostOnly = fs.mkdtempSync(path.join(os.tmpdir(), "github-host-only-"));
+fs.writeFileSync(path.join(hostOnly, "publisher.pem"), "private key fixture, not a credential");
+fs.writeFileSync(path.join(hostOnly, "contributions.json"), "host-owned contribution state fixture");
 process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
 process.env.AI_ASSISTANT_WORKSPACE_ROOT = root;
 try {
@@ -27,6 +30,9 @@ try {
                 "echo ok > output.txt",
                 "if ls .codex >/dev/null 2>&1; then exit 20; fi",
                 "if cat .env >/dev/null 2>&1; then exit 21; fi",
+                `if cat '${hostOnly}/publisher.pem' >/dev/null 2>&1; then exit 22; fi`,
+                `if cat '${hostOnly}/contributions.json' >/dev/null 2>&1; then exit 23; fi`,
+                `if echo corrupted > '${hostOnly}/contributions.json' 2>/dev/null; then exit 24; fi`,
             ].join("; "),
         ], {
             encoding: "utf8", timeout: 15_000,
@@ -36,9 +42,10 @@ try {
         assert.equal(result.status, 0, `Fresh workspace sandbox (Sites=${sites}): ${result.stderr}`);
         assert.equal(fs.readFileSync(path.join(workspace, "output.txt"), "utf8"), "ok\n");
     }
-    console.log("Fresh Codex workspaces: sandbox starts, workspace writes succeed, .codex and .env remain denied.");
+    console.log("Fresh Codex workspaces: workspace writes succeed; .codex, .env, host GitHub credentials and contribution state remain denied.");
 }
 finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(temporary, { recursive: true, force: true });
+    fs.rmSync(hostOnly, { recursive: true, force: true });
 }

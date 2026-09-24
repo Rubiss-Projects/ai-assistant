@@ -10,6 +10,7 @@ import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agent
 import { ArtifactToolSessions, artifactInputPrompt, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt, type RulesetMcpConfig } from "../common/rulesetToolBridge.js";
 import type { RulesetTools } from "../common/rulesetTools.js";
+import { GitHubContributionSessions, githubContributionPrompt, type GitHubContributionMcpConfig } from "../common/githubContributionToolBridge.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
@@ -117,9 +118,10 @@ export function openCodeChildEnvironment(
   rulesets?: RulesetMcpConfig,
   systemPrompt?: string,
   agentName?: string,
+  github?: GitHubContributionMcpConfig,
 ): Record<string, string> {
   const environment = providerChildEnvironment("opencode", source);
-  if (artifacts || rulesets || systemPrompt) {
+  if (artifacts || rulesets || github || systemPrompt) {
     const config = configuredSecurityMode(source) === "shared" ? openCodeSecurityConfig()
       : JSON.parse(environment.OPENCODE_CONFIG_CONTENT || "{}");
     if (systemPrompt) {
@@ -131,6 +133,11 @@ export function openCodeChildEnvironment(
     }
     config.mcp = { ...(config.mcp ?? {}) };
     config.permission = { ...(config.permission ?? {}) };
+    delete config.mcp.github_contributions;
+    if (github) {
+      config.mcp.github_contributions = { type: "local", command: [github.command, ...github.args], environment: github.env, enabled: true, timeout: 120_000 };
+      config.permission["github_contributions_*"] = "allow";
+    }
     if (artifacts) {
       config.mcp.artifact_tools = {
         type: "local", command: [artifacts.command, ...artifacts.args], environment: artifacts.env, enabled: true, timeout: 960_000,
@@ -194,14 +201,14 @@ export function selectOpenCodeParticipationModel(models: string[], current?: str
  */
 function runOpenCode(
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig; systemPrompt?: string; agentName?: string }
+  opts: { cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig; github?: GitHubContributionMcpConfig; systemPrompt?: string; agentName?: string }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
     const child = spawn(openCodeBin(), args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets, opts.systemPrompt, opts.agentName),
+      env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets, opts.systemPrompt, opts.agentName, opts.github),
     });
 
     let stdout = "";
@@ -292,6 +299,7 @@ export class OpenCodeProvider implements Provider {
   private readonly participationProcesses = new ParticipationProcessRunner();
   private artifactTools = new ArtifactToolSessions();
   private rulesetTools = new RulesetToolSessions();
+  private githubTools = new GitHubContributionSessions();
   readonly name = "opencode" as const;
   readonly displayName = "OpenCode";
 
@@ -335,10 +343,10 @@ export class OpenCodeProvider implements Provider {
         context.rulesetsEnabled
           ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
           : action();
-      const response = await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
+      const response = await this.githubTools.run(userId, options, context.githubContributionsEnabled, githubRun => runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
         for (const file of staged.filter((file) => !file.binary)) args.push("--file", file.path);
         const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun);
-        args.push(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt);
+        args.push(githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun));
         const stopProgress = startProgressUpdates(options);
         const { stdout, stderr, code } = await runOpenCode(args, {
           cwd: workingDirectory,
@@ -346,6 +354,7 @@ export class OpenCodeProvider implements Provider {
           providerName: this.displayName,
           artifacts: await this.artifactTools.config(userId),
           rulesets: context.rulesetsEnabled ? await this.rulesetTools.config(userId) : undefined,
+          github: context.githubContributionsEnabled ? await this.githubTools.config(userId) : undefined,
           systemPrompt,
           agentName,
         }).finally(stopProgress);
@@ -362,7 +371,7 @@ export class OpenCodeProvider implements Provider {
           this.store.set(userId, newSessionId, context.applied);
         }
         return finalTextFromEvents(events) || "(no response)";
-      })));
+      }))));
       this.appendHistory(userId, { type: "assistant.message", data: { content: response.content } });
       return response;
     });
@@ -567,6 +576,7 @@ export class OpenCodeProvider implements Provider {
   async resetSession(key: string): Promise<void> {
     await this.artifactTools.reset(key);
     await this.rulesetTools.reset(key);
+    await this.githubTools.reset(key);
     const sessionId = this.sessions.get(key) ?? this.store.get(key);
     this.sessions.delete(key);
     this.store.delete(key);
@@ -606,6 +616,7 @@ export class OpenCodeProvider implements Provider {
     await this.participationProcesses.shutdown();
     await this.artifactTools.shutdown();
     await this.rulesetTools.shutdown();
+    await this.githubTools.shutdown();
     this.sessions.clear();
     this.messageQueues.clear();
   }
