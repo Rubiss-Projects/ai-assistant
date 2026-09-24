@@ -283,6 +283,8 @@ export function secureSystemPrompt(operatorPrompt, source = process.env) {
     const boundary = configuredSitesEnabled(source)
         ? SITES_WRITE_BOUNDARY_INSTRUCTIONS
         : EXTERNAL_WRITE_BOUNDARY_INSTRUCTIONS;
+    if (operatorPrompt?.endsWith(boundary))
+        return operatorPrompt;
     return operatorPrompt
         ? `${operatorPrompt}\n\n${boundary}`
         : boundary;

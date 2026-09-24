@@ -11,8 +11,6 @@ import {
 import { previewUserInstructions } from "../../utils/userInstructions.js";
 import type { AccessPolicy, AccessSubject } from "../../common/accessPolicy.js";
 
-const store = new UserInstructionStore();
-
 function targetUser(interaction: ChatInputCommandInteraction): { id: string; label: string } {
   const user = interaction.options.getUser("user", true);
   return { id: user.id, label: user.toString() };
@@ -41,6 +39,7 @@ export async function handleRuleset(
       return;
     }
 
+    const store = new UserInstructionStore();
     if (sub === "list" || sub === "get") {
       const name = interaction.options.getString("name", false);
       const includeDisabled = interaction.options.getBoolean("include_disabled", false) ?? false;

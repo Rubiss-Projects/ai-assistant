@@ -97,7 +97,7 @@ export function openCodeChildEnvironment(source = process.env, artifacts, rulese
             const name = agentName ?? openCodeAgentName(systemPrompt);
             config.agent = {
                 ...(typeof config.agent === "object" && config.agent !== null ? config.agent : {}),
-                [name]: { mode: "primary", prompt: systemPrompt },
+                [name]: { mode: "primary", prompt: secureSystemPrompt(systemPrompt, source) },
             };
         }
         config.mcp = { ...(config.mcp ?? {}) };

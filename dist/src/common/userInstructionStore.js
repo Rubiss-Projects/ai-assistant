@@ -99,9 +99,13 @@ export class UserInstructionStore {
     load() {
         try {
             const value = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
-            this.rulesets = Array.isArray(value) ? value.filter(isRuleset) : [];
+            if (!Array.isArray(value) || !value.every(isRuleset))
+                throw new Error("Invalid ruleset storage format.");
+            this.rulesets = value;
         }
-        catch {
+        catch (error) {
+            if (error.code !== "ENOENT")
+                throw error;
             this.rulesets = [];
         }
     }
