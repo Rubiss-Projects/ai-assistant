@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { githubContributionsEnabled } from "./githubContributionConfig.js";
 import { githubContributionService, validateContributionChanges } from "./githubContributions.js";
-import { GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { GITHUB_CONTRIBUTION_CALL_LIMITS, GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
 import { operationSignal } from "./operationSignal.js";
 export class GitHubContributionRun {
     session;
@@ -14,8 +14,7 @@ export class GitHubContributionRun {
     id = randomUUID();
     controller = new AbortController();
     pending = new Set();
-    calls = 0;
-    publishes = 0;
+    remaining = { ...GITHUB_CONTRIBUTION_CALL_LIMITS };
     constructor(session, options, service = githubContributionService, timeoutMs = GITHUB_CONTRIBUTION_TIMEOUT_MS) {
         this.session = session;
         this.options = options;
@@ -33,28 +32,30 @@ export class GitHubContributionRun {
                 throw new Error("GitHub contribution access is unavailable for this requester or run.");
             if (args.run_id !== this.id)
                 throw new Error("GitHub contribution run has expired or belongs to another session.");
-            if (++this.calls > 40)
-                throw new Error("Contribution tool call limit reached for this response.");
-            const schema = GITHUB_CONTRIBUTION_TOOLS.find(tool => tool.name === name)?.inputSchema;
-            if (!schema || Object.keys(args).some(key => !Object.hasOwn(schema.properties, key)))
+            const tool = GITHUB_CONTRIBUTION_TOOLS.find(tool => tool.name === name);
+            if (!tool || Object.keys(args).some(key => !Object.hasOwn(tool.inputSchema.properties, key)))
                 throw new Error("Invalid contribution tool arguments.");
+            const schema = tool.inputSchema;
             for (const key of schema.required) {
                 if (key !== "changes" && (typeof args[key] !== "string" || args[key].length > 12_000))
                     throw new Error(`Invalid ${key}.`);
             }
+            if (this.remaining[tool.name] === 0)
+                throw new Error(`${tool.name} limit reached for this response. Stop calling this tool until the next user turn. Other tool budgets are independent. Remaining calls: ${JSON.stringify(this.remaining)}`);
+            // Reserve synchronously before queueing work so parallel reads cannot spend publish/status calls.
+            this.remaining[tool.name]--;
             const text = (key) => args[key];
             const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
             const service = this.service();
-            switch (name) {
-                case "github_contribution_begin": return service.begin(caller, text("repository"));
-                case "github_contribution_read": return service.read(caller, text("contribution_id"), text("path"));
-                case "github_contribution_status": return service.status(caller, text("contribution_id"));
-                case "github_contribution_publish":
-                    if (++this.publishes > 3)
-                        throw new Error("At most three publishes are allowed per response.");
-                    return service.publish(caller, text("contribution_id"), text("expected_head_sha"), text("title"), text("body"), validateContributionChanges(args.changes));
-                default: throw new Error("Unknown contribution tool.");
-            }
+            const result = await (() => {
+                switch (tool.name) {
+                    case "github_contribution_begin": return service.begin(caller, text("repository"));
+                    case "github_contribution_read": return service.read(caller, text("contribution_id"), text("path"));
+                    case "github_contribution_status": return service.status(caller, text("contribution_id"));
+                    case "github_contribution_publish": return service.publish(caller, text("contribution_id"), text("expected_head_sha"), text("title"), text("body"), validateContributionChanges(args.changes));
+                }
+            })();
+            return { ...result, remaining_calls: { ...this.remaining } };
         });
         this.pending.add(action);
         void action.finally(() => { operation.dispose(); this.pending.delete(action); }).catch(() => { });

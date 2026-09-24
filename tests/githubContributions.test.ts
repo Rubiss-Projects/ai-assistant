@@ -10,6 +10,7 @@ import { GitHubContributions, validateContributionChanges, type ContributionCall
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "../src/common/githubContributionApi.js";
 import { githubContributionsEnabled, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "../src/common/githubContributionConfig.js";
 import { GitHubContributionRun, GitHubContributionSessions } from "../src/common/githubContributionToolBridge.js";
+import { GITHUB_CONTRIBUTION_CALL_LIMITS } from "../src/common/githubContributionToolDefinitions.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { providerChildEnvironment, secureSystemPrompt } from "../src/common/providerSecurity.js";
 import { codexClientOptions } from "../src/providers/codex.js";
@@ -261,6 +262,58 @@ test("simultaneous revisions cannot overwrite an accepted publish", async t => {
   assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
   assert.equal(api.pulls.length, 1);
   assert.equal((await service.read(caller, started.contribution_id, "README.md")).content, "first");
+});
+
+test("parallel reads cannot exhaust publishing or recovery and budgets reset next turn", async t => {
+  const { service, api, caller } = fixture(t);
+  const options = { rulesetContext: { requester: caller.requester, access: caller.access } };
+  const run = new GitHubContributionRun(caller.session, options, () => service);
+  t.after(() => run.cancel());
+  const started = await service.begin(caller, repository.upstream);
+  const args = { run_id: run.id, contribution_id: started.contribution_id };
+  assert.deepEqual(await run.call("github_contribution_begin", { run_id: run.id, repository: repository.upstream }), {
+    ...started, remaining_calls: { ...GITHUB_CONTRIBUTION_CALL_LIMITS, github_contribution_begin: 9 },
+  });
+  const reads = await Promise.allSettled(Array.from({ length: 201 }, () => run.call("github_contribution_read", { ...args, path: "README.md" })));
+  assert.equal(reads.filter(result => result.status === "fulfilled").length, 200);
+  assert.equal(reads.filter(result => result.status === "rejected").length, 1);
+  const calls = api.calls.length;
+  await assert.rejects(run.call("github_contribution_read", { ...args, path: "README.md" }), /read limit reached.*Other tool budgets are independent/);
+  assert.equal(api.calls.length, calls, "exhausted reads must not reach GitHub");
+  await run.call("github_contribution_status", args);
+  for (let index = 0; index < 3; index++) {
+    const current = await service.status(caller, started.contribution_id);
+    await run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, title: "docs: update", body: "Tested.", changes: [{ path: "README.md", content: `Revision ${index}` }] });
+  }
+  assert.equal(api.pulls.length, 1, "publishing and revising still work after exhausting reads");
+  const current = await service.status(caller, started.contribution_id);
+  await assert.rejects(run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, title: "docs: update", body: "", changes: [{ path: "README.md", content: "Fourth" }] }), /publish limit reached/);
+  assert.deepEqual(await run.call("github_contribution_status", args), {
+    ...current, remaining_calls: { github_contribution_begin: 9, github_contribution_read: 0, github_contribution_status: 8, github_contribution_publish: 0 },
+  });
+  const next = new GitHubContributionRun(caller.session, options, () => service);
+  t.after(() => next.cancel());
+  assert.deepEqual(await next.call("github_contribution_read", { ...args, run_id: next.id, path: "README.md" }), {
+    ...await service.read(caller, started.contribution_id, "README.md"),
+    remaining_calls: { ...GITHUB_CONTRIBUTION_CALL_LIMITS, github_contribution_read: 199 },
+  });
+});
+
+test("failed operations consume only their own bounded budget", async t => {
+  const { service, api, caller } = fixture(t);
+  const run = new GitHubContributionRun(caller.session, { rulesetContext: { requester: caller.requester, access: caller.access } }, () => service);
+  t.after(() => run.cancel());
+  const started = await service.begin(caller, repository.upstream);
+  for (let index = 0; index < 10; index++) {
+    await assert.rejects(run.call("github_contribution_begin", { run_id: run.id, repository: "other/repo" }), /enabled contribution/);
+    await assert.rejects(run.call("github_contribution_status", { run_id: run.id, contribution_id: "missing" }));
+  }
+  const calls = api.calls.length;
+  await assert.rejects(run.call("github_contribution_begin", { run_id: run.id, repository: repository.upstream }), /begin limit reached/);
+  await assert.rejects(run.call("github_contribution_status", { run_id: run.id, contribution_id: started.contribution_id }), /status limit reached/);
+  assert.equal(api.calls.length, calls);
+  await run.call("github_contribution_publish", { run_id: run.id, contribution_id: started.contribution_id, expected_head_sha: started.head_sha, title: "docs: update", body: "", changes: [{ path: "README.md", content: "Updated" }] });
+  assert.equal(api.pulls.length, 1);
 });
 
 test("abandoned inspections do not consume the quota, while publishing enforces it", async t => {

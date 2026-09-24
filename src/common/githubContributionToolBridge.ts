@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SendMessageOptions } from "../providers/types.js";
 import { githubContributionsEnabled } from "./githubContributionConfig.js";
 import { githubContributionService, validateContributionChanges, type GitHubContributions } from "./githubContributions.js";
-import { GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { GITHUB_CONTRIBUTION_CALL_LIMITS, GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
 import { operationSignal } from "./operationSignal.js";
 
 export interface GitHubContributionMcpConfig { command: string; args: string[]; env: Record<string, string> }
@@ -13,8 +13,7 @@ export class GitHubContributionRun {
   readonly id = randomUUID();
   private readonly controller = new AbortController();
   private readonly pending = new Set<Promise<unknown>>();
-  private calls = 0;
-  private publishes = 0;
+  private readonly remaining: Record<keyof typeof GITHUB_CONTRIBUTION_CALL_LIMITS, number> = { ...GITHUB_CONTRIBUTION_CALL_LIMITS };
   constructor(private readonly session: string, private readonly options: SendMessageOptions | undefined, private readonly service: () => GitHubContributions = githubContributionService, private readonly timeoutMs = GITHUB_CONTRIBUTION_TIMEOUT_MS) {}
   call(name: string, args: Record<string, unknown>): Promise<unknown> {
     // This budget includes queueing, token minting, and all sequential GitHub requests.
@@ -25,24 +24,27 @@ export class GitHubContributionRun {
       if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
         || !context.access.can(context.requester, "github.contribute")) throw new Error("GitHub contribution access is unavailable for this requester or run.");
       if (args.run_id !== this.id) throw new Error("GitHub contribution run has expired or belongs to another session.");
-      if (++this.calls > 40) throw new Error("Contribution tool call limit reached for this response.");
-      const schema = GITHUB_CONTRIBUTION_TOOLS.find(tool => tool.name === name)?.inputSchema;
-      if (!schema || Object.keys(args).some(key => !Object.hasOwn(schema.properties, key))) throw new Error("Invalid contribution tool arguments.");
+      const tool = GITHUB_CONTRIBUTION_TOOLS.find(tool => tool.name === name);
+      if (!tool || Object.keys(args).some(key => !Object.hasOwn(tool.inputSchema.properties, key))) throw new Error("Invalid contribution tool arguments.");
+      const schema = tool.inputSchema;
       for (const key of schema.required) {
         if (key !== "changes" && (typeof args[key] !== "string" || (args[key] as string).length > 12_000)) throw new Error(`Invalid ${key}.`);
       }
+      if (this.remaining[tool.name] === 0) throw new Error(`${tool.name} limit reached for this response. Stop calling this tool until the next user turn. Other tool budgets are independent. Remaining calls: ${JSON.stringify(this.remaining)}`);
+      // Reserve synchronously before queueing work so parallel reads cannot spend publish/status calls.
+      this.remaining[tool.name]--;
       const text = (key: string) => args[key] as string;
       const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
       const service = this.service();
-      switch (name) {
-        case "github_contribution_begin": return service.begin(caller, text("repository"));
-        case "github_contribution_read": return service.read(caller, text("contribution_id"), text("path"));
-        case "github_contribution_status": return service.status(caller, text("contribution_id"));
-        case "github_contribution_publish":
-          if (++this.publishes > 3) throw new Error("At most three publishes are allowed per response.");
-          return service.publish(caller, text("contribution_id"), text("expected_head_sha"), text("title"), text("body"), validateContributionChanges(args.changes));
-        default: throw new Error("Unknown contribution tool.");
-      }
+      const result = await (() => {
+        switch (tool.name) {
+          case "github_contribution_begin": return service.begin(caller, text("repository"));
+          case "github_contribution_read": return service.read(caller, text("contribution_id"), text("path"));
+          case "github_contribution_status": return service.status(caller, text("contribution_id"));
+          case "github_contribution_publish": return service.publish(caller, text("contribution_id"), text("expected_head_sha"), text("title"), text("body"), validateContributionChanges(args.changes));
+        }
+      })();
+      return { ...result, remaining_calls: { ...this.remaining } };
     });
     this.pending.add(action);
     void action.finally(() => { operation.dispose(); this.pending.delete(action); }).catch(() => {});

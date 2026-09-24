@@ -96,8 +96,13 @@ bot host, never in tool responses, provider environments, or local Git config.
   its current head, unless the PR closed or the branch changed externally. If a response
   is lost, check status and retry with the returned head; an already-created PR is
   discovered instead of duplicated. Preserve the state file across deployments.
-- Limits are 30 files and 1 MB per publish, 200 KB per text file, 3 publishes and
-  40 tool calls per response, 5 unfinished published contributions and 10 starts/day per
+- Each response allows 200 file reads, 10 begin/resume calls, 10 status checks, and
+  3 publish attempts, with independent budgets. Exhausting reads cannot block
+  publishing or checking an interrupted write. Results include `remaining_calls`;
+  stop calling an exhausted tool until the next user turn. Failed operations also
+  consume their tool's budget. Reuse downloaded files instead of reading them again.
+- Limits are 30 files and 1 MB per publish, 200 KB per text file,
+  5 unfinished published contributions and 10 starts/day per
   user, and 1,000 retained records per installation. An operator can archive old
   closed or never-published records without pending writes while the bot is stopped
   if the installation cap is reached. Repository inspection alone does not consume
