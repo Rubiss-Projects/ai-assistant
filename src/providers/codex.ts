@@ -8,7 +8,7 @@ import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
 import { contextFingerprint, resolveSessionContext, sameContext, withContextTurn, type SessionContext } from "../common/sessionContext.js";
-import { codexHandoffOptions, HANDOFF_PROMPT, HANDOFF_SCHEMA, parseHandoff, withHandoff } from "./codexHandoff.js";
+import { codexHandoffOptions, summarizeHandoff, withHandoff } from "./codexHandoff.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt, type ArtifactMcpConfig } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt, type RulesetMcpConfig } from "../common/rulesetToolBridge.js";
@@ -478,12 +478,7 @@ export class CodexProvider implements Provider {
         ...this.threadOptions(key), sandboxMode: "read-only", networkAccessEnabled: false, webSearchMode: "disabled",
       });
       try {
-        const summary = await summaryThread.run(HANDOFF_PROMPT, { signal, outputSchema: HANDOFF_SCHEMA });
-        signal.throwIfAborted();
-        if (summary.items.some(item => item.type !== "agent_message" && item.type !== "reasoning")) {
-          throw new Error("Codex handoff attempted a tool operation; the existing session has been retained.");
-        }
-        handoff = parseHandoff(summary.finalResponse);
+        handoff = await summarizeHandoff(summaryThread, signal);
       } catch (error) {
         signal.throwIfAborted();
         if (!isThreadNotFoundError(error)) throw error;

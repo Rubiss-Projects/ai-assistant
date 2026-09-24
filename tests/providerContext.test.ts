@@ -11,6 +11,52 @@ import { openCodeChildEnvironment } from "../src/providers/opencode.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { SessionStore } from "../src/common/sessionStore.js";
 
+for (const scenario of [
+  { name: "production overage", responses: [JSON.stringify({ summary: "x".repeat(12_857) })], succeeds: true },
+  { name: "shortening succeeds", responses: [JSON.stringify({ summary: "x".repeat(16_001) }), JSON.stringify({ summary: "Retained facts." })], succeeds: true },
+  { name: "shortening remains oversized", responses: [JSON.stringify({ summary: "x".repeat(16_001) }), JSON.stringify({ summary: "x".repeat(16_001) })], succeeds: false },
+  { name: "shortening returns malformed data", responses: [JSON.stringify({ summary: "x".repeat(16_001) }), "invalid JSON"], succeeds: false },
+  { name: "malformed initial response is not retried", responses: [JSON.stringify({ summary: "" })], succeeds: false },
+]) {
+  test(`Codex handoff: ${scenario.name}`, async t => {
+    const directory = mkdtempSync(join(tmpdir(), "bounded-handoff-"));
+    const store = new SessionStore("test", join(directory, "sessions.json"));
+    store.set("conversation", "original-thread");
+    let calls = 0;
+    let starts = 0;
+    const provider = new CodexProvider(() => ({
+      resumeThread: id => {
+        assert.equal(id, "original-thread");
+        return { run: async () => {
+          assert.ok(calls < scenario.responses.length, "must not exceed the shortening retry budget");
+          return { finalResponse: scenario.responses[calls++], items: [], usage: null };
+        } } as unknown as Thread;
+      },
+      startThread: () => {
+        starts++;
+        return { id: "replacement-thread", run: async (input: string) => {
+          const expected = JSON.parse(scenario.responses.at(-1)!).summary as string;
+          assert.ok(input.includes(JSON.stringify({ summary: expected })));
+          return { finalResponse: "Recovered", items: [], usage: null };
+        } } as unknown as Thread;
+      },
+    }), store);
+    provider.setSessionWorkingDir("conversation", directory);
+    t.after(() => provider.shutdown());
+    if (scenario.succeeds) {
+      assert.equal((await provider.sendMessage("conversation", "Continue")).content, "Recovered");
+      assert.equal(store.get("conversation"), "replacement-thread");
+      assert.ok(store.getState("conversation")?.context);
+      assert.equal(starts, 1);
+    } else {
+      await assert.rejects(provider.sendMessage("conversation", "Continue"));
+      assert.deepEqual(new SessionStore("test", join(directory, "sessions.json")).getState("conversation"), { sessionId: "original-thread" });
+      assert.equal(starts, 0);
+    }
+    assert.equal(calls, scenario.responses.length);
+  });
+}
+
 test("Codex recovers a missing legacy handoff source without discarding ordinary failures", async t => {
   const directory = mkdtempSync(join(tmpdir(), "missing-handoff-"));
   const store = new SessionStore("test", join(directory, "sessions.json"));
