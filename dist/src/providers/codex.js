@@ -1,20 +1,19 @@
 import fs from "fs";
 import { ParticipationProcessRunner } from "./participationProcess.js";
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
 import os from "os";
 import path from "path";
 import { Codex } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
-import { providerSystemPromptForUser } from "../utils/userInstructions.js";
+import { contextFingerprint, resolveSessionContext, sameContext, withContextTurn } from "../common/sessionContext.js";
+import { codexHandoffOptions, HANDOFF_PROMPT, HANDOFF_SCHEMA, parseHandoff, withHandoff } from "./codexHandoff.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
 import { codexHostMcpOverride, codexHostMcpOverrides } from "../common/hostMcpConfig.js";
 import { UserVisibleError } from "../common/userVisibleError.js";
-import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, configuredSitesEnabled, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, UnsupportedError, RunTimeoutError, } from "./types.js";
@@ -85,7 +84,7 @@ function shellEnvironment(workingDirectory, childEnvironment) {
     return result;
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt = providerSystemPrompt()) {
+export function codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt = secureSystemPrompt(providerSystemPrompt())) {
     if (configuredSecurityMode() === "unrestricted") {
         return {
             ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
@@ -116,7 +115,7 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
         ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
         env: childEnvironment,
         config: {
-            developer_instructions: secureSystemPrompt(systemPrompt),
+            developer_instructions: systemPrompt,
             ...(!process.env.OPENAI_API_KEY ? { forced_login_method: "chatgpt" } : {}),
             default_permissions: CODEX_PERMISSION_PROFILE,
             features: {
@@ -172,9 +171,6 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
 }
 function configuredInlineAttachmentLimit() {
     return Math.min(configuredMilliseconds("CODEX_MAX_INLINE_ATTACHMENT_BYTES", DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES, 1), MAX_CODEX_INLINE_ATTACHMENT_BYTES);
-}
-function promptFingerprint(prompt) {
-    return createHash("sha256").update(prompt).digest("hex");
 }
 async function readCodexTextAttachment(attachment) {
     const displayName = attachment.displayName ?? path.basename(attachment.path);
@@ -279,7 +275,7 @@ function newThreadGeneratedImages(threadId, before) {
         .filter(([name, identity]) => before.get(name) !== identity)
         .map(([name]) => path.join(directory, name));
 }
-async function runCodexCapturingEvents(thread, input, signal) {
+async function runCodexCapturingEvents(thread, input, signal, onStarted) {
     const threadIdBeforeRun = thread.id;
     const generatedImagesBeforeRun = snapshotThreadGeneratedImages(threadIdBeforeRun);
     const filesystemGeneratedImages = () => {
@@ -289,6 +285,7 @@ async function runCodexCapturingEvents(thread, input, signal) {
     };
     if (typeof thread.runStreamed !== "function") {
         const result = await thread.run(input, { signal });
+        onStarted();
         return {
             finalResponse: result.finalResponse,
             items: result.items,
@@ -303,6 +300,9 @@ async function runCodexCapturingEvents(thread, input, signal) {
     const generatedImagePaths = new Set();
     let finalResponse = "";
     for await (const event of streamed.events) {
+        signal.throwIfAborted();
+        if (thread.id)
+            onStarted();
         for (const savedPath of codexGeneratedImagePaths(event))
             generatedImagePaths.add(savedPath);
         const record = event;
@@ -324,6 +324,8 @@ async function runCodexCapturingEvents(thread, input, signal) {
  * a Codex thread; features the SDK does not expose throw `UnsupportedError`.
  */
 export class CodexProvider {
+    makeClient;
+    store;
     participationProcesses = new ParticipationProcessRunner();
     artifactTools = new ArtifactToolSessions();
     rulesetTools = new RulesetToolSessions();
@@ -332,30 +334,33 @@ export class CodexProvider {
     clients = new Map();
     temporaryDirectories = new Map();
     sessions = new Map();
-    pending = new Map();
     sessionOperationQueues = new Map();
     messageQueues = new Map();
-    store = new SessionStore(this.name);
+    sessionContexts = new Map();
+    handoffs = new Map();
+    constructor(makeClient = options => new Codex(options), store = new SessionStore("codex")) {
+        this.makeClient = makeClient;
+        this.store = store;
+    }
     histories = new Map();
     workingDirOverrides = new Map();
     modelOverrides = new Map();
     reasoningEffortOverrides = new Map();
     mcpToolOverrides = new Map();
-    clientFor(key, systemPrompt, artifacts, rulesets) {
-        const fingerprint = promptFingerprint(systemPrompt);
+    clientFor(key, context, artifacts, rulesets) {
+        // Connection bindings are private and transient: rebuild the client without rotating history.
+        const fingerprint = contextFingerprint({ context: context.fingerprint, artifacts, rulesets });
         const existing = this.clients.get(key);
-        if (existing && !("fingerprint" in existing) && "startThread" in existing) {
-            return existing;
-        }
         if (existing?.fingerprint === fingerprint)
             return existing.client;
-        let temporaryDirectory;
-        if (configuredSecurityMode() === "shared") {
-            temporaryDirectory = this.temporaryDirectories.get(key) ?? createCodexSessionTemporaryDirectory();
+        let temporaryDirectory = this.temporaryDirectories.get(key);
+        if (!temporaryDirectory) {
+            temporaryDirectory = createCodexSessionTemporaryDirectory();
             this.temporaryDirectories.set(key, temporaryDirectory);
         }
-        const client = new Codex(codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt));
+        const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt));
         this.clients.set(key, { fingerprint, client });
+        this.sessions.delete(key);
         return client;
     }
     threadOptions(key) {
@@ -371,71 +376,50 @@ export class CodexProvider {
         };
         return options;
     }
-    async getOrCreateSession(key, systemPrompt) {
+    async getOrCreateSession(key, context, signal) {
+        signal.throwIfAborted();
+        const previousClient = this.clients.get(key)?.client;
+        const rulesets = context.rulesetsEnabled ? await this.rulesetTools.config(key) : undefined;
+        const client = this.clientFor(key, context, await this.artifactTools.config(key), rulesets);
         const existing = this.sessions.get(key);
-        const fingerprint = promptFingerprint(systemPrompt);
-        if (existing && !this.clients.has(key))
+        if (existing && sameContext(this.sessionContexts.get(key)?.applied, context.applied)
+            && previousClient === client)
             return existing;
-        if (existing && this.clients.get(key)?.fingerprint === fingerprint)
-            return existing;
-        if (existing)
-            this.sessions.delete(key);
-        const inFlight = this.pending.get(key);
-        if (inFlight)
-            return inFlight;
-        const storedThreadId = this.store.get(key);
-        const rulesetConfig = userInstructionFeaturesEnabled() ? await this.rulesetTools.config(key) : undefined;
-        const client = this.clientFor(key, systemPrompt, await this.artifactTools.config(key), rulesetConfig);
-        const resumeThread = client.resumeThread;
-        const creation = Promise.resolve(storedThreadId && typeof resumeThread === "function"
-            ? resumeThread.call(client, storedThreadId, this.threadOptions(key))
-            : client.startThread(this.threadOptions(key)))
-            .then((thread) => {
-            if (this.pending.get(key) !== creation)
-                return thread;
-            this.sessions.set(key, thread);
-            this.pending.delete(key);
-            if (thread.id)
-                this.store.set(key, thread.id);
-            return thread;
-        })
-            .catch((err) => {
-            if (this.pending.get(key) === creation)
-                this.pending.delete(key);
-            if (!storedThreadId)
-                throw err;
-            console.warn(`[CodexProvider] Resume failed for ${key} (${storedThreadId}), starting a new Codex thread:`, err);
-            this.store.delete(key);
-            const fresh = client.startThread(this.threadOptions(key));
-            this.sessions.set(key, fresh);
-            return fresh;
-        });
-        this.pending.set(key, creation);
-        return creation;
+        const stored = this.store.getState(key);
+        let handoff = stored?.handoff;
+        if (stored && !sameContext(stored.context, context.applied)) {
+            const summaryClient = this.makeClient(codexHandoffOptions(codexClientOptions(this.temporaryDirectories.get(key))));
+            const summaryThread = summaryClient.resumeThread(stored.sessionId, {
+                ...this.threadOptions(key), sandboxMode: "read-only", networkAccessEnabled: false, webSearchMode: "disabled",
+            });
+            const summary = await summaryThread.run(HANDOFF_PROMPT, { signal, outputSchema: HANDOFF_SCHEMA });
+            signal.throwIfAborted();
+            if (summary.items.some(item => item.type !== "agent_message" && item.type !== "reasoning")) {
+                throw new Error("Codex handoff attempted a tool operation; the existing session has been retained.");
+            }
+            handoff = parseHandoff(summary.finalResponse);
+        }
+        signal.throwIfAborted();
+        const thread = stored && sameContext(stored.context, context.applied)
+            ? client.resumeThread(stored.sessionId, this.threadOptions(key))
+            : client.startThread(this.threadOptions(key));
+        if (handoff)
+            this.handoffs.set(key, handoff);
+        else
+            this.handoffs.delete(key);
+        this.sessionContexts.set(key, context);
+        this.sessions.set(key, thread);
+        return thread;
     }
     evictCachedSession(key, thread) {
         if (this.sessions.get(key) === thread)
             this.sessions.delete(key);
     }
-    abandonTimedOutSession(key) {
+    abandonTimedOutSession(key, retainStored = false) {
         this.sessions.delete(key);
-        this.pending.delete(key);
         this.sessionOperationQueues.delete(key);
-        this.store.delete(key);
-    }
-    async withLiveSession(key, systemPrompt, operation) {
-        return this.enqueueSessionOperation(key, async () => {
-            const thread = await this.getOrCreateSession(key, systemPrompt);
-            return this.runWithSessionRecovery(key, systemPrompt, thread, operation);
-        });
-    }
-    async withExistingLiveSession(key, operation) {
-        return this.enqueueSessionOperation(key, async () => {
-            const thread = this.sessions.get(key);
-            if (!thread)
-                return null;
-            return this.runWithSessionRecovery(key, providerSystemPrompt(), thread, operation);
-        });
+        if (!retainStored)
+            this.store.delete(key);
     }
     enqueueSessionOperation(key, operation) {
         const tail = this.sessionOperationQueues.get(key) ?? Promise.resolve();
@@ -449,7 +433,7 @@ export class CodexProvider {
         });
         return next;
     }
-    async runWithSessionRecovery(key, systemPrompt, thread, operation) {
+    async runWithSessionRecovery(key, context, signal, thread, operation) {
         try {
             return await operation(thread);
         }
@@ -459,7 +443,7 @@ export class CodexProvider {
             console.warn(`[CodexProvider] Cached Codex thread for ${key} was not found; starting a new thread.`);
             this.evictCachedSession(key, thread);
             this.store.delete(key);
-            const fresh = await this.getOrCreateSession(key, systemPrompt);
+            const fresh = await this.getOrCreateSession(key, context, signal);
             return operation(fresh);
         }
     }
@@ -473,51 +457,61 @@ export class CodexProvider {
             }));
             const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
-            const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
+            const context = resolveSessionContext({ profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
             const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
-            const runWithRulesetTools = (action) => userInstructionFeaturesEnabled()
+            const runWithRulesetTools = (action) => context.rulesetsEnabled
                 ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
                 : action();
             const response = await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
                 runtime.providerSourceRoot = () => generatedImageThreadDirectory(this.sessions.get(userId)?.id ?? null);
                 const images = staged.filter((attachment) => attachment.kind !== "file");
-                const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(resolvedPrompt, staged), artifactRun);
+                const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(resolvedPrompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun);
                 const artifactPrompt = rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt;
-                const input = images.length > 0
+                const inputFor = (handoff) => images.length > 0
                     ? [
-                        { type: "text", text: artifactPrompt },
+                        { type: "text", text: withHandoff(artifactPrompt, handoff) },
                         ...images.map((a) => ({ type: "local_image", path: a.path })),
                     ]
-                    : artifactPrompt;
+                    : withHandoff(artifactPrompt, handoff);
                 const timeoutMs = providerTimeout("CODEX_TIMEOUT_MS", options);
                 const controller = new AbortController();
                 let timedOut = false;
+                let userTurnStarted = false;
                 const stopProgress = startProgressUpdates(options);
                 let abortGrace;
                 let timeout;
                 const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
                 let result;
                 try {
-                    const run = this.withLiveSession(userId, systemPrompt, (thread) => runCodexCapturingEvents(thread, input, controller.signal));
+                    const run = this.enqueueSessionOperation(userId, async () => {
+                        const thread = await this.getOrCreateSession(userId, context, controller.signal);
+                        return this.runWithSessionRecovery(userId, context, controller.signal, thread, current => runCodexCapturingEvents(current, inputFor(this.handoffs.get(userId)), controller.signal, () => {
+                            controller.signal.throwIfAborted();
+                            if (!current.id || userTurnStarted)
+                                return;
+                            this.store.set(userId, current.id, context.applied, this.handoffs.get(userId));
+                            userTurnStarted = true;
+                        }));
+                    });
                     const deadline = new Promise((_resolve, reject) => {
                         timeout = setTimeout(() => {
                             timedOut = true;
                             controller.abort();
                             abortGrace = setTimeout(() => {
-                                this.abandonTimedOutSession(userId);
+                                this.abandonTimedOutSession(userId, !userTurnStarted || this.handoffs.has(userId));
                                 reject(new RunTimeoutError(this.displayName, timeoutMs, false));
                             }, cancellationGraceMs);
                         }, timeoutMs);
                     });
                     result = await Promise.race([run, deadline]);
                     if (timedOut) {
-                        this.abandonTimedOutSession(userId);
+                        this.abandonTimedOutSession(userId, !userTurnStarted || this.handoffs.has(userId));
                         throw new RunTimeoutError(this.displayName, timeoutMs, true);
                     }
                 }
                 catch (error) {
                     if (timedOut && !(error instanceof RunTimeoutError)) {
-                        this.abandonTimedOutSession(userId);
+                        this.abandonTimedOutSession(userId, !userTurnStarted || this.handoffs.has(userId));
                         throw new RunTimeoutError(this.displayName, timeoutMs, true);
                     }
                     throw error;
@@ -528,7 +522,8 @@ export class CodexProvider {
                     stopProgress();
                 }
                 if (result && this.sessions.get(userId)?.id) {
-                    this.store.set(userId, this.sessions.get(userId).id);
+                    this.store.set(userId, this.sessions.get(userId).id, context.applied);
+                    this.handoffs.delete(userId);
                 }
                 const finalResponse = result.finalResponse || this.extractFinalResponse(result.items) || "(no response)";
                 const generatedRoot = codexGeneratedImagesRoot();
@@ -615,7 +610,7 @@ export class CodexProvider {
         };
     }
     async getHistory(userId) {
-        return this.withExistingLiveSession(userId, async () => this.histories.get(userId) ?? []);
+        return this.histories.get(userId) ?? null;
     }
     async listModels() {
         const modelsById = new Map();
@@ -733,12 +728,13 @@ export class CodexProvider {
         await this.artifactTools.reset(key);
         await this.rulesetTools.reset(key);
         this.sessions.delete(key);
-        this.pending.delete(key);
         this.sessionOperationQueues.delete(key);
         this.messageQueues.delete(key);
         this.histories.delete(key);
         this.store.delete(key);
         this.clients.delete(key);
+        this.sessionContexts.delete(key);
+        this.handoffs.delete(key);
         const temporaryDirectory = this.temporaryDirectories.get(key);
         this.temporaryDirectories.delete(key);
         if (temporaryDirectory)
@@ -775,7 +771,12 @@ export class CodexProvider {
         await this.artifactTools.shutdown();
         await this.rulesetTools.shutdown();
         this.sessions.clear();
-        this.pending.clear();
+        this.clients.clear();
+        this.sessionContexts.clear();
+        this.handoffs.clear();
+        for (const directory of this.temporaryDirectories.values())
+            fs.rmSync(directory, { recursive: true, force: true });
+        this.temporaryDirectories.clear();
         this.sessionOperationQueues.clear();
         this.messageQueues.clear();
     }

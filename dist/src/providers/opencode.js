@@ -1,16 +1,14 @@
 import { spawn } from "child_process";
-import { createHash } from "node:crypto";
 import fs from "fs";
 import os from "node:os";
 import { ParticipationProcessRunner } from "./participationProcess.js";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
-import { providerSystemPromptForUser } from "../utils/userInstructions.js";
+import { contextFingerprint, resolveSessionContext, withContextTurn } from "../common/sessionContext.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
-import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError } from "./types.js";
@@ -46,11 +44,8 @@ function resolveOpenCodeBinary() {
 function openCodeBin() {
     return resolveOpenCodeBinary();
 }
-function promptFingerprint(prompt) {
-    return createHash("sha256").update(prompt).digest("hex");
-}
 function openCodeAgentName(systemPrompt) {
-    return `ai-assistant-${promptFingerprint(systemPrompt).slice(0, 16)}`;
+    return `ai-assistant-${contextFingerprint(systemPrompt).slice(0, 16)}`;
 }
 /** Inline policy has the highest normal config precedence in OpenCode v1. */
 export function openCodeSecurityConfig() {
@@ -273,19 +268,20 @@ export class OpenCodeProvider {
             const model = this.modelOverrides.get(userId) ?? this.configuredModel();
             if (model)
                 args.push("--model", model);
-            const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
+            const context = resolveSessionContext({ profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
+            const systemPrompt = context.systemPrompt;
             const agentName = openCodeAgentName(systemPrompt);
             args.push("--agent", agentName);
             const timeoutMs = providerTimeout("OPENCODE_TIMEOUT_MS", options);
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
             const workingDirectory = this.workingDir(userId);
-            const runWithRulesetTools = (action) => userInstructionFeaturesEnabled()
+            const runWithRulesetTools = (action) => context.rulesetsEnabled
                 ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
                 : action();
             const response = await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
                 for (const file of staged.filter((file) => !file.binary))
                     args.push("--file", file.path);
-                const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun);
+                const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun);
                 args.push(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt);
                 const stopProgress = startProgressUpdates(options);
                 const { stdout, stderr, code } = await runOpenCode(args, {
@@ -293,7 +289,7 @@ export class OpenCodeProvider {
                     timeoutMs,
                     providerName: this.displayName,
                     artifacts: await this.artifactTools.config(userId),
-                    rulesets: userInstructionFeaturesEnabled() ? await this.rulesetTools.config(userId) : undefined,
+                    rulesets: context.rulesetsEnabled ? await this.rulesetTools.config(userId) : undefined,
                     systemPrompt,
                     agentName,
                 }).finally(stopProgress);
@@ -305,7 +301,7 @@ export class OpenCodeProvider {
                 const newSessionId = sessionIdFromEvents(events);
                 if (newSessionId) {
                     this.sessions.set(userId, newSessionId);
-                    this.store.set(userId, newSessionId);
+                    this.store.set(userId, newSessionId, context.applied);
                 }
                 return finalTextFromEvents(events) || "(no response)";
             })));

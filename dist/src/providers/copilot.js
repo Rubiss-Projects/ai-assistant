@@ -1,22 +1,16 @@
 import os from "os";
 import path from "path";
-import { createHash } from "node:crypto";
 import { BuiltInTools, CopilotClient, ToolSet, approveAll } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
-import { providerSystemPrompt } from "../common/systemPrompt.js";
-import { providerSystemPromptForUser } from "../utils/userInstructions.js";
+import { contextFingerprint, resolveSessionContext, withContextTurn } from "../common/sessionContext.js";
 import { captureAgentArtifacts, withArtifactOutputPrompt } from "../common/agentResponse.js";
 import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToolBridge.js";
 import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
-import { userInstructionFeaturesEnabled } from "../common/userInstructionStore.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
-import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, secureSystemPrompt, workspacePathIsAllowed, } from "../common/providerSecurity.js";
+import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, RunTimeoutError, } from "./types.js";
 const DEFAULT_MODEL = process.env.COPILOT_MODEL?.trim() || "claude-haiku-4.5";
-function promptFingerprint(prompt) {
-    return createHash("sha256").update(prompt).digest("hex");
-}
 const COPILOT_LOCAL_TOOLS = [
     "view",
     "create",
@@ -181,7 +175,8 @@ export class CopilotProvider {
     // Directory actually bound into each live SDK session.
     sessionWorkingDirectories = new Map();
     // System prompt fingerprint bound to each live SDK session connection.
-    sessionPromptFingerprints = new Map();
+    sessionConnectionFingerprints = new Map();
+    sessionContexts = new Map();
     // Per-session MCP tool overrides: server name → tools array (["*"] = enabled, [] = disabled)
     mcpToolOverrides = new Map();
     // Per-session reasoning-effort override (host tracks the effective value)
@@ -189,19 +184,12 @@ export class CopilotProvider {
     constructor() {
         this.client = new CopilotClient(copilotClientOptions());
     }
-    async getOrCreateSession(key, systemPrompt = providerSystemPrompt()) {
+    async getOrCreateSession(key, requestedContext) {
         const existing = this.sessions.get(key);
-        const fingerprint = promptFingerprint(systemPrompt);
-        if (existing && !this.sessionPromptFingerprints.has(key))
+        // Inspection/configuration operations retain the last requester's context.
+        if (existing && !requestedContext)
             return existing;
-        if (existing && this.sessionPromptFingerprints.get(key) === fingerprint)
-            return existing;
-        if (existing) {
-            this.sessions.delete(key);
-            this.sessionWorkingDirectories.delete(key);
-            this.sessionPromptFingerprints.delete(key);
-            await existing.disconnect().catch((err) => console.warn(`[CopilotProvider] Failed to disconnect prompt-stale session ${existing.sessionId}:`, err));
-        }
+        const context = requestedContext ?? this.sessionContexts.get(key) ?? resolveSessionContext();
         const inFlight = this.pending.get(key);
         if (inFlight)
             return inFlight;
@@ -213,9 +201,14 @@ export class CopilotProvider {
         // would execute repository-controlled code before the permission handler can intervene.
         const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
         mcpServers.artifact_tools = { ...(await this.artifactTools.config(key)), type: "local", tools: ["*"], timeout: 960_000 };
-        if (userInstructionFeaturesEnabled()) {
+        if (context.rulesetsEnabled) {
             mcpServers.ruleset_tools = { ...(await this.rulesetTools.config(key)), type: "local", tools: ["*"], timeout: 120_000 };
         }
+        const fingerprint = contextFingerprint({ context: context.fingerprint, workingDir, mcpServers });
+        if (existing && this.sessionConnectionFingerprints.get(key) === fingerprint)
+            return existing;
+        if (existing)
+            await this.evictCachedSession(key, existing);
         const sessionConfig = shared
             ? {
                 onPermissionRequest: createCopilotPermissionHandler(workingDir),
@@ -223,34 +216,43 @@ export class CopilotProvider {
                 enableSessionStore: true,
                 workingDirectory: workingDir,
                 ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-                systemMessage: { mode: "append", content: secureSystemPrompt(systemPrompt) },
+                systemMessage: { mode: "append", content: context.systemPrompt },
             }
             : {
                 onPermissionRequest: approveAll,
                 skillDirectories: [path.join(os.homedir(), ".agents", "skills")],
                 ...(workingDir ? { workingDirectory: workingDir } : {}),
                 ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-                systemMessage: { mode: "append", content: systemPrompt },
+                systemMessage: { mode: "append", content: context.systemPrompt },
             };
         const storedSessionId = this.store.get(key);
         const creation = (storedSessionId
             ? this.client
                 .resumeSession(storedSessionId, sessionConfig)
                 .catch((err) => {
+                if (!isSessionNotFoundError(err))
+                    throw err;
                 console.warn(`[CopilotProvider] Resume failed for ${key} (${storedSessionId}), creating new session:`, err);
                 return this.client.createSession({ model: DEFAULT_MODEL, ...sessionConfig });
             })
             : this.client.createSession({ model: DEFAULT_MODEL, ...sessionConfig }))
-            .then((session) => {
+            .then(async (session) => {
             if (this.pending.get(key) !== creation) {
                 session.disconnect().catch(() => { });
                 return session;
             }
+            try {
+                this.store.set(key, session.sessionId, context.applied);
+            }
+            catch (error) {
+                await session.disconnect().catch(() => { });
+                throw error;
+            }
             this.sessions.set(key, session);
             this.sessionWorkingDirectories.set(key, workingDir ?? ensureProviderWorkingDirectory());
-            this.sessionPromptFingerprints.set(key, fingerprint);
+            this.sessionConnectionFingerprints.set(key, fingerprint);
+            this.sessionContexts.set(key, context);
             this.pending.delete(key);
-            this.store.set(key, session.sessionId);
             return session;
         })
             .catch((err) => {
@@ -266,7 +268,7 @@ export class CopilotProvider {
         if (this.sessions.get(key) === session) {
             this.sessions.delete(key);
             this.sessionWorkingDirectories.delete(key);
-            this.sessionPromptFingerprints.delete(key);
+            this.sessionConnectionFingerprints.delete(key);
         }
         await session.disconnect().catch((err) => console.warn(`[CopilotProvider] Failed to disconnect stale session ${session.sessionId}:`, err));
     }
@@ -274,15 +276,15 @@ export class CopilotProvider {
         if (this.sessions.get(key) === session) {
             this.sessions.delete(key);
             this.sessionWorkingDirectories.delete(key);
-            this.sessionPromptFingerprints.delete(key);
+            this.sessionConnectionFingerprints.delete(key);
         }
         this.store.delete(key);
         session.disconnect().catch((err) => console.warn(`[CopilotProvider] Failed to disconnect timed-out session ${session.sessionId}:`, err));
     }
-    async withLiveSession(key, operation, systemPrompt = providerSystemPrompt()) {
+    async withLiveSession(key, operation, context) {
         return this.enqueueSessionOperation(key, async () => {
-            const session = await this.getOrCreateSession(key, systemPrompt);
-            return this.runWithSessionRecovery(key, systemPrompt, session, operation);
+            const session = await this.getOrCreateSession(key, context);
+            return this.runWithSessionRecovery(key, context, session, operation);
         });
     }
     async withExistingLiveSession(key, operation) {
@@ -290,7 +292,7 @@ export class CopilotProvider {
             const session = this.sessions.get(key);
             if (!session)
                 return null;
-            return this.runWithSessionRecovery(key, providerSystemPrompt(), session, operation);
+            return this.runWithSessionRecovery(key, this.sessionContexts.get(key), session, operation);
         });
     }
     enqueueSessionOperation(key, operation) {
@@ -305,7 +307,7 @@ export class CopilotProvider {
         });
         return next;
     }
-    async runWithSessionRecovery(key, systemPrompt, session, operation) {
+    async runWithSessionRecovery(key, context, session, operation) {
         try {
             return await operation(session);
         }
@@ -314,25 +316,25 @@ export class CopilotProvider {
                 throw err;
             console.warn(`[CopilotProvider] Cached session ${session.sessionId} for ${key} was not found by Copilot; evicting stale session and reinitializing.`);
             await this.evictCachedSession(key, session);
-            const resumed = await this.getOrCreateSession(key, systemPrompt);
+            const resumed = await this.getOrCreateSession(key, context);
             return operation(resumed);
         }
     }
     async sendMessage(userId, prompt, imagePaths, options) {
         const tail = this.messageQueues.get(userId) ?? Promise.resolve();
         const next = tail.then(async () => {
-            const systemPrompt = providerSystemPromptForUser(options?.userInstructionContext);
+            const context = resolveSessionContext({ profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
             return this.withLiveSession(userId, async (session) => {
                 try {
                     const workingDirectory = this.sessionWorkingDirectories.get(userId)
                         ?? this.workingDirOverrides.get(userId)
                         ?? ensureProviderWorkingDirectory();
-                    const runWithRulesetTools = (action) => userInstructionFeaturesEnabled()
+                    const runWithRulesetTools = (action) => context.rulesetsEnabled
                         ? this.rulesetTools.run(userId, options, (rulesetRuntime) => action(rulesetRuntime))
                         : action();
                     return await runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
                         const attachments = staged.filter((file) => !file.binary).map((file) => ({ type: "file", path: file.path, displayName: file.displayName }));
-                        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(prompt, staged), artifactRun);
+                        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun);
                         return sendUntilIdle(session, {
                             prompt: rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt,
                             ...(attachments?.length ? { attachments } : {}),
@@ -345,7 +347,7 @@ export class CopilotProvider {
                     }
                     throw error;
                 }
-            }, systemPrompt);
+            }, context);
         });
         this.messageQueues.set(userId, next.catch(() => { }));
         return next;
@@ -498,7 +500,8 @@ export class CopilotProvider {
         const storedSessionId = this.store.get(key);
         this.sessions.delete(key);
         this.sessionWorkingDirectories.delete(key);
-        this.sessionPromptFingerprints.delete(key);
+        this.sessionConnectionFingerprints.delete(key);
+        this.sessionContexts.delete(key);
         this.pending.delete(key);
         this.sessionOperationQueues.delete(key);
         this.messageQueues.delete(key);
@@ -547,7 +550,7 @@ export class CopilotProvider {
             const existing = this.sessions.get(key);
             this.sessions.delete(key);
             this.sessionWorkingDirectories.delete(key);
-            this.sessionPromptFingerprints.delete(key);
+            this.sessionConnectionFingerprints.delete(key);
             this.store.delete(key);
             if (existing)
                 await existing.disconnect().catch((error) => {
@@ -584,6 +587,9 @@ export class CopilotProvider {
         const allSessions = Array.from(this.sessions.values());
         this.sessions.clear();
         this.sessionWorkingDirectories.clear();
+        this.sessionConnectionFingerprints.clear();
+        this.sessionContexts.clear();
+        this.messageQueues.clear();
         this.pending.clear();
         this.sessionOperationQueues.clear();
         await Promise.all(allSessions.map((s) => s.disconnect().catch((err) => console.error("[CopilotProvider] Shutdown error:", err))));

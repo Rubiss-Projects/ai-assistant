@@ -90,7 +90,7 @@ export class DiscordScheduleAdapter {
             const resolveArtifact = artifactMessageResolver(this.client, task.ownerId, contextAuthorPolicy(this.access, this.client, task.guildId));
             const ownerSubject = await discordSubject(this.client, task.ownerId, task.guildId);
             const scheduledPrompt = `Scheduled task at ${new Date(run.startedAt).toISOString()}. Produce the response for the saved destination channel.\n${SCHEDULE_LOOKUP_INSTRUCTIONS}\n${task.content}${context}${previousLookupContext(task.lastVerifiedLookups)}`;
-            const response = await this.sessions.sendMessage(key, scheduledPrompt, undefined, { timeoutMs, rulesetContext: { access: this.access, requester: ownerSubject, guildId: task.guildId }, userInstructionContext: { guildId: task.guildId, userId: task.ownerId }, onLookup: record => {
+            const response = await this.sessions.sendMessage(key, scheduledPrompt, undefined, { timeoutMs, contextProfile: "scheduled", rulesetContext: { access: this.access, requester: ownerSubject, guildId: task.guildId }, userInstructionContext: { guildId: task.guildId, userId: task.ownerId }, onLookup: record => {
                     const index = run.lookups.findIndex(item => item.url === record.url);
                     if (index >= 0)
                         run.lookups[index] = record;
