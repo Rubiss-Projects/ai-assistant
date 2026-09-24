@@ -89,8 +89,10 @@ bot host, never in tool responses, provider environments, or local Git config.
   close it and begin a fresh contribution.
 - Closed/merged PRs cannot be revised. Begin resumes an open contribution for the
   same requester/session/repository; status records closure for quota accounting.
-- Durable pending-commit state recovers interrupted branch writes. If a response
-  is lost, check status and retry with the current head; an already-created PR is
+- Durable pending-commit state recovers interrupted branch writes. Status and
+  resumed begin finish an already-requested pending branch write before returning
+  its current head, unless the PR closed or the branch changed externally. If a response
+  is lost, check status and retry with the returned head; an already-created PR is
   discovered instead of duplicated. Preserve the state file across deployments.
 - Limits are 30 files and 1 MB per publish, 200 KB per text file, 3 publishes and
   40 tool calls per response, 5 unfinished contributions and 10 starts/day per
