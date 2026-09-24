@@ -188,8 +188,10 @@ test("authorization and cancellation are rechecked before each network mutation"
   await assert.rejects(run.call("github_contribution_begin", { run_id: "other", repository: repository.upstream }), /another session/);
   await run.cancel();
   await assert.rejects(run.call("github_contribution_begin", { run_id: run.id, repository: repository.upstream }));
-  const scheduled = new GitHubContributionRun(caller.session, { contextProfile: "scheduled", rulesetContext: { requester: caller.requester, access: caller.access } }, () => service);
-  await assert.rejects(scheduled.call("github_contribution_begin", { run_id: scheduled.id, repository: repository.upstream }), /unavailable/);
+  for (const contextProfile of ["scheduled", "ephemeral", "one-shot"] as const) {
+    const restricted = new GitHubContributionRun(caller.session, { contextProfile, rulesetContext: { requester: caller.requester, access: caller.access } }, () => service);
+    await assert.rejects(restricted.call("github_contribution_begin", { run_id: restricted.id, repository: repository.upstream }), /unavailable/);
+  }
 });
 
 test("chat and explicit grants are configurable without granting legacy open-admin access", t => {
@@ -241,6 +243,7 @@ test("provider policies expose only the contribution bridge and refresh its capa
   assert.equal(context.githubContributionsEnabled, true);
   assert.equal(resolveSessionContext({ profile: "scheduled" }).githubContributionsEnabled, false);
   assert.equal(resolveSessionContext({ profile: "ephemeral" }).githubContributionsEnabled, false);
+  assert.equal(resolveSessionContext({ profile: "one-shot" }).githubContributionsEnabled, false);
   assert.match(secureSystemPrompt(), /host-owned github_contributions/);
   const codex = codexClientOptions(directory, undefined, undefined, context.systemPrompt, bridge);
   assert.match(JSON.stringify(codex.configOverrides), /github_contributions/);

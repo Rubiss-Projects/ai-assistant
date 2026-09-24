@@ -23,7 +23,7 @@ required. All three providers use the same authenticated local MCP bridge.
 
 The legacy empty admin-list fallback does not grant contribution access in
 `granted` mode. Existing guild/user/role scopes still apply. Restart after changing
-access configuration. Scheduled and ephemeral runs do not receive contribution
+access configuration. Private `/ask`, scheduled, and ephemeral runs do not receive contribution
 tools. A different participant in a shared thread cannot revise the original
 requester's contribution; they can start their own.
 

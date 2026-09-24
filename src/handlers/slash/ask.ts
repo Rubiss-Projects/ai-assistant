@@ -48,6 +48,7 @@ export async function handleAsk(
           prepared.prompt,
           prepared.attachments.length ? prepared.attachments : undefined,
           {
+            contextProfile: "one-shot",
             rulesetContext,
             userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
             resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),

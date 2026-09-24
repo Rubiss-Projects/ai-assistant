@@ -7,6 +7,7 @@ import { handleAsk } from "../src/handlers/slash/ask.js";
 import { handleChat } from "../src/handlers/slash/chat.js";
 import { handleHistory } from "../src/handlers/slash/history.js";
 import { chunkForDiscord } from "../src/common/chunkForDiscord.js";
+import type { SendMessageOptions } from "../src/providers/types.js";
 
 const links = "https://example.com/one\n[Second link](https://example.org/two)";
 const longAnswer = `${links}\n${"a".repeat(2000)}\n${links}`;
@@ -83,9 +84,14 @@ for (const mode of ["ask", "chat DM", "chat thread", "chat new thread"]) {
       deferReply: async () => { loading = true; }, fetchReply: async () => ({ ...message, startThread: async () => thread }),
       editReply: async () => { loading = false; },
     };
-    const sessions = { sendMessage: async () => response, resetSession: async () => {}, activeProviderDisplayName: () => "Codex" };
+    let contextProfile: SendMessageOptions["contextProfile"];
+    const sessions = { sendMessage: async (_key: string, _prompt: string, _attachments: unknown, options?: SendMessageOptions) => {
+      contextProfile = options?.contextProfile;
+      return response;
+    }, resetSession: async () => {}, activeProviderDisplayName: () => "Codex" };
     if (mode === "ask") await handleAsk(interaction as never, sessions as never);
     else await handleChat(interaction as never, sessions as never);
+    if (mode === "ask") assert.equal(contextProfile, "one-shot", "temporary /ask sessions cannot create durable contributions");
     if (mode !== "ask") assert.equal(loading, false, "clear Discord loading through the interaction webhook before durable message edits");
     assertDelivered(sent);
   });

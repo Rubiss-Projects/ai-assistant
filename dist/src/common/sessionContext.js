@@ -21,8 +21,8 @@ export function contextFingerprint(value) {
         throw new Error("Context must be JSON serializable.");
     return createHash("sha256").update(canonical).digest("hex");
 }
-const allProfiles = ["conversation", "scheduled", "ephemeral"];
-const userProfiles = ["conversation", "scheduled"];
+const allProfiles = ["conversation", "one-shot", "scheduled", "ephemeral"];
+const userProfiles = ["conversation", "one-shot", "scheduled"];
 /** Add application-owned context here; provider adapters consume the same snapshot. */
 export const CONTEXT_CONTRIBUTORS = [
     {
