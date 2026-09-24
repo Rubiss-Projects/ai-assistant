@@ -38,7 +38,7 @@ At a PR's review cap, do not request a sixth review or override unresolved mater
 1. Inspect existing releases and tags. Choose the next appropriate SemVer and tag the exact verified merged commit. Never move an existing release tag or let a moving branch choose the release revision accidentally.
 2. Push the tag and follow the **Release** workflow for that tag/SHA. It installs dependencies, tests, builds, publishes the multi-platform image, creates the GitHub release, and promotes the highest eligible stable release to `latest`. Both runtime services use this one image; there is no separate browser image build.
 3. Require successful publication. Verify the tag resolves to the intended commit and inspect image version/revision labels or provenance. Add concise release notes explaining behavior, migration implications, and any operator action. Include other unreleased changes since the preceding tag accurately.
-4. Record the previous compatible production version for rollback. An image published successfully is still awaiting deployment.
+4. Record the previous compatible production version for rollback. Before a session-store format migration, save a private backup of `/data/.config/ai-assistant/sessions*.json` outside the provider workspace, without logging its contents. Older string-only readers require those compatible maps restored while the assistant is stopped, or an explicit session reset, before downgrading; preserve native provider history and note that restoring a backup can omit subsequent conversation progress. An image published successfully is still awaiting deployment.
 
 ## Promote through the Docker repository
 

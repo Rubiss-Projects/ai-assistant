@@ -4,6 +4,8 @@ Discord conversation keys still identify the same logical conversation. Before e
 
 The snapshot has separate SHA-256 fingerprints for instructions and capabilities. Session files store these fingerprints alongside the provider session ID. They do not store a second copy of policy text or tool credentials. Legacy string-only session records are read automatically; their context is considered unknown until refreshed. Back up these files with the rest of `/data`.
 
+Before upgrading, save a private backup of `/data/.config/ai-assistant/sessions*.json`. Older releases expect string-only records and cannot read the new object records. Downgrading therefore requires restoring compatible session maps while the assistant is stopped, or deliberately resetting the affected sessions; changing only the image tag is insufficient. Preserve provider history and other persistent data. Restoring an older map can omit conversation progress made after that backup.
+
 ## Provider behavior
 
 | Provider | Applying current context | History and compaction |
