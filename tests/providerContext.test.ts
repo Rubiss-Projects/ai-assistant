@@ -5,9 +5,39 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CopilotClient, CopilotSession, SessionConfigBase, SessionEvent } from "@github/copilot-sdk";
 import { CopilotProvider } from "../src/providers/copilot.js";
+import type { Thread } from "@openai/codex-sdk";
+import { CodexProvider } from "../src/providers/codex.js";
 import { openCodeChildEnvironment } from "../src/providers/opencode.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { SessionStore } from "../src/common/sessionStore.js";
+
+test("Codex recovers a missing legacy handoff source without discarding ordinary failures", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "missing-handoff-"));
+  const store = new SessionStore("test", join(directory, "sessions.json"));
+  store.set("conversation", "missing-native-thread");
+  let error = new Error("Provider temporarily unavailable");
+  let starts = 0;
+  const provider = new CodexProvider(() => ({
+    resumeThread: id => {
+      assert.equal(id, "missing-native-thread");
+      return { run: async () => { throw error; } } as unknown as Thread;
+    },
+    startThread: () => {
+      starts++;
+      return { id: "replacement-thread", run: async () => ({ finalResponse: "Recovered", items: [] }) } as unknown as Thread;
+    },
+  }), store);
+  provider.setSessionWorkingDir("conversation", directory);
+  t.after(() => provider.shutdown());
+  await assert.rejects(provider.sendMessage("conversation", "Continue"), /temporarily unavailable/);
+  assert.equal(store.get("conversation"), "missing-native-thread");
+  assert.equal(starts, 0);
+  error = new Error("Thread not found: missing-native-thread");
+  assert.equal((await provider.sendMessage("conversation", "Continue")).content, "Recovered");
+  assert.equal(starts, 1);
+  assert.equal(store.get("conversation"), "replacement-thread");
+  assert.ok(store.getState("conversation")?.context);
+});
 
 test("Copilot refreshes the same native session at dequeue time and fails closed on resume or persistence errors", async t => {
   const names = ["AI_ASSISTANT_SYSTEM_PROMPT", "AI_ASSISTANT_SYSTEM_PROMPT_FILE", "AI_ASSISTANT_SECURITY_MODE", "USER_INSTRUCTION_MODE"] as const;
