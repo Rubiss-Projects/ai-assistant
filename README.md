@@ -747,6 +747,8 @@ For Docker, `docker compose down` removes the containers while retaining the dat
 
 ## Development
 
+For production releases, use the [AI Assistant deployment skill](.agents/skills/deploy-ai-assistant/SKILL.md). It covers PR review, release publication, Docker repository promotion, and runtime verification.
+
 After [installing from source](#run-from-source), use `npm run build` to compile TypeScript and `npm test` to run the test suite.
 
 ### Project structure

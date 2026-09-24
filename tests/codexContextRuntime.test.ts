@@ -31,6 +31,8 @@ test("real Codex runtime refreshes instructions through a restricted handoff and
   let invalidHandoff = false;
   let attemptPatch = false;
   let failUserTurn = false;
+  let compactTest = false;
+  let reportLargeUsage = false;
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -47,10 +49,12 @@ test("real Codex runtime refreshes instructions through a restricted handoff and
       ? { type: "custom_tool_call", name: "apply_patch", id: "patch_attempt", call_id: "patch_attempt", input: `*** Begin Patch\n*** Add File: ${join(workspace, "handoff-forbidden.txt").replaceAll("\\", "/")}\n+must not be written\n*** End Patch` }
       : { type: "message", role: "assistant", id: "answer", content: [{ type: "output_text", text }] };
     if (handoff) attemptPatch = false;
+    const inputTokens = reportLargeUsage ? 2_000 : 10;
+    reportLargeUsage = false;
     const events = [
       { type: "response.created", response: { id: `response_${requests.length}` } },
       { type: "response.output_item.done", item },
-      { type: "response.completed", response: { id: `response_${requests.length}`, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } },
+      { type: "response.completed", response: { id: `response_${requests.length}`, usage: { input_tokens: inputTokens, output_tokens: 5, total_tokens: inputTokens + 5 } } },
     ];
     response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "close" });
     response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
@@ -65,6 +69,7 @@ test("real Codex runtime refreshes instructions through a restricted handoff and
     ...options, codexPathOverride: undefined, apiKey: undefined, baseUrl: undefined, env,
     config: {
       ...options.config,
+      ...(compactTest ? { model_auto_compact_token_limit: 1_000, compact_prompt: "COMPACT_CONTEXT_HISTORY" } : {}),
       model_provider: "context_test", model_providers: { context_test: { name: "Local test", base_url: `http://127.0.0.1:${address.port}/v1`, wire_api: "responses", requires_openai_auth: false, supports_websockets: false } },
       analytics: { enabled: false }, feedback: { enabled: false },
     },
@@ -128,4 +133,17 @@ test("real Codex runtime refreshes instructions through a restricted handoff and
   assert.match(JSON.stringify(requests.at(-1)?.input), /PROJECT_ORCHID/);
   assert.match(developerText(requests.at(-1)!), /POLICY_DELTA/);
   assert.equal(requests.filter(request => request.text?.format?.type === "json_schema").length, summaryCount);
+
+  // Force native auto-compaction and observe the next actual model request.
+  compactTest = true;
+  await provider.shutdown();
+  provider = new CodexProvider(makeClient, new SessionStore("test", join(directory, "sessions.json")));
+  provider.setSessionWorkingDir("conversation", workspace);
+  const beforeCompaction = requests.length;
+  reportLargeUsage = true;
+  await provider.sendMessage("conversation", "Accumulate history.", undefined, { timeoutMs: 20_000 });
+  await provider.sendMessage("conversation", "Continue after compaction.", undefined, { timeoutMs: 20_000 });
+  assert.ok(requests.slice(beforeCompaction).some(request => JSON.stringify(request.input).includes("COMPACT_CONTEXT_HISTORY")));
+  assert.match(developerText(requests.at(-1)!), /POLICY_DELTA/);
+  assert.equal(new SessionStore("test", join(directory, "sessions.json")).get("conversation"), recovered?.sessionId);
 });
