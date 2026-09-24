@@ -30,5 +30,8 @@ export function providerSystemPromptForUser(context, store) {
 }
 export function previewUserInstructions(context, includeDisabled = false, store = new UserInstructionStore()) {
     const rulesets = store.listForUser(context.guildId ?? null, context.userId, includeDisabled);
-    return formatUserInstructionBlock(context, rulesets) || "No enabled rulesets apply.";
+    const block = includeDisabled
+        ? formatStoredUserInstructionBlock(context, rulesets)
+        : formatUserInstructionBlock(context, rulesets);
+    return block || "No enabled rulesets apply.";
 }

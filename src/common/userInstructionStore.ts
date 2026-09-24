@@ -173,6 +173,16 @@ export class UserInstructionStore {
     try {
       const value: unknown = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
       if (!Array.isArray(value) || !value.every(isRuleset)) throw new Error("Invalid ruleset storage format.");
+      // Validate restored combinations too, keeping unrelated users out of each scan.
+      const byUser = new Map<string, UserInstructionRuleset[]>();
+      for (const ruleset of value) {
+        const group = byUser.get(ruleset.targetUserId) ?? [];
+        group.push(ruleset);
+        byUser.set(ruleset.targetUserId, group);
+      }
+      for (const group of byUser.values()) {
+        for (const ruleset of group) this.validateEnabledBlockFor(ruleset, group);
+      }
       this.rulesets = value;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

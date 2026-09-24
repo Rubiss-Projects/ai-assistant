@@ -326,6 +326,20 @@ test("restored rulesets must satisfy the same field invariants as new records", 
   assert.throws(() => store.set({ ...valid, priority: 0.5 }), /Invalid ruleset fields/);
 });
 
+test("restored aggregate limits reject active overflow but allow previews of disabled rules", () => {
+  const file = tempFile();
+  const store = new UserInstructionStore(file);
+  const first = store.set({ targetUserId: "user", name: "a", instructions: "a".repeat(4000), createdBy: "admin" });
+  const second = store.set({ targetUserId: "user", name: "b", instructions: "b".repeat(4000), createdBy: "admin", enabled: false });
+  const preview = previewUserInstructions({ userId: "user" }, true, new UserInstructionStore(file));
+  assert.ok(preview.length > USER_RULESET_LIMITS.maxInjectedBlockLength);
+  assert.ok(preview.includes(first.instructions) && preview.includes(second.instructions));
+  const broken = JSON.stringify([first, { ...second, enabled: true }]);
+  fs.writeFileSync(file, broken);
+  assert.throws(() => new UserInstructionStore(file), /User instruction block exceeds/);
+  assert.equal(fs.readFileSync(file, "utf8"), broken);
+});
+
 test("ruleset slash commands resolve storage after environment initialization", async () => withModeAsync("admin_only", async () => {
   const previous = process.env.USER_INSTRUCTION_RULESETS_FILE;
   const file = tempFile();
