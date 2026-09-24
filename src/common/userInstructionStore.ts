@@ -243,6 +243,7 @@ export class UserInstructionStore {
       updatedBy: input.updatedBy ?? input.createdBy,
       updatedAt: now,
     };
+    if (!isRuleset(ruleset)) throw new Error("Invalid ruleset fields.");
     const nextRulesets = existing
       ? this.rulesets.map((item) => item.id === existing.id ? ruleset : item)
       : [...this.rulesets, ruleset];
@@ -337,15 +338,23 @@ function applicableRulesets(
 function isRuleset(value: unknown): value is UserInstructionRuleset {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Partial<UserInstructionRuleset>;
-  return typeof item.id === "string"
-    && (typeof item.guildId === "string" || item.guildId === null)
-    && typeof item.targetUserId === "string"
+  if (!(typeof item.id === "string" && item.id.trim().length > 0
+    && (item.guildId === null || (typeof item.guildId === "string" && item.guildId.trim().length > 0))
+    && typeof item.targetUserId === "string" && item.targetUserId.trim().length > 0
     && typeof item.name === "string"
     && typeof item.enabled === "boolean"
-    && typeof item.priority === "number"
+    && Number.isSafeInteger(item.priority)
+    && (item.scope === "guild" || item.scope === "global")
+    && (item.mode === "append" || item.mode === "override")
     && typeof item.instructions === "string"
-    && typeof item.createdBy === "string"
-    && typeof item.createdAt === "string"
-    && typeof item.updatedBy === "string"
-    && typeof item.updatedAt === "string";
+    && typeof item.createdBy === "string" && item.createdBy.trim().length > 0
+    && typeof item.createdAt === "string" && Number.isFinite(Date.parse(item.createdAt))
+    && typeof item.updatedBy === "string" && item.updatedBy.trim().length > 0
+    && typeof item.updatedAt === "string" && Number.isFinite(Date.parse(item.updatedAt)))) return false;
+  try {
+    return validateRulesetName(item.name) === item.name
+      && validateInstructions(item.instructions) === item.instructions;
+  } catch {
+    return false;
+  }
 }

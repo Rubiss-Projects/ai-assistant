@@ -303,6 +303,29 @@ test("UserInstructionStore rejects corrupt storage without overwriting it", () =
   }
 });
 
+test("restored rulesets must satisfy the same field invariants as new records", () => {
+  const file = tempFile();
+  const store = new UserInstructionStore(file);
+  const valid = store.set({ targetUserId: "user", name: "tone", instructions: "Hello", createdBy: "admin" });
+  const invalidFields = [
+    { scope: undefined }, { scope: "all" }, { mode: undefined }, { mode: "replace" },
+    { name: "UPPER" }, { name: "x".repeat(65) }, { instructions: " " },
+    { instructions: "x".repeat(USER_RULESET_LIMITS.maxInstructionLength + 1) },
+    { priority: 0.5 }, { priority: Number.MAX_SAFE_INTEGER + 1 }, { createdAt: "yesterday" },
+    { updatedAt: "" }, { createdBy: "" }, { updatedBy: "" }, { id: "" }, { targetUserId: "" },
+  ];
+  for (const fields of invalidFields) {
+    const contents = JSON.stringify([{ ...valid, ...fields }]);
+    fs.writeFileSync(file, contents);
+    assert.throws(() => new UserInstructionStore(file), /Invalid ruleset storage format/);
+    assert.throws(() => store.set({ targetUserId: "user", name: "other", instructions: "Other", createdBy: "admin" }));
+    assert.equal(fs.readFileSync(file, "utf8"), contents);
+  }
+  fs.writeFileSync(file, JSON.stringify([valid]));
+  assert.equal(new UserInstructionStore(file).listForUser(null, "user")[0].name, "tone");
+  assert.throws(() => store.set({ ...valid, priority: 0.5 }), /Invalid ruleset fields/);
+});
+
 test("ruleset slash commands resolve storage after environment initialization", async () => withModeAsync("admin_only", async () => {
   const previous = process.env.USER_INSTRUCTION_RULESETS_FILE;
   const file = tempFile();
