@@ -522,6 +522,8 @@ For a longer prompt, set `AI_ASSISTANT_SYSTEM_PROMPT_FILE` to a file readable by
 
 Prompt-file edits and ruleset changes apply to existing conversations on their next turn. Copilot resumes with updated configuration, OpenCode supplies current instructions each turn, and Codex transfers a bounded historical summary into a fresh thread when context changes. See [session context lifecycle and contributor guidelines](docs/context-lifecycle.md) for tool enrollment, compaction behavior, and failure recovery.
 
+Ruleset commands and tools manage rules in their current server. Global rules also appear in applicable listings and previews, but guild-scoped management never edits or deletes them: a server's ruleset administrator must not gain authority over other servers. Global rules created in unrestricted-mode DMs can be managed there; in shared mode, where DMs are disabled, the host operator manages them in `USER_INSTRUCTION_RULESETS_FILE`. Cross-server command management would require explicit scope selection and separate authorization.
+
 ### Discord
 
 | Variable | Default / accepted values | What it does |
