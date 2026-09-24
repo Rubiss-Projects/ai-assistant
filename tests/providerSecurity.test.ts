@@ -402,7 +402,10 @@ test("OpenCode can add a generated primary agent for dynamic system prompts", ()
   );
   const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
   assert.equal(config.agent["ai-assistant-test"].mode, "primary");
-  assert.equal(config.agent["ai-assistant-test"].prompt, "operator plus user rules");
+  const prompt: string = config.agent["ai-assistant-test"].prompt;
+  assert.match(prompt, /operator plus user rules/);
+  assert.match(prompt, /External side effects are disabled/);
+  assert.equal(secureSystemPrompt(prompt, { AI_ASSISTANT_SECURITY_MODE: "shared" }), prompt);
 });
 
 test("OpenCode shared mode includes operator instructions exactly once", () => {

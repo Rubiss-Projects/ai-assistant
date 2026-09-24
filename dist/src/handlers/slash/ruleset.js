@@ -2,7 +2,6 @@ import { chunkForDiscord } from "../../sessionManager.js";
 import { discordTextOptions } from "../../common/discordResponse.js";
 import { canManageUserInstructions, generatedRulesetName, UserInstructionStore, validateInstructions, validateRulesetName, } from "../../common/userInstructionStore.js";
 import { previewUserInstructions } from "../../utils/userInstructions.js";
-const store = new UserInstructionStore();
 function targetUser(interaction) {
     const user = interaction.options.getUser("user", true);
     return { id: user.id, label: user.toString() };
@@ -27,6 +26,7 @@ export async function handleRuleset(interaction, subject, access) {
             await interaction.editReply("You do not have permission to manage user rulesets for that Discord user.");
             return;
         }
+        const store = new UserInstructionStore();
         if (sub === "list" || sub === "get") {
             const name = interaction.options.getString("name", false);
             const includeDisabled = interaction.options.getBoolean("include_disabled", false) ?? false;

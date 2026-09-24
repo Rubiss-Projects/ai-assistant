@@ -1,3 +1,5 @@
+import type { ChatInputCommandInteraction } from "discord.js";
+import { handleRuleset } from "../src/handlers/slash/ruleset.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -234,3 +236,41 @@ test("ruleset MCP transport lists tools, mutates during active runs, and rejects
   const stale = await client.callTool({ name: "list_user_rulesets", arguments: { run_id: runId, user: "123" } });
   assert.equal(stale.isError, true);
 });
+
+
+test("UserInstructionStore rejects corrupt storage without overwriting it", () => {
+  const file = tempFile();
+  const store = new UserInstructionStore(file);
+  for (const broken of ["{invalid", "{}", "[{}]"]) {
+    fs.writeFileSync(file, broken);
+    assert.throws(() => store.set({ guildId: "guild", targetUserId: "user", name: "rule", instructions: "Hello", createdBy: "admin" }));
+    assert.equal(fs.readFileSync(file, "utf8"), broken);
+    assert.throws(() => new UserInstructionStore(file));
+  }
+});
+
+test("ruleset slash commands resolve storage after environment initialization", async () => withModeAsync("admin_only", async () => {
+  const previous = process.env.USER_INSTRUCTION_RULESETS_FILE;
+  const file = tempFile();
+  process.env.USER_INSTRUCTION_RULESETS_FILE = file;
+  try {
+    const replies: unknown[] = [];
+    const values: Record<string, string> = { name: "tone", instructions: "Use short sentences." };
+    const interaction = {
+      guildId: "guild-1", user: { id: "admin" }, deferred: false,
+      options: {
+        getSubcommand: () => "set", getUser: () => ({ id: "123", toString: () => "<@123>" }),
+        getString: (name: string) => values[name] ?? null, getInteger: () => null,
+      },
+      deferReply: async () => { interaction.deferred = true; },
+      editReply: async (content: unknown) => { replies.push(content); },
+    };
+    await handleRuleset(interaction as unknown as ChatInputCommandInteraction,
+      { userId: "admin", guildId: "guild-1" }, createAccessPolicy({ DISCORD_ADMIN_USERS: "admin" }));
+    assert.match(String(replies[0]), /Updated ruleset/);
+    assert.equal(new UserInstructionStore(file).get("guild-1", "123", "tone")?.instructions, values.instructions);
+  } finally {
+    if (previous === undefined) delete process.env.USER_INSTRUCTION_RULESETS_FILE;
+    else process.env.USER_INSTRUCTION_RULESETS_FILE = previous;
+  }
+}));
