@@ -10,7 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { createAccessPolicy } from "../src/common/accessPolicy.js";
 import { RulesetToolSessions, rulesetToolPrompt } from "../src/common/rulesetToolBridge.js";
 import { RulesetTools, createRulesetToolRun } from "../src/common/rulesetTools.js";
-import { USER_RULESET_LIMITS, UserInstructionStore, userInstructionRulesetsFile } from "../src/common/userInstructionStore.js";
+import { USER_RULESET_LIMITS, UserInstructionStore, userInstructionRulesetsFile, formatUserInstructionBlock } from "../src/common/userInstructionStore.js";
 import { activeUserInstructionBlock, applyUserInstructions, previewUserInstructions, providerSystemPromptForUser } from "../src/utils/userInstructions.js";
 
 function tempFile(): string {
@@ -134,6 +134,21 @@ test("UserInstructionStore rejects enabled rulesets that would exceed the inject
     () => enableable.setEnabled("g", "u", "b", true, "admin"),
     /User instruction block exceeds/,
   );
+});
+
+test("global rules reserve enough space for guilds not yet represented in storage", () => {
+  const store = new UserInstructionStore(tempFile());
+  const first = store.set({ targetUserId: "u", name: "a", instructions: "a".repeat(4000), createdBy: "admin", scope: "global" });
+  const second = { ...first, id: "second", name: "b", instructions: "" };
+  const overhead = formatUserInstructionBlock({ userId: "u" }, [first, second]).length;
+  second.instructions = "b".repeat(USER_RULESET_LIMITS.maxInjectedBlockLength - overhead - 5);
+  assert.ok(second.instructions.length <= USER_RULESET_LIMITS.maxInstructionLength);
+  assert.ok(formatUserInstructionBlock({ userId: "u" }, [first, second]).length < USER_RULESET_LIMITS.maxInjectedBlockLength);
+  assert.throws(() => store.set(second), /User instruction block exceeds/);
+  second.instructions = second.instructions.slice(0, -20);
+  store.set(second);
+  const injected = withMode("admin_only", () => activeUserInstructionBlock({ userId: "u", guildId: "18446744073709551615" }, store));
+  assert.ok(injected.length <= USER_RULESET_LIMITS.maxInjectedBlockLength);
 });
 
 test("applyUserInstructions injects enabled rules only when configured", () => {
