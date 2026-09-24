@@ -176,6 +176,21 @@ export class GitHubContributions {
     return pull;
   }
 
+  private async checkPublishQuota(caller: ContributionCaller, record: Contribution): Promise<void> {
+    if (record.published || record.pendingSha) return;
+    const unfinished = this.records.filter(item => item.user === record.user && !item.closed && (item.published || item.pendingSha));
+    if (unfinished.length < 5) return;
+    // Check remote closure across this user's sessions without recovering or changing their branches.
+    for (const item of unfinished) {
+      const previous = { ...item };
+      const pull = await this.currentPull(caller, previous);
+      if (pull?.state === "closed") { previous.closed = true; this.save(previous); }
+    }
+    if (this.records.filter(item => item.user === record.user && !item.closed && (item.published || item.pendingSha)).length >= 5) {
+      throw new Error("Five unfinished published contributions are already open. Close a completed PR before publishing another.");
+    }
+  }
+
   begin(caller: ContributionCaller, repositoryName: string) {
     return this.serial(caller, async () => {
       const repository = this.repository(repositoryName);
@@ -219,9 +234,7 @@ export class GitHubContributions {
     return this.serial(caller, async () => {
       const record = this.owned(caller, id);
       const repository = this.repository(record.repository);
-      if (!record.published && !record.pendingSha && this.records.filter(item => item.user === record.user && !item.closed && (item.published || item.pendingSha)).length >= 5) {
-        throw new Error("Five unfinished published contributions are already open. Close completed PRs and check their status before publishing another.");
-      }
+      await this.checkPublishQuota(caller, record);
       if (!title.trim() || title.length > 160 || /[\r\n]/.test(title) || body.length > 12_000) throw new Error("Use a one-line title under 160 characters and a description under 12,000 characters.");
       rejectCredentials(title); rejectCredentials(body);
       validateContributionChanges(changes);

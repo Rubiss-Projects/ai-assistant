@@ -1,8 +1,8 @@
 /** Compose cancellation and a deadline without AbortSignal.any (Node 18.17+). */
-export function operationSignal(parent: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
+export function operationSignal(parent: AbortSignal | undefined, timeoutMs: number, timeoutMessage = "Artifact operation timed out."): { signal: AbortSignal; dispose: () => void } {
   const controller = new AbortController();
   const abort = () => controller.abort(parent?.reason);
-  const timer = setTimeout(() => controller.abort(new Error("Artifact operation timed out.")), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error(timeoutMessage)), timeoutMs);
   timer.unref();
   const dispose = () => {
     clearTimeout(timer);

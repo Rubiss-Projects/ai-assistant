@@ -2,7 +2,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { GITHUB_CONTRIBUTION_TOOLS } from "./common/githubContributionToolDefinitions.js";
+import { GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./common/githubContributionToolDefinitions.js";
 const endpoint = process.env.AI_GITHUB_BRIDGE_URL;
 const token = process.env.AI_GITHUB_BRIDGE_TOKEN;
 if (!endpoint || !token)
@@ -12,7 +12,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: GITHUB_CO
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
         const response = await fetch(endpoint, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify(request.params), signal: AbortSignal.timeout(115_000) });
+            body: JSON.stringify(request.params), signal: AbortSignal.timeout(GITHUB_CONTRIBUTION_TIMEOUT_MS + 15_000) });
         if (!response.ok)
             throw new Error("Contribution bridge is unavailable or the session has expired.");
         return await response.json();

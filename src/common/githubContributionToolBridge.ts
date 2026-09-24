@@ -5,7 +5,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SendMessageOptions } from "../providers/types.js";
 import { githubContributionsEnabled } from "./githubContributionConfig.js";
 import { githubContributionService, validateContributionChanges, type GitHubContributions } from "./githubContributions.js";
-import { GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { operationSignal } from "./operationSignal.js";
 
 export interface GitHubContributionMcpConfig { command: string; args: string[]; env: Record<string, string> }
 export class GitHubContributionRun {
@@ -14,10 +15,12 @@ export class GitHubContributionRun {
   private readonly pending = new Set<Promise<unknown>>();
   private calls = 0;
   private publishes = 0;
-  constructor(private readonly session: string, private readonly options: SendMessageOptions | undefined, private readonly service: () => GitHubContributions = githubContributionService) {}
+  constructor(private readonly session: string, private readonly options: SendMessageOptions | undefined, private readonly service: () => GitHubContributions = githubContributionService, private readonly timeoutMs = GITHUB_CONTRIBUTION_TIMEOUT_MS) {}
   call(name: string, args: Record<string, unknown>): Promise<unknown> {
+    // This budget includes queueing, token minting, and all sequential GitHub requests.
+    const operation = operationSignal(this.controller.signal, this.timeoutMs, "GitHub contribution timed out. Check its status before retrying.");
     const action = Promise.resolve().then(async () => {
-      this.controller.signal.throwIfAborted();
+      operation.signal.throwIfAborted();
       const context = this.options?.rulesetContext;
       if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
         || !context.access.can(context.requester, "github.contribute")) throw new Error("GitHub contribution access is unavailable for this requester or run.");
@@ -29,7 +32,7 @@ export class GitHubContributionRun {
         if (key !== "changes" && (typeof args[key] !== "string" || (args[key] as string).length > 12_000)) throw new Error(`Invalid ${key}.`);
       }
       const text = (key: string) => args[key] as string;
-      const caller = { session: this.session, requester: context.requester, access: context.access, signal: this.controller.signal };
+      const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
       const service = this.service();
       switch (name) {
         case "github_contribution_begin": return service.begin(caller, text("repository"));
@@ -42,7 +45,7 @@ export class GitHubContributionRun {
       }
     });
     this.pending.add(action);
-    void action.finally(() => this.pending.delete(action)).catch(() => {});
+    void action.finally(() => { operation.dispose(); this.pending.delete(action); }).catch(() => {});
     return action;
   }
   async cancel(): Promise<void> { this.controller.abort(); await Promise.allSettled(this.pending); }

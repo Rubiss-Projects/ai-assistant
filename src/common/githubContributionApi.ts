@@ -21,7 +21,7 @@ export class GitHubContributionApi implements ContributionApi {
 
   private async send<T>(token: string, method: string, endpoint: string, body: unknown, signal: AbortSignal): Promise<T> {
     signal.throwIfAborted();
-    const operation = operationSignal(signal, 30_000);
+    const operation = operationSignal(signal, 30_000, "GitHub request timed out.");
     try {
       const response = await this.fetcher(`https://api.github.com${endpoint}`, {
         method, redirect: "error", signal: operation.signal,

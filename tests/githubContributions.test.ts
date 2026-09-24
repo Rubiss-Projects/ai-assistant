@@ -4,6 +4,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { createAccessPolicy } from "../src/common/accessPolicy.js";
 import { GitHubContributions, validateContributionChanges, type ContributionCaller } from "../src/common/githubContributions.js";
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "../src/common/githubContributionApi.js";
@@ -33,6 +34,7 @@ class RepositoryApi implements ContributionApi {
   failAfterRef = false;
   failAfterPull = false;
   beforeMutation?: () => void;
+  beforeRequest?: (signal: AbortSignal) => Promise<void>;
   constructor() {
     const tree = this.addTree({ "README.md": "Hello\n", "src/main.ts": "export const value = 1;\n" });
     this.base = digest("base"); this.commits.set(this.base, { tree });
@@ -45,6 +47,8 @@ class RepositoryApi implements ContributionApi {
     const tree = digest(entries); this.trees.set(tree, entries); return tree;
   }
   async request<T>(role: GitHubRole, _repository: ContributionRepository, method: string, suffix: string, raw: unknown, signal: AbortSignal): Promise<T> {
+    signal.throwIfAborted();
+    await this.beforeRequest?.(signal);
     signal.throwIfAborted();
     this.calls.push({ role, method, suffix, body: raw });
     if (method !== "GET") this.beforeMutation?.();
@@ -276,9 +280,27 @@ test("abandoned inspections do not consume the quota, while publishing enforces 
   await assert.rejects(publish(), /Five unfinished published/);
   assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations);
   api.pulls[0].state = "closed";
-  await service.status(starts[0].requester, starts[0].contribution.contribution_id);
+  // The original thread is unavailable: the new conversation must reclaim the closed slot itself.
   await publish();
   assert.equal(api.pulls.length, 6);
+});
+
+test("one tool deadline cancels sequential host requests before the transport times out", async t => {
+  const { service, api, caller } = fixture(t);
+  const started = await service.begin(caller, repository.upstream);
+  const signals: AbortSignal[] = [];
+  api.beforeRequest = async signal => { signals.push(signal); await delay(15, undefined, { signal }); };
+  const run = new GitHubContributionRun(caller.session, { rulesetContext: { requester: caller.requester, access: caller.access } }, () => service, 45);
+  await assert.rejects(run.call("github_contribution_publish", { run_id: run.id, contribution_id: started.contribution_id, expected_head_sha: started.head_sha,
+    title: "docs: change", body: "", changes: [{ path: "README.md", content: "Updated" }] }), /aborted|timed out/);
+  assert.ok(signals.length > 0);
+  assert.equal(new Set(signals).size, 1, "all requests share the tool's overall deadline");
+  assert.equal(signals[0].aborted, true);
+  const calls = api.calls.length;
+  await delay(30);
+  assert.equal(api.calls.length, calls, "no host operation continues after the deadline");
+  assert.equal(api.pulls.length, 0);
+  await run.cancel();
 });
 
 test("provider policies expose only the contribution bridge and refresh its capability fingerprint", async t => {

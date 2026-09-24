@@ -4,24 +4,29 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { githubContributionsEnabled } from "./githubContributionConfig.js";
 import { githubContributionService, validateContributionChanges } from "./githubContributions.js";
-import { GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { operationSignal } from "./operationSignal.js";
 export class GitHubContributionRun {
     session;
     options;
     service;
+    timeoutMs;
     id = randomUUID();
     controller = new AbortController();
     pending = new Set();
     calls = 0;
     publishes = 0;
-    constructor(session, options, service = githubContributionService) {
+    constructor(session, options, service = githubContributionService, timeoutMs = GITHUB_CONTRIBUTION_TIMEOUT_MS) {
         this.session = session;
         this.options = options;
         this.service = service;
+        this.timeoutMs = timeoutMs;
     }
     call(name, args) {
+        // This budget includes queueing, token minting, and all sequential GitHub requests.
+        const operation = operationSignal(this.controller.signal, this.timeoutMs, "GitHub contribution timed out. Check its status before retrying.");
         const action = Promise.resolve().then(async () => {
-            this.controller.signal.throwIfAborted();
+            operation.signal.throwIfAborted();
             const context = this.options?.rulesetContext;
             if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
                 || !context.access.can(context.requester, "github.contribute"))
@@ -38,7 +43,7 @@ export class GitHubContributionRun {
                     throw new Error(`Invalid ${key}.`);
             }
             const text = (key) => args[key];
-            const caller = { session: this.session, requester: context.requester, access: context.access, signal: this.controller.signal };
+            const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
             const service = this.service();
             switch (name) {
                 case "github_contribution_begin": return service.begin(caller, text("repository"));
@@ -52,7 +57,7 @@ export class GitHubContributionRun {
             }
         });
         this.pending.add(action);
-        void action.finally(() => this.pending.delete(action)).catch(() => { });
+        void action.finally(() => { operation.dispose(); this.pending.delete(action); }).catch(() => { });
         return action;
     }
     async cancel() { this.controller.abort(); await Promise.allSettled(this.pending); }
