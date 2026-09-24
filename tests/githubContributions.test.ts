@@ -11,6 +11,7 @@ import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type G
 import { githubContributionsEnabled, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "../src/common/githubContributionConfig.js";
 import { GitHubContributionRun, GitHubContributionSessions } from "../src/common/githubContributionToolBridge.js";
 import { GITHUB_CONTRIBUTION_CALL_LIMITS } from "../src/common/githubContributionToolDefinitions.js";
+import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, type ReviewThread } from "../src/common/githubContributionReviews.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { providerChildEnvironment, secureSystemPrompt } from "../src/common/providerSecurity.js";
 import { codexClientOptions } from "../src/providers/codex.js";
@@ -29,6 +30,8 @@ class RepositoryApi implements ContributionApi {
   readonly commits = new Map<string, { tree: string; parent?: string }>();
   readonly refs = new Map<string, string>();
   readonly pulls: MockPull[] = [];
+  readonly reviewThreads: ReviewThread[] = [];
+  failAfterReply = false;
   readonly base: string;
   invalidFork = false;
   failBeforeRef = false;
@@ -46,6 +49,39 @@ class RepositoryApi implements ContributionApi {
       return { path, sha, size: Buffer.byteLength(content), type: "blob", mode: "100644" };
     });
     const tree = digest(entries); this.trees.set(tree, entries); return tree;
+  }
+  async graphql<T>(_repository: ContributionRepository, query: string, variables: Record<string, unknown>, signal: AbortSignal): Promise<T> {
+    signal.throwIfAborted();
+    await this.beforeRequest?.(signal);
+    signal.throwIfAborted();
+    const mutation = query.startsWith("mutation");
+    this.calls.push({ role: "publisher", method: mutation ? "POST" : "GET", suffix: "/graphql", body: { query, variables } });
+    if (mutation) this.beforeMutation?.();
+    for (const thread of this.reviewThreads) {
+      const pull = this.pulls.find(item => item.number === thread.pullRequest.number);
+      if (pull) thread.pullRequest.headRefOid = this.refs.get(pull.head.ref)!;
+    }
+    let result: unknown;
+    if (query === REVIEW_THREADS_QUERY) {
+      const offset = Number(variables.after ?? 0);
+      result = { repository: { pullRequest: { reviewThreads: { nodes: this.reviewThreads.slice(offset, offset + 25),
+        pageInfo: { hasNextPage: offset + 25 < this.reviewThreads.length, endCursor: String(offset + 25) } } } } };
+    } else if (query === REVIEW_THREAD_QUERY) {
+      result = { node: this.reviewThreads.find(thread => thread.id === variables.id) ?? null };
+    } else if (query === REPLY_REVIEW_THREAD) {
+      const thread = this.reviewThreads.find(item => item.id === variables.thread)!;
+      const comment = { id: `comment-${thread.comments.nodes.length}`, url: "https://github.com/example/pull/1#discussion_r2",
+        author: { __typename: "Bot", login: "publisher" }, body: String(variables.body), updatedAt: new Date().toISOString(),
+        commit: { oid: thread.pullRequest.headRefOid }, pullRequestReview: { state: "COMMENTED" } };
+      thread.comments.nodes.push(comment);
+      if (this.failAfterReply) { this.failAfterReply = false; throw new Error("Lost reply response"); }
+      result = { addPullRequestReviewThreadReply: { comment } };
+    } else if (query === RESOLVE_REVIEW_THREAD) {
+      const thread = this.reviewThreads.find(item => item.id === variables.thread)!;
+      thread.isResolved = true;
+      result = { resolveReviewThread: { thread } };
+    } else throw new Error("Unexpected GraphQL document");
+    return structuredClone(result) as T;
   }
   async request<T>(role: GitHubRole, _repository: ContributionRepository, method: string, suffix: string, raw: unknown, signal: AbortSignal): Promise<T> {
     signal.throwIfAborted();
@@ -289,7 +325,7 @@ test("parallel reads cannot exhaust publishing or recovery and budgets reset nex
   const current = await service.status(caller, started.contribution_id);
   await assert.rejects(run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, title: "docs: update", body: "", changes: [{ path: "README.md", content: "Fourth" }] }), /publish limit reached/);
   assert.deepEqual(await run.call("github_contribution_status", args), {
-    ...current, remaining_calls: { github_contribution_begin: 9, github_contribution_read: 0, github_contribution_status: 8, github_contribution_publish: 0 },
+    ...current, remaining_calls: { ...GITHUB_CONTRIBUTION_CALL_LIMITS, github_contribution_begin: 9, github_contribution_read: 0, github_contribution_status: 8, github_contribution_publish: 0 },
   });
   const next = new GitHubContributionRun(caller.session, options, () => service);
   t.after(() => next.cancel());
@@ -422,4 +458,145 @@ test("App tokens are scoped to one repository and errors do not expose response 
   await assert.rejects(api.request("publisher", repository, "POST", "/pulls", {}, new AbortController().signal), error => error instanceof GitHubRequestError && error.status === 403 && !error.message.includes("SECRET_RESPONSE_TOKEN"));
   assert.deepEqual(JSON.parse(String(calls[0].options?.body)), { repository_ids: [1], permissions: { contents: "read", pull_requests: "write" } });
   assert.equal(calls[1].url, "https://api.github.com/repos/Rubiss-Projects/ai-assistant/pulls");
+});
+
+async function reviewFixture(t: TestContext) {
+  const context = fixture(t);
+  const { service, caller, api } = context;
+  const started = await service.begin(caller, repository.upstream);
+  const published = await service.publish(caller, started.contribution_id, started.head_sha, "feat: initial change", "", [{ path: "README.md", content: "Initial" }]);
+  const thread: ReviewThread = { id: "PRRT_one", isResolved: false, isOutdated: false, viewerCanResolve: true, path: "README.md", line: 1,
+    pullRequest: { number: 1, repository: { databaseId: repository.upstreamId }, headRefOid: published.head_sha, state: "OPEN" },
+    comments: { nodes: [{ id: "PRRC_one", author: { __typename: "Bot", login: "chatgpt-codex-connector" }, body: "Fix the missing case.", url: "https://github.com/example/pull/1#discussion_r1",
+      updatedAt: "2026-09-24T00:00:00Z", commit: { oid: published.head_sha }, pullRequestReview: { state: "COMMENTED" } }], pageInfo: { hasNextPage: false } },
+  };
+  api.reviewThreads.push(thread);
+  const fix = () => service.publish(caller, started.contribution_id, published.head_sha, "fix: address review", "Tested.", [{ path: "README.md", content: "Fixed" }]);
+  return { ...context, published, thread, fix };
+}
+
+test("owned review tools publish replies and resolve only after a published fix and explanation", async t => {
+  const { service, caller, api, published, fix, thread } = await reviewFixture(t);
+  const id = published.contribution_id;
+  let reviews = await service.reviews(caller, id);
+  assert.equal(reviews.threads[0].comments[0].body, "Fix the missing case.");
+  await assert.rejects(service.resolveReview(caller, id, thread.id, published.head_sha, reviews.threads[0].thread_version), /Publish the fix/);
+  const fixed = await fix();
+  reviews = await service.reviews(caller, id);
+  await assert.rejects(service.resolveReview(caller, id, thread.id, fixed.head_sha, reviews.threads[0].thread_version), /reply explaining/);
+  const run = new GitHubContributionRun(caller.session, { rulesetContext: { requester: caller.requester, access: caller.access } }, () => service);
+  t.after(() => run.cancel());
+  const args = { run_id: run.id, contribution_id: id, thread_id: thread.id, expected_head_sha: fixed.head_sha };
+  await run.call("github_contribution_reply_review", { ...args, expected_thread_version: reviews.threads[0].thread_version, body: "Handled the missing case and tested it." });
+  assert.match(thread.comments.nodes.at(-1)!.body, new RegExp(fixed.head_sha));
+  await assert.rejects(service.resolveReview(caller, id, thread.id, fixed.head_sha, reviews.threads[0].thread_version), /thread changed/);
+  const latest = await run.call("github_contribution_reviews", { run_id: run.id, contribution_id: id });
+  assert.ok(latest);
+  reviews = await service.reviews(caller, id);
+  await run.call("github_contribution_resolve_review", { ...args, expected_thread_version: reviews.threads[0].thread_version });
+  assert.equal(thread.isResolved, true);
+  assert.equal((await service.resolveReview(caller, id, thread.id, fixed.head_sha, reviews.threads[0].thread_version)).already_resolved, true);
+  assert.equal(api.calls.filter(call => call.suffix === "/graphql" && call.method === "POST").length, 2);
+});
+
+test("a human using the publisher App's login cannot satisfy the resolution prerequisite", async t => {
+  const { service, caller, published, fix, thread } = await reviewFixture(t);
+  const fixed = await fix();
+  const id = published.contribution_id;
+  let version = (await service.reviews(caller, id)).threads[0].thread_version;
+  await service.replyReview(caller, id, thread.id, fixed.head_sha, version, "Fixed and tested.");
+  thread.comments.nodes.at(-1)!.author!.__typename = "User";
+  version = (await service.reviews(caller, id)).threads[0].thread_version;
+  await assert.rejects(service.resolveReview(caller, id, thread.id, fixed.head_sha, version), /reply explaining/);
+  assert.equal(thread.isResolved, false);
+});
+
+test("review mutations reject cross-session, cross-PR, stale feedback, and unsafe replies", async t => {
+  const { service, caller, api, published, thread } = await reviewFixture(t);
+  const id = published.contribution_id;
+  const version = (await service.reviews(caller, id)).threads[0].thread_version;
+  const reply = (body = "Tested fix", requestCaller = caller, head = published.head_sha) => service.replyReview(requestCaller, id, thread.id, head, version, body);
+  const mutations = api.calls.filter(call => call.method === "POST").length;
+  await assert.rejects(reply("Tested fix", { ...caller, session: "other" }), /another Discord/);
+  await assert.rejects(reply("Tested fix", { ...caller, requester: { ...caller.requester, userId: "456" } }), /another Discord/);
+  await assert.rejects(reply("Tested fix", { ...caller, requester: { ...caller.requester, guildId: "other" } }), /another Discord/);
+  thread.pullRequest.repository.databaseId = 99;
+  await assert.rejects(reply(), /does not belong/);
+  thread.pullRequest.repository.databaseId = 1;
+  thread.pullRequest.number = 99;
+  await assert.rejects(reply(), /does not belong/);
+  thread.pullRequest.number = 1;
+  for (const body of ["", "x".repeat(6001), "@codex fix this", "-----BEGIN RSA PRIVATE KEY-----"]) await assert.rejects(reply(body));
+  await assert.rejects(reply("Tested fix", caller, digest("old")), /head changed/);
+  thread.comments.nodes[0].body = "Updated concern";
+  await assert.rejects(reply(), /thread changed/);
+  thread.comments.pageInfo.hasNextPage = true;
+  await assert.rejects(reply(), /exceeds 100/);
+  thread.comments.pageInfo.hasNextPage = false;
+  thread.comments.nodes[0].pullRequestReview!.state = "PENDING";
+  assert.equal((await service.reviews(caller, id)).threads[0].comments.length, 0);
+  await assert.rejects(reply(), /published review/);
+  thread.comments.nodes[0].pullRequestReview!.state = "COMMENTED";
+  api.pulls[0].state = "closed";
+  await assert.rejects(reply(), /closed/);
+  assert.equal(api.calls.filter(call => call.method === "POST").length, mutations);
+});
+
+test("review resolution stops for new feedback, external commits, missing permissions, or revoked access", async t => {
+  const { service, caller, api, published, fix, thread } = await reviewFixture(t);
+  const fixed = await fix();
+  const id = published.contribution_id;
+  const version = (await service.reviews(caller, id)).threads[0].thread_version;
+  await service.replyReview(caller, id, thread.id, fixed.head_sha, version, "Fixed and tested.");
+  const latest = (await service.reviews(caller, id)).threads[0].thread_version;
+  const resolve = () => service.resolveReview(caller, id, thread.id, fixed.head_sha, latest);
+  thread.comments.nodes.push({ ...thread.comments.nodes[0], id: "new-concern", body: "Still broken" });
+  await assert.rejects(resolve(), /thread changed/);
+  thread.comments.nodes.pop();
+  thread.viewerCanResolve = false;
+  await assert.rejects(resolve(), /cannot resolve/);
+  thread.viewerCanResolve = true;
+  api.refs.set(api.pulls[0].head.ref, digest("external edit"));
+  await assert.rejects(resolve(), /head changed/);
+  api.refs.set(api.pulls[0].head.ref, fixed.head_sha);
+  api.beforeRequest = async () => { process.env.AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS = "false"; };
+  await assert.rejects(resolve(), /access/);
+  assert.equal(thread.isResolved, false);
+});
+
+test("lost review reply responses recover without duplicating comments after restart", async t => {
+  const { service, caller, api, config, published, thread } = await reviewFixture(t);
+  const version = (await service.reviews(caller, published.contribution_id)).threads[0].thread_version;
+  api.failAfterReply = true;
+  await assert.rejects(service.replyReview(caller, published.contribution_id, thread.id, published.head_sha, version, "Investigating this finding."), /Lost reply/);
+  const restarted = new GitHubContributions(config, api);
+  const result = await restarted.replyReview(caller, published.contribution_id, thread.id, published.head_sha, version, "Investigating this finding.");
+  assert.equal(result.already_replied, true);
+  assert.equal(thread.comments.nodes.length, 2);
+});
+
+test("review listing paginates and returns thread versions without exposing pending feedback", async t => {
+  const { service, caller, api, published, thread } = await reviewFixture(t);
+  for (let index = 1; index < 26; index++) api.reviewThreads.push({ ...structuredClone(thread), id: `PRRT_${index}` });
+  const first = await service.reviews(caller, published.contribution_id);
+  assert.equal(first.threads.length, 25);
+  assert.ok(first.next_cursor);
+  const last = await service.reviews(caller, published.contribution_id, first.next_cursor!);
+  assert.equal(last.threads.length, 1);
+  assert.equal(last.next_cursor, null);
+});
+
+test("GraphQL uses only the publisher's scoped token and rejects partial errors without leaking their text", async t => {
+  const { config } = fixture(t);
+  const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
+  writeFileSync(config.publisher.keyFile, key); writeFileSync(config.writer.keyFile, key);
+  const calls: { url: string; options?: RequestInit }[] = [];
+  const api = new GitHubContributionApi(config, async (input, options) => {
+    calls.push({ url: String(input), options });
+    if (String(input).endsWith("/access_tokens")) return Response.json({ token: "installation-secret", expires_at: new Date(Date.now() + 3600000).toISOString(), repositories: [{ id: 1 }], permissions: { metadata: "read", contents: "read", pull_requests: "write" } });
+    return Response.json({ data: { node: null }, errors: [{ message: "SECRET_RESPONSE_TOKEN" }] });
+  });
+  await assert.rejects(api.graphql(repository, REVIEW_THREAD_QUERY, { id: "PRRT_one" }, new AbortController().signal), error => error instanceof Error && /review operation failed/.test(error.message) && !error.message.includes("SECRET_RESPONSE_TOKEN"));
+  assert.deepEqual(JSON.parse(String(calls[0].options?.body)), { repository_ids: [1], permissions: { contents: "read", pull_requests: "write" } });
+  assert.equal(calls[1].url, "https://api.github.com/graphql");
 });

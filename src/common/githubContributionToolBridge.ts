@@ -42,6 +42,9 @@ export class GitHubContributionRun {
           case "github_contribution_read": return service.read(caller, text("contribution_id"), text("path"));
           case "github_contribution_status": return service.status(caller, text("contribution_id"));
           case "github_contribution_publish": return service.publish(caller, text("contribution_id"), text("expected_head_sha"), text("title"), text("body"), validateContributionChanges(args.changes));
+          case "github_contribution_reviews": return service.reviews(caller, text("contribution_id"), args.after === undefined ? undefined : text("after"));
+          case "github_contribution_reply_review": return service.replyReview(caller, text("contribution_id"), text("thread_id"), text("expected_head_sha"), text("expected_thread_version"), text("body"));
+          case "github_contribution_resolve_review": return service.resolveReview(caller, text("contribution_id"), text("thread_id"), text("expected_head_sha"), text("expected_thread_version"));
         }
       })();
       return { ...result, remaining_calls: { ...this.remaining } };

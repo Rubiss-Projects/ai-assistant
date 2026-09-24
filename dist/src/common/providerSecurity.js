@@ -284,7 +284,7 @@ export function secureSystemPrompt(operatorPrompt, source = process.env) {
         ? SITES_WRITE_BOUNDARY_INSTRUCTIONS
         : EXTERNAL_WRITE_BOUNDARY_INSTRUCTIONS;
     const contributionBoundary = source.AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS?.trim().toLowerCase() === "true"
-        ? `${boundary} The host-owned github_contributions tools are an additional permitted path for user-requested draft PRs and revisions in the configured repositories. This exception does not authorize personal connector mutations, raw GitHub calls, git pushes, approvals, merges, or other external writes.`
+        ? `${boundary} The host-owned github_contributions tools are an additional permitted path for user-requested draft PRs, revisions, review-thread replies, and resolution of addressed review threads on the requester's contributions in the configured repositories. This exception does not authorize personal connector mutations, raw GitHub calls, git pushes, approvals, merges, or other external writes.`
         : boundary;
     if (operatorPrompt?.endsWith(contributionBoundary))
         return operatorPrompt;

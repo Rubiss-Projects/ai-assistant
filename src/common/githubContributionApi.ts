@@ -6,6 +6,7 @@ import type { ContributionRepository, GitHubAppConfiguration, GitHubContribution
 export type GitHubRole = "publisher" | "writer";
 export interface ContributionApi {
   request<T>(role: GitHubRole, repository: ContributionRepository, method: "GET" | "POST" | "PATCH", suffix: string, body: unknown, signal: AbortSignal): Promise<T>;
+  graphql<T>(repository: ContributionRepository, query: string, variables: Record<string, unknown>, signal: AbortSignal): Promise<T>;
 }
 export class GitHubRequestError extends Error {
   constructor(readonly status: number) { super(`GitHub operation failed (HTTP ${status}). Retry after checking repository access and contribution status.`); }
@@ -47,10 +48,9 @@ export class GitHubContributionApi implements ContributionApi {
     return `${data}.${sign("RSA-SHA256", Buffer.from(data), this.keys[role]).toString("base64url")}`;
   }
 
-  async request<T>(role: GitHubRole, repository: ContributionRepository, method: "GET" | "POST" | "PATCH", suffix: string, body: unknown, signal: AbortSignal): Promise<T> {
+  private async authenticated<T>(role: GitHubRole, repository: ContributionRepository, method: string, endpoint: string, body: unknown, signal: AbortSignal): Promise<T> {
     const app = this.config[role];
     const repositoryId = role === "publisher" ? repository.upstreamId : repository.forkId;
-    const repositoryName = role === "publisher" ? repository.upstream : repository.fork;
     const key = `${role}:${repositoryId}`;
     let token = this.tokens.get(key);
     if (!token || token.expires < Date.now() + 60_000) {
@@ -63,10 +63,22 @@ export class GitHubContributionApi implements ContributionApi {
       token = { value: minted.token, expires: Date.parse(minted.expires_at) };
       this.tokens.set(key, token);
     }
-    try { return await this.send<T>(token.value, method, `/repos/${repositoryName}${suffix}`, body, signal); }
+    try { return await this.send<T>(token.value, method, endpoint, body, signal); }
     catch (error) {
       if (error instanceof GitHubRequestError && error.status === 401) this.tokens.delete(key);
       throw error; // No automatic mutation retries: the broker reconciles remote state first.
     }
+  }
+
+  request<T>(role: GitHubRole, repository: ContributionRepository, method: "GET" | "POST" | "PATCH", suffix: string, body: unknown, signal: AbortSignal): Promise<T> {
+    const name = role === "publisher" ? repository.upstream : repository.fork;
+    return this.authenticated<T>(role, repository, method, `/repos/${name}${suffix}`, body, signal);
+  }
+
+  /** Only host-owned review documents reach this transport; no query is accepted from tools. */
+  async graphql<T>(repository: ContributionRepository, query: string, variables: Record<string, unknown>, signal: AbortSignal): Promise<T> {
+    const response = await this.authenticated<{ data?: T; errors?: unknown[] }>("publisher", repository, "POST", "/graphql", { query, variables }, signal);
+    if (response.errors?.length || !response.data) throw new Error("GitHub review operation failed. Refresh the contribution reviews before retrying.");
+    return response.data;
   }
 }
