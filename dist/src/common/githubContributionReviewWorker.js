@@ -128,19 +128,20 @@ export class ContributionReviewWorker {
             return;
         const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(5 * 60_000)]);
         try {
-            if (Date.now() - item.createdAt > REVIEW_TIMEOUT_MS + 15 * 60_000)
+            item.startedAt ??= Date.now(); // Queue wait never consumes the execution/recovery deadline.
+            if (Date.now() - item.startedAt > REVIEW_TIMEOUT_MS + 15 * 60_000)
                 throw new Error("Review job expired.");
-            const target = await this.host.target(item, signal);
-            if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) {
-                item.state = "stale";
-                item.error = "PR head or base changed; no current-head review was published.";
-                this.save();
-                return;
-            }
             let job = await this.transport.get(item.id, signal);
             if (!job) {
                 if (item.state !== "queued")
                     throw new Error("Worker lost the review receipt; do not retry automatically.");
+                const target = await this.host.target(item, signal);
+                if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) {
+                    item.state = "stale";
+                    item.error = "PR head or base changed; no current-head review was published.";
+                    this.save();
+                    return;
+                }
                 const input = await snapshot(this.host, item, target, item.id, signal);
                 item.digest = reviewDigest(input);
                 item.changes = input.changes;
@@ -165,8 +166,8 @@ export class ContributionReviewWorker {
                 throw new Error("Review snapshot receipt is missing.");
             item.result = validateReviewResult(job.result, { changes: item.changes });
             // Recheck live authorization and PR identity immediately before publication.
-            const current = await this.host.target(item, signal);
-            if (current.head !== item.head || current.base !== item.base) {
+            const target = await this.host.target(item, signal);
+            if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) {
                 item.state = "stale";
                 this.save();
                 return;

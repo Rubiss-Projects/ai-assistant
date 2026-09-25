@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { changedLines, validateReviewInput, validateReviewResult, type ReviewInput, type ReviewResult } from "../src/common/codexReviewProtocol.js";
-import { CodexReviewWorker, writeReviewState, type ReviewTransport } from "../src/common/codexReviewWorker.js";
+import { changedLines, reviewDigest, validateReviewInput, validateReviewResult, type ReviewInput, type ReviewResult } from "../src/common/codexReviewProtocol.js";
+import { CodexReviewWorker, ReviewSocketClient, serveReviews, writeReviewState, type ReviewTransport } from "../src/common/codexReviewWorker.js";
 import { ContributionReviewWorker, type ReviewHost, type ReviewTarget } from "../src/common/githubContributionReviewWorker.js";
 import { reviewSandboxConfiguration } from "../src/common/codexReviewRunner.js";
 
@@ -65,6 +65,22 @@ test("review sandbox fixes authentication, tool network, filesystem, and connect
   assert(!Object.keys(config.shell).some(name => /TOKEN|KEY|CODEX_HOME/.test(name)));
 });
 
+test("private socket returns durable receipts without accepting alternate jobs on replay", { skip: process.platform !== "linux" }, async t => {
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "review-socket-"));
+  const worker = new CodexReviewWorker(path.join(directory, "jobs"), async () => empty);
+  const socket = path.join(directory, "control.sock");
+  const server = await serveReviews(worker, socket);
+  t.after(async () => { await worker.close(); await new Promise<void>(resolve => server.close(() => resolve())); fs.rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(fs.statSync(socket).mode & 0o777, 0o600);
+  const client = new ReviewSocketClient(socket), signal = AbortSignal.timeout(5000), original = input();
+  assert.equal(await client.get(original.id, signal), undefined);
+  await client.submit(original, signal);
+  await delay(10);
+  assert.equal((await client.get(original.id, signal))?.state, "completed");
+  assert.equal((await client.submit(original, signal)).state, "completed");
+  await assert.rejects(client.submit({ ...original, head: "c".repeat(40) }, signal));
+});
+
 test("host publishes a pinned App review once and survives a lost GitHub response", async t => {
   const directory = fs.mkdtempSync(path.join(tmpdir(), "review-host-test-"));
   const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true", AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true", AI_ASSISTANT_WORKSPACE_ROOT: path.join(directory, "workspace") };
@@ -112,4 +128,28 @@ test("host publishes a pinned App review once and survives a lost GitHub respons
   await restarted.tick(); assert.equal(restarted.status(owner.contribution).state, "stale");
   assert.equal(writes, 1);
   await worker.close();
+});
+
+test("queue wait does not expire a recovered submission, and running polls make no GitHub requests", async t => {
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "review-queue-"));
+  const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true", AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true", AI_ASSISTANT_WORKSPACE_ROOT: path.join(directory, "workspace") };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(directory, { recursive: true, force: true }); });
+  const original = input(), state = path.join(directory, "reviews.json");
+  const contribution = randomUUID(), digest = reviewDigest(original), createdAt = Date.now() - 60 * 60_000;
+  writeReviewState(state, [{ ...original, files: undefined, contribution, session: "discord-1", requester: { userId: "123" }, digest, createdAt, state: "queued", failures: 0, nextPoll: 0 }]);
+  let polls = 0, github = 0;
+  const host: ReviewHost = { target: async () => { github++; throw new Error("Unexpected GitHub read"); }, request: async () => { github++; throw new Error("Unexpected GitHub request"); } };
+  const transport: ReviewTransport = {
+    get: async () => { polls++; return { id: original.id, repository: original.repository, pull: original.pull, head: original.head, base: original.base, digest, state: "running" }; },
+    submit: async () => { throw new Error("Must not submit twice"); },
+  };
+  await new ContributionReviewWorker(state, host, transport).tick();
+  const records = JSON.parse(fs.readFileSync(state, "utf8"));
+  assert.equal(records[0].state, "submitted");
+  assert(records[0].startedAt > createdAt + 59 * 60_000);
+  records[0].nextPoll = 0; writeReviewState(state, records);
+  await new ContributionReviewWorker(state, host, transport).tick();
+  assert.equal(polls, 2); assert.equal(github, 0);
 });

@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createAccessPolicy, type AccessPolicy, type AccessSubject } from "./accessPolicy.js";
 import { setTimeout as delay } from "node:timers/promises";
+import type { ReviewTransport } from "./codexReviewWorker.js";
 import { ContributionReviewWorker, contributionReviewsEnabled, type ReviewOwner, type ReviewTarget } from "./githubContributionReviewWorker.js";
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "./githubContributionConfig.js";
@@ -71,7 +72,8 @@ export class GitHubContributions {
   private records: Contribution[];
   private queue: Promise<unknown> = Promise.resolve();
   private reviewWorker?: ContributionReviewWorker;
-  constructor(readonly config: GitHubContributionConfiguration, private readonly api: ContributionApi = new GitHubContributionApi(config)) {
+  private reviewRequester?: (user: string, guild: string | null) => Promise<AccessSubject>;
+  constructor(readonly config: GitHubContributionConfiguration, private readonly api: ContributionApi = new GitHubContributionApi(config), private readonly reviewTransport?: ReviewTransport) {
     hostOnlyGitHubPath(config.stateFile);
     this.records = fs.existsSync(config.stateFile) ? JSON.parse(fs.readFileSync(config.stateFile, "utf8")) as Contribution[] : [];
     if (!Array.isArray(this.records) || this.records.length > 1000 || this.records.some(record =>
@@ -81,26 +83,37 @@ export class GitHubContributions {
     }
   }
 
-  startReviews(): void {
+  startReviews(resolveRequester?: (user: string, guild: string | null) => Promise<AccessSubject>): void {
+    if (resolveRequester) this.reviewRequester = resolveRequester;
     if (!contributionReviewsEnabled() || this.reviewWorker) return;
-    const caller = (owner: ReviewOwner, signal: AbortSignal): ContributionCaller => ({ session: owner.session, requester: owner.requester, access: createAccessPolicy(), signal });
+    if (!this.reviewRequester) throw new Error("Configure live Discord membership checks before enabling background reviews.");
+    const subjects = new Map<string, AccessSubject>();
+    const caller = async (owner: ReviewOwner, signal: AbortSignal, refresh: boolean): Promise<ContributionCaller> => {
+      if (refresh || !subjects.has(owner.contribution)) {
+        const subject = await this.reviewRequester!(owner.requester.userId, owner.requester.guildId ?? null);
+        if (subject.userId !== owner.requester.userId || (subject.guildId ?? null) !== (owner.requester.guildId ?? null)) throw new Error("Review requester identity changed.");
+        subjects.set(owner.contribution, subject);
+      }
+      signal.throwIfAborted();
+      return { session: owner.session, requester: subjects.get(owner.contribution)!, access: createAccessPolicy(), signal };
+    };
     this.reviewWorker = new ContributionReviewWorker(`${this.config.stateFile}.reviews.json`, {
-      target: (owner, signal) => {
-        const current = caller(owner, signal);
+      target: async (owner, signal) => {
+        const current = await caller(owner, signal, true);
         return this.serial(current, async () => {
           const record = this.owned(current, owner.contribution);
           await this.verify(current, this.repository(record.repository));
           return this.reviewTarget(record, await this.reviewPull(current, record));
         });
       },
-      request: (owner, repository, role, method, suffix, body, signal) => {
-        const current = caller(owner, signal);
+      request: async (owner, repository, role, method, suffix, body, signal) => {
+        const current = await caller(owner, signal, method !== "GET");
         this.authorize(current);
         const record = this.owned(current, owner.contribution);
         if (record.repository !== repository.upstream) throw new Error("Review repository ownership changed.");
         return this.request(current, repository, role, method, suffix, body);
       },
-    });
+    }, this.reviewTransport);
     this.reviewWorker.start();
   }
   async stopReviews(): Promise<void> { await this.reviewWorker?.close(); }
@@ -110,7 +123,7 @@ export class GitHubContributions {
   private enqueueReview(caller: ContributionCaller, record: Contribution, pull: PullRequest) {
     if (!contributionReviewsEnabled()) return { enabled: false };
     this.startReviews();
-    return this.reviewWorker!.enqueue({ contribution: record.id, session: caller.session, requester: structuredClone(caller.requester) }, this.reviewTarget(record, pull));
+    return this.reviewWorker!.enqueue({ contribution: record.id, session: caller.session, requester: { userId: caller.requester.userId, guildId: caller.requester.guildId } }, this.reviewTarget(record, pull));
   }
   private autoReviewStatus(id: string) { return contributionReviewsEnabled() ? this.reviewWorker?.status(id) ?? { enabled: true, state: "not_requested" } : { enabled: false }; }
 

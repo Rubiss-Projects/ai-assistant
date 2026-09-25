@@ -14,6 +14,9 @@ fs.writeFileSync(path.join(workspace, "visible.txt"), "visible");
 fs.writeFileSync(path.join(workspace, "auth.json"), "fixture");
 fs.writeFileSync(path.join(workspace, ".env"), "fixture");
 fs.writeFileSync(path.join(host, "auth.json"), "fixture");
+fs.mkdirSync(path.join(workspace, "source"));
+fs.writeFileSync(path.join(workspace, "source", ".dockerignore"), "safe");
+fs.writeFileSync(path.join(workspace, "source", ".env.example"), "safe");
 const socket = path.join(host, "review.sock");
 // A sibling outside the sandbox retains a canary in its initial environment.
 // The sandbox helper's own /proc entries are expected; the client/worker's are not.
@@ -24,6 +27,7 @@ try {
     const config = reviewSandboxConfiguration(workspace, temporary);
     const code = [
         "set -eu", 'test "$(cat visible.txt)" = visible',
+        'test "$(cat source/.dockerignore)" = safe', 'test "$(cat source/.env.example)" = safe',
         "if (echo write > forbidden) 2>/dev/null; then exit 20; fi",
         ...["auth.json", ".env", `${host}/auth.json`, "/data/.codex/auth.json"].map((file, index) => `if cat '${file}' >/dev/null 2>&1; then exit ${31 + index}; fi`),
         `for p in /proc/[0-9]*; do if cat "$p/root${host}/auth.json" >/dev/null 2>&1; then exit 35; fi; if grep -q REVIEW_HOST_CANARY "$p/environ" 2>/dev/null; then exit 36; fi; done`,

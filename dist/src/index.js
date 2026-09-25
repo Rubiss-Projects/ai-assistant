@@ -5,6 +5,7 @@ import { createBot } from "./bot.js";
 import { reportProviderSecurityConfiguration } from "./common/providerSecurity.js";
 import { contributionReviewsEnabled } from "./common/githubContributionReviewWorker.js";
 import { githubContributionService } from "./common/githubContributions.js";
+import { discordSubject } from "./common/discordAccess.js";
 reportProviderSecurityConfiguration();
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -13,8 +14,6 @@ if (!token) {
 }
 const sessions = new SessionManager();
 const client = createBot(sessions);
-if (contributionReviewsEnabled())
-    githubContributionService().startReviews();
 async function shutdown(signal) {
     console.log(`\n${signal} received — shutting down...`);
     try {
@@ -33,3 +32,5 @@ async function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 await client.login(token);
+if (contributionReviewsEnabled())
+    githubContributionService().startReviews((user, guild) => discordSubject(client, user, guild));

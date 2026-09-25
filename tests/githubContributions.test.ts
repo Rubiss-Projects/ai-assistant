@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,11 +17,12 @@ import { providerChildEnvironment, secureSystemPrompt } from "../src/common/prov
 import { codexClientOptions } from "../src/providers/codex.js";
 import { openCodeChildEnvironment } from "../src/providers/opencode.js";
 import { createCopilotPermissionHandler } from "../src/providers/copilot.js";
+import { writeReviewState, type ReviewTransport } from "../src/common/codexReviewWorker.js";
 
 const digest = (value: unknown) => createHash("sha1").update(JSON.stringify(value)).digest("hex");
 const repository: ContributionRepository = { upstream: "Rubiss-Projects/ai-assistant", upstreamId: 1, fork: "Rubiss/contributions", forkId: 2 };
 type TreeEntry = { path: string; sha: string; size: number; type: string; mode: string };
-type MockPull = { number: number; html_url: string; state: string; draft: boolean; merged: boolean; user: { login: string }; head: { ref: string; sha: string; repo: { id: number } }; base: { ref: string; repo: { id: number } } };
+type MockPull = { number: number; html_url: string; state: string; draft: boolean; merged: boolean; user: { login: string }; head: { ref: string; sha: string; repo: { id: number } }; base: { ref: string; sha: string; repo: { id: number } }; changed_files: number };
 
 class RepositoryApi implements ContributionApi {
   calls: { role: GitHubRole; method: string; suffix: string; body: unknown }[] = [];
@@ -132,10 +133,11 @@ class RepositoryApi implements ContributionApi {
       assert.equal(role, "publisher"); assert.equal(body!.draft, true); assert.equal(body!.maintainer_can_modify, false);
       const branch = (body!.head as string).split(":")[1];
       const pull: MockPull = { number: this.pulls.length + 1, html_url: "https://github.com/example/pull/1", state: "open", draft: true, merged: false,
-        user: { login: "publisher[bot]" }, head: { ref: branch, sha: this.refs.get(branch)!, repo: { id: 2 } }, base: { ref: "main", repo: { id: 1 } } };
+        user: { login: "publisher[bot]" }, head: { ref: branch, sha: this.refs.get(branch)!, repo: { id: 2 } }, base: { ref: "main", sha: this.base, repo: { id: 1 } }, changed_files: 1 };
       this.pulls.push(pull); result = pull;
       if (this.failAfterPull) { this.failAfterPull = false; throw new Error("Simulated lost PR response"); }
-    } else if (/^\/pulls\/\d+$/.test(suffix)) {
+    } else if (/^\/pulls\/\d+\/reviews\?/.test(suffix) && method === "GET") result = [];
+    else if (/^\/pulls\/\d+$/.test(suffix)) {
       assert.equal(role, "publisher"); const pull = this.pulls[Number(suffix.split("/").at(-1)) - 1];
       pull.head.sha = this.refs.get(pull.head.ref)!; result = pull;
     } else throw new Error(`Unexpected API operation ${method} ${suffix}`);
@@ -157,6 +159,35 @@ function fixture(t: TestContext) {
   const caller: ContributionCaller = { session: "thread:one", requester: { userId: "123", guildId: "789" }, access, signal: new AbortController().signal };
   return { directory, config, api, service, caller };
 }
+
+test("background reviews refresh Discord roles immediately before publication", async t => {
+  const { service, config, api, caller, directory } = fixture(t);
+  const started = await service.begin(caller, repository.upstream);
+  const published = await service.publish(caller, started.contribution_id, started.head_sha, "docs: test", "", [{ path: "README.md", content: "Changed\n" }]);
+  const env = { AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true", GITHUB_CONTRIBUTIONS_ACCESS: "granted", DISCORD_ALLOWED_USERS: "456", DISCORD_ADMIN_USERS: "456", DISCORD_RIGHTS_FILE: join(directory, "rights.json") };
+  const before = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  writeFileSync(env.DISCORD_RIGHTS_FILE, JSON.stringify({ grants: [{ roleId: "999", guildId: "789", roles: ["contributor"] }] }));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  const receipt = { id: randomUUID(), repository: repository.upstream, pull: 1, head: published.head_sha, base: api.base, digest: "snapshot" };
+  const state = `${config.stateFile}.reviews.json`;
+  writeReviewState(state, [{ ...receipt, contribution: started.contribution_id, session: caller.session, requester: { ...caller.requester, roleIds: ["999"] },
+    createdAt: Date.now(), state: "submitted", failures: 0, nextPoll: 0,
+    changes: [{ path: "README.md", status: "modified", patch: "@@ -1 +1 @@\n-Hello\n+Changed", additions: 1, deletions: 1 }] }]);
+  const transport: ReviewTransport = { get: async () => ({ ...receipt, state: "completed", result: { summary: "No findings.", findings: [] } }), submit: async () => { throw new Error("Already submitted"); } };
+  const resumed = new GitHubContributions(config, api, transport);
+  let refreshes = 0;
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  resumed.startReviews(async (userId, guildId) => ({ userId, guildId, roleIds: ++refreshes === 1 ? ["999"] : [] }));
+  t.after(() => resumed.stopReviews());
+  const mutations = api.calls.filter(call => call.method !== "GET").length;
+  t.mock.timers.tick(2000);
+  for (let i = 0; i < 100 && refreshes < 2; i++) await delay(5);
+  await resumed.stopReviews();
+  assert.equal(refreshes, 2);
+  assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations);
+  assert.notEqual(JSON.parse(readFileSync(state, "utf8"))[0].state, "completed");
+});
 
 test("a contribution keeps identity, unchanged files, and session ownership through draft PR revisions", async t => {
   const { service, api, caller } = fixture(t);
