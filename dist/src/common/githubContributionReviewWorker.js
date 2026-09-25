@@ -92,7 +92,14 @@ export class ContributionReviewWorker {
         if (!Array.isArray(this.attempts) || this.attempts.length > 5000 || this.attempts.some(item => !item?.id || !item.requester?.userId || !["queued", "submitted", "publishing", "completed", "failed", "stale"].includes(item.state)))
             throw new Error("Invalid contribution review state.");
     }
-    save() { hostOnlyGitHubPath(this.stateFile); writeReviewState(this.stateFile, this.attempts); }
+    save() {
+        // Terminal receipts retain results/budgets, not large patches that can no longer be published.
+        for (const item of this.attempts)
+            if (item.state === "completed" || item.state === "stale")
+                delete item.changes;
+        hostOnlyGitHubPath(this.stateFile);
+        writeReviewState(this.stateFile, this.attempts);
+    }
     enqueue(owner, target) {
         const previous = this.previous(target);
         if (previous)
@@ -183,9 +190,11 @@ export class ContributionReviewWorker {
                 return;
             }
             if (job.state !== "completed") {
+                const changed = item.state !== "submitted";
                 item.state = "submitted";
                 item.nextPoll = Date.now() + 5000;
-                this.save();
+                if (changed)
+                    this.save(); // Routine poll deadlines are transient; restart can poll immediately.
                 return;
             }
             if (!item.changes)

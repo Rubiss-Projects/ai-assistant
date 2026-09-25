@@ -81,7 +81,11 @@ export class ContributionReviewWorker {
     this.attempts = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) as Attempt[] : [];
     if (!Array.isArray(this.attempts) || this.attempts.length > 5000 || this.attempts.some(item => !item?.id || !item.requester?.userId || !["queued", "submitted", "publishing", "completed", "failed", "stale"].includes(item.state))) throw new Error("Invalid contribution review state.");
   }
-  private save() { hostOnlyGitHubPath(this.stateFile); writeReviewState(this.stateFile, this.attempts); }
+  private save() {
+    // Terminal receipts retain results/budgets, not large patches that can no longer be published.
+    for (const item of this.attempts) if (item.state === "completed" || item.state === "stale") delete item.changes;
+    hostOnlyGitHubPath(this.stateFile); writeReviewState(this.stateFile, this.attempts);
+  }
   enqueue(owner: ReviewOwner, target: ReviewTarget) {
     const previous = this.previous(target);
     if (previous) return this.status(owner.contribution);
@@ -145,7 +149,12 @@ export class ContributionReviewWorker {
       }
       if (job.id !== item.id || job.digest !== item.digest || job.head !== item.head || job.base !== item.base || job.repository !== item.repository || job.pull !== item.pull) throw new Error("Review worker returned a mismatched receipt.");
       if (job.state === "failed") { item.state = "failed"; item.error = job.error; this.save(); return; }
-      if (job.state !== "completed") { item.state = "submitted"; item.nextPoll = Date.now() + 5000; this.save(); return; }
+      if (job.state !== "completed") {
+        const changed = item.state !== "submitted";
+        item.state = "submitted"; item.nextPoll = Date.now() + 5000;
+        if (changed) this.save(); // Routine poll deadlines are transient; restart can poll immediately.
+        return;
+      }
       if (!item.changes) throw new Error("Review snapshot receipt is missing.");
       item.result = validateReviewResult(job.result, { changes: item.changes });
       // Recheck live authorization and PR identity immediately before publication.
