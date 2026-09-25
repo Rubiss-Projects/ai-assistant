@@ -106,12 +106,22 @@ export class GitHubContributions {
           return this.reviewTarget(record, await this.reviewPull(current, record));
         });
       },
-      request: async (owner, repository, role, method, suffix, body, signal) => {
+      request: async <T>(owner: ReviewOwner, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST", suffix: string, body: unknown, signal: AbortSignal, expected?: ReviewTarget) => {
         const current = await caller(owner, signal, method !== "GET");
-        this.authorize(current);
-        const record = this.owned(current, owner.contribution);
-        if (record.repository !== repository.upstream) throw new Error("Review repository ownership changed.");
-        return this.request(current, repository, role, method, suffix, body);
+        const request = async () => {
+          // Serialize publication with contribution revisions and recheck after waiting for the lock.
+          const authorized = method === "GET" ? current : await caller(owner, signal, true);
+          this.authorize(authorized);
+          const record = this.owned(authorized, owner.contribution);
+          if (record.repository !== repository.upstream) throw new Error("Review repository ownership changed.");
+          if (method !== "GET") {
+            if (!expected) throw new Error("Review publication requires a pinned target.");
+            const pull = await this.reviewPull(authorized, record, expected.head);
+            if (pull.number !== expected.pull || pull.base.sha !== expected.base) throw new Error("Review target changed before publication.");
+          }
+          return this.request<T>(authorized, repository, role, method, suffix, body);
+        };
+        return method === "GET" ? request() : this.serial(current, request);
       },
     }, this.reviewTransport);
     this.reviewWorker.start();
@@ -120,10 +130,11 @@ export class GitHubContributions {
   private reviewTarget(record: Contribution, pull: PullRequest): ReviewTarget {
     return { repository: this.repository(record.repository), pull: pull.number, head: sha(pull.head.sha), base: sha(pull.base.sha), changedFiles: pull.changed_files };
   }
-  private enqueueReview(caller: ContributionCaller, record: Contribution, pull: PullRequest) {
+  private enqueueReview(caller: ContributionCaller, record: Contribution, pull: PullRequest, retry = false) {
     if (!contributionReviewsEnabled()) return { enabled: false };
     this.startReviews();
-    return this.reviewWorker!.enqueue({ contribution: record.id, session: caller.session, requester: { userId: caller.requester.userId, guildId: caller.requester.guildId } }, this.reviewTarget(record, pull));
+    const owner = { contribution: record.id, session: caller.session, requester: { userId: caller.requester.userId, guildId: caller.requester.guildId } };
+    return retry ? this.reviewWorker!.retry(owner, this.reviewTarget(record, pull), caller.signal) : this.reviewWorker!.enqueue(owner, this.reviewTarget(record, pull));
   }
   private autoReviewStatus(id: string) { return contributionReviewsEnabled() ? this.reviewWorker?.status(id) ?? { enabled: true, state: "not_requested" } : { enabled: false }; }
 
@@ -318,7 +329,7 @@ export class GitHubContributions {
       this.validatePull(record, published);
       record.pull = published.number; this.save(record);
       console.info(`[github-contribution] published id=${record.id} repository=${record.repository} pr=${record.pull}`);
-      return { ...this.summary(record), draft: published.draft, auto_review: this.enqueueReview(caller, record, published) };
+      return { ...this.summary(record), draft: published.draft, auto_review: await this.enqueueReview(caller, record, published) };
     });
   }
 
@@ -336,12 +347,12 @@ export class GitHubContributions {
   }
 
   /** Wait without holding the contribution mutex; review inference and publication continue after this turn ends. */
-  async review(caller: ContributionCaller, id: string, expectedHead: string) {
+  async review(caller: ContributionCaller, id: string, expectedHead: string, retry = false) {
     if (!contributionReviewsEnabled()) throw new Error("Server-side Codex reviews are disabled.");
     await this.serial(caller, async () => {
       const record = this.owned(caller, id);
       const pull = await this.reviewPull(caller, record, expectedHead);
-      this.enqueueReview(caller, record, pull);
+      await this.enqueueReview(caller, record, pull, retry);
     });
     for (let count = 0; count < 25; count++) {
       this.authorize(caller);

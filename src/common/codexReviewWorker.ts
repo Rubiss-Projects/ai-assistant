@@ -16,7 +16,7 @@ export class CodexReviewWorker {
   private readonly jobs = new Map<string, ReviewJob>();
   private active?: Promise<void>;
   private readonly abort = new AbortController();
-  constructor(private readonly directory: string, private readonly run: (input: ReviewInput, signal: AbortSignal) => Promise<ReviewResult>) {
+  constructor(private readonly directory: string, private readonly run: (input: ReviewInput, signal: AbortSignal) => Promise<ReviewResult>, private readonly onFatal: () => void = () => {}) {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     for (const file of fs.readdirSync(directory).filter(name => name.endsWith(".json"))) {
       const job = JSON.parse(fs.readFileSync(path.join(directory, file), "utf8")) as ReviewJob;
@@ -47,10 +47,11 @@ export class CodexReviewWorker {
       catch { job.state = "failed"; job.error = "Codex review failed or was interrupted. Check the worker login, subscription limits, and operator logs before retrying."; }
       this.save(job);
     }).finally(() => { this.active = undefined; });
-    void this.active.catch(() => { console.error("[codex-review] Could not persist job result; stopping worker."); this.abort.abort(); });
+    void this.active.catch(() => { console.error("[codex-review] Could not persist job result; stopping worker."); this.abort.abort(); this.onFatal(); });
     return job;
   }
   async close() { this.abort.abort(); await this.active; }
+  healthy() { return !this.abort.signal.aborted; }
 }
 
 export async function serveReviews(worker: CodexReviewWorker, socket = REVIEW_SOCKET): Promise<Server> {
@@ -61,7 +62,7 @@ export async function serveReviews(worker: CodexReviewWorker, socket = REVIEW_SO
   const server = createServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
     try {
-      if (req.method === "GET" && req.url === "/health") { res.end('{"ok":true}'); return; }
+      if (req.method === "GET" && req.url === "/health") { res.writeHead(worker.healthy() ? 200 : 503).end(JSON.stringify({ ok: worker.healthy() })); return; }
       if (req.method === "GET" && req.url?.startsWith("/jobs/")) {
         const job = worker.get(req.url.slice(6));
         res.writeHead(job ? 200 : 404).end(JSON.stringify(job ?? { error: "Unknown review." })); return;

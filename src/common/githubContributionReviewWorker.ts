@@ -14,11 +14,12 @@ interface Attempt extends ReviewOwner {
   id: string; repository: string; pull: number; head: string; base: string; createdAt: number; startedAt?: number;
   state: "queued" | "submitted" | "publishing" | "completed" | "failed" | "stale";
   digest?: string; changes?: ReviewChange[]; result?: ReviewResult; error?: string; url?: string;
+  publicationAttempted?: boolean;
   failures: number; nextPoll: number;
 }
 export interface ReviewHost {
   target(owner: ReviewOwner, signal: AbortSignal): Promise<ReviewTarget>;
-  request<T>(owner: ReviewOwner, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST", suffix: string, body: unknown, signal: AbortSignal): Promise<T>;
+  request<T>(owner: ReviewOwner, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST", suffix: string, body: unknown, signal: AbortSignal, expected?: ReviewTarget): Promise<T>;
 }
 interface TreeEntry { path: string; sha: string; mode: string; type: string; size?: number }
 interface PullFile { filename: string; previous_filename?: string; status: string; patch?: string; additions: number; deletions: number }
@@ -82,9 +83,28 @@ export class ContributionReviewWorker {
   }
   private save() { hostOnlyGitHubPath(this.stateFile); writeReviewState(this.stateFile, this.attempts); }
   enqueue(owner: ReviewOwner, target: ReviewTarget) {
-    const previous = this.attempts.find(item => item.repository === target.repository.upstream && item.pull === target.pull && item.head === target.head && item.base === target.base);
+    const previous = this.previous(target);
     if (previous) return this.status(owner.contribution);
-    if (this.attempts.filter(item => item.repository === target.repository.upstream && item.pull === target.pull).length >= REVIEW_LIMIT || this.attempts.length >= 5000) return this.status(owner.contribution);
+    return this.add(owner, target);
+  }
+  private previous(target: ReviewTarget) { return this.attempts.filter(item => item.repository === target.repository.upstream && item.pull === target.pull && item.head === target.head && item.base === target.base).at(-1); }
+  /** Explicit retries reconcile the old receipt first; a completed inference is never repeated. */
+  async retry(owner: ReviewOwner, target: ReviewTarget, signal: AbortSignal) {
+    const previous = this.previous(target);
+    if (!previous || previous.state !== "failed") return this.enqueue(owner, target);
+    const job = await this.transport.get(previous.id, signal);
+    signal.throwIfAborted();
+    if (job && job.state !== "failed") {
+      previous.state = previous.publicationAttempted ? "publishing" : "submitted";
+      previous.failures = 0; previous.nextPoll = 0; previous.startedAt = Date.now(); delete previous.error;
+      this.save(); return this.status(owner.contribution);
+    }
+    if (previous.publicationAttempted || previous.result) throw new Error("Publication may have succeeded but its worker receipt is unavailable; operator reconciliation required.");
+    return this.add(owner, target);
+  }
+  private add(owner: ReviewOwner, target: ReviewTarget) {
+    if (this.attempts.length >= 5000) throw new Error("Review history capacity reached; operator maintenance required.");
+    if (this.attempts.filter(item => item.repository === target.repository.upstream && item.pull === target.pull).length >= REVIEW_LIMIT) return this.status(owner.contribution);
     this.attempts.push({ ...owner, id: randomUUID(), repository: target.repository.upstream, pull: target.pull, head: target.head, base: target.base,
       state: "queued", createdAt: Date.now(), failures: 0, nextPoll: 0 });
     this.save();
@@ -132,7 +152,7 @@ export class ContributionReviewWorker {
       const target = await this.host.target(item, signal);
       if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) { item.state = "stale"; this.save(); return; }
       const marker = `<!-- ai-assistant-codex-review:${item.id} -->`;
-      const request = <T>(method: "GET" | "POST", suffix: string, body?: unknown) => this.host.request<T>(item, target.repository, "publisher", method, suffix, body, signal);
+      const request = <T>(method: "GET" | "POST", suffix: string, body?: unknown) => this.host.request<T>(item, target.repository, "publisher", method, suffix, body, signal, target);
       let previous: { body: string; html_url: string; commit_id: string } | undefined;
       for (let page = 1; page <= 10; page++) {
         const reviews = await request<{ body: string; html_url: string; commit_id: string }[]>("GET", `/pulls/${item.pull}/reviews?per_page=100&page=${page}`);
@@ -147,7 +167,7 @@ export class ContributionReviewWorker {
       const body = `## Codex-powered static review\n\n${safeText(item.result.summary)}\n\n${findings || "No actionable findings in this static review."}\n\nHead: \`${item.head}\`; base: \`${item.base}\`. Reviewed in a fresh, read-only server-side Codex session using the operator's ChatGPT login. Published by AI Assistant, not the hosted Codex GitHub integration. No tests or repository code were executed. This is not approval; human review remains required.\n\n${marker}`;
       const comments = item.result.findings.filter(finding => item.changes?.some(change => change.path === finding.path && changedLines(change).has(finding.line)))
         .map(finding => ({ path: finding.path, line: finding.line, side: "RIGHT", body: `[P${finding.priority}] ${safeText(finding.title)}\n\n${safeText(finding.body)}` }));
-      item.state = "publishing"; this.save();
+      item.state = "publishing"; item.publicationAttempted = true; this.save();
       const published = await request<{ html_url: string }>("POST", `/pulls/${item.pull}/reviews`, { commit_id: item.head, event: "COMMENT", body, ...(comments.length ? { comments } : {}) });
       item.url = published.html_url; item.state = "completed"; this.save();
       console.info(`[codex-review] published repository=${item.repository} pr=${item.pull} head=${item.head} findings=${item.result.findings.length}`);

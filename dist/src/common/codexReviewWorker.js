@@ -18,12 +18,14 @@ export function writeReviewState(file, value) {
 export class CodexReviewWorker {
     directory;
     run;
+    onFatal;
     jobs = new Map();
     active;
     abort = new AbortController();
-    constructor(directory, run) {
+    constructor(directory, run, onFatal = () => { }) {
         this.directory = directory;
         this.run = run;
+        this.onFatal = onFatal;
         fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
         for (const file of fs.readdirSync(directory).filter(name => name.endsWith(".json"))) {
             const job = JSON.parse(fs.readFileSync(path.join(directory, file), "utf8"));
@@ -71,10 +73,11 @@ export class CodexReviewWorker {
             }
             this.save(job);
         }).finally(() => { this.active = undefined; });
-        void this.active.catch(() => { console.error("[codex-review] Could not persist job result; stopping worker."); this.abort.abort(); });
+        void this.active.catch(() => { console.error("[codex-review] Could not persist job result; stopping worker."); this.abort.abort(); this.onFatal(); });
         return job;
     }
     async close() { this.abort.abort(); await this.active; }
+    healthy() { return !this.abort.signal.aborted; }
 }
 export async function serveReviews(worker, socket = REVIEW_SOCKET) {
     if (fs.existsSync(socket)) {
@@ -86,7 +89,7 @@ export async function serveReviews(worker, socket = REVIEW_SOCKET) {
         res.setHeader("content-type", "application/json");
         try {
             if (req.method === "GET" && req.url === "/health") {
-                res.end('{"ok":true}');
+                res.writeHead(worker.healthy() ? 200 : 503).end(JSON.stringify({ ok: worker.healthy() }));
                 return;
             }
             if (req.method === "GET" && req.url?.startsWith("/jobs/")) {

@@ -65,6 +65,23 @@ test("review sandbox fixes authentication, tool network, filesystem, and connect
   assert(!Object.keys(config.shell).some(name => /TOKEN|KEY|CODEX_HOME/.test(name)));
 });
 
+test("persistence failure makes the worker unhealthy and invokes its fatal shutdown", async t => {
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "review-persistence-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  let fatal = 0;
+  const worker = new CodexReviewWorker(directory, async value => {
+    // Simulate a filesystem that cannot replace the result receipt after inference.
+    const receipt = path.join(directory, `${value.id}.json`);
+    fs.unlinkSync(receipt); fs.mkdirSync(receipt);
+    return empty;
+  }, () => { fatal++; });
+  worker.submit(input());
+  for (let i = 0; i < 100 && !fatal; i++) await delay(5);
+  assert.equal(fatal, 1); assert.equal(worker.healthy(), false);
+  assert.throws(() => worker.submit(input()), /stopping/);
+  await worker.close();
+});
+
 test("private socket returns durable receipts without accepting alternate jobs on replay", { skip: process.platform !== "linux" }, async t => {
   const directory = fs.mkdtempSync(path.join(tmpdir(), "review-socket-"));
   const worker = new CodexReviewWorker(path.join(directory, "jobs"), async () => empty);
@@ -152,4 +169,37 @@ test("queue wait does not expire a recovered submission, and running polls make 
   records[0].nextPoll = 0; writeReviewState(state, records);
   await new ContributionReviewWorker(state, host, transport).tick();
   assert.equal(polls, 2); assert.equal(github, 0);
+});
+
+test("explicit retry preserves receipt reconciliation and the durable PR and history limits", async t => {
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "review-retry-"));
+  const previousRoot = process.env.AI_ASSISTANT_WORKSPACE_ROOT, previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  process.env.AI_ASSISTANT_WORKSPACE_ROOT = path.join(directory, "workspace");
+  process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  t.after(() => { if (previousRoot === undefined) delete process.env.AI_ASSISTANT_WORKSPACE_ROOT; else process.env.AI_ASSISTANT_WORKSPACE_ROOT = previousRoot; if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE; else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode; fs.rmSync(directory, { recursive: true, force: true }); });
+  const original = input(), state = path.join(directory, "reviews.json"), contribution = randomUUID();
+  const owner = { contribution, session: "discord-1", requester: { userId: "123" } };
+  const target: ReviewTarget = { repository: { upstream: original.repository, upstreamId: 1, fork: "Rubiss/contributions", forkId: 2 }, pull: 90, head: original.head, base: original.base, changedFiles: 1 };
+  const failed = { ...owner, id: original.id, repository: original.repository, pull: original.pull, head: original.head, base: original.base, digest: reviewDigest(original), createdAt: Date.now(), state: "failed", failures: 3, nextPoll: 0 };
+  let receipt: "failed" | "completed" | "missing" = "failed";
+  const transport: ReviewTransport = {
+    get: async id => receipt === "missing" ? undefined : { ...failed, id, state: receipt, ...(receipt === "completed" ? { result: empty } : {}) },
+    submit: async () => { throw new Error("Unexpected inference"); },
+  };
+  const host: ReviewHost = { target: async () => target, request: async () => { throw new Error("Unexpected GitHub request"); } };
+  const load = (records: unknown[]) => { writeReviewState(state, records); return new ContributionReviewWorker(state, host, transport); };
+  const controller = load([failed]);
+  assert.equal(controller.enqueue(owner, target).attempts, 1);
+  assert.equal((await controller.retry(owner, target, new AbortController().signal)).attempts, 2);
+  assert.equal((await controller.retry(owner, target, new AbortController().signal)).attempts, 2);
+  const five = load(Array.from({ length: 5 }, () => ({ ...failed, id: randomUUID() })));
+  assert.equal((await five.retry(owner, target, new AbortController().signal)).budget_exhausted, true);
+  receipt = "completed";
+  const publishing = load([{ ...failed, result: empty, publicationAttempted: true }]);
+  const reconciled = await publishing.retry(owner, target, new AbortController().signal);
+  assert.equal(reconciled.state, "publishing"); assert.equal(reconciled.attempts, 1);
+  receipt = "missing";
+  await assert.rejects(load([{ ...failed, result: empty, publicationAttempted: true }]).retry(owner, target, new AbortController().signal), /reconciliation/);
+  const full = load(Array.from({ length: 5000 }, () => ({ ...failed, id: randomUUID() })));
+  assert.throws(() => full.enqueue(owner, { ...target, pull: 91 }), /capacity.*maintenance/);
 });

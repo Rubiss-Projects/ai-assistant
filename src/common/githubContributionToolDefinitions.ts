@@ -22,7 +22,7 @@ const review = {
 export const GITHUB_CONTRIBUTION_TOOLS = [
   {
     name: "github_contribution_review", description: "Ensure a server-side Codex review of this requester's published contribution and wait up to 50 seconds for its status. Returns findings, reviewed head/base, and the durable five-attempt budget. Identical snapshots reuse the existing job; failed jobs are not silently retried. No arbitrary prompts, PRs, commands, or credentials are accepted.",
-    inputSchema: { type: "object", properties: { run_id: run, contribution_id: id, expected_head_sha: { type: "string" } }, required: ["run_id", "contribution_id", "expected_head_sha"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { run_id: run, contribution_id: id, expected_head_sha: { type: "string" }, retry: { type: "boolean", description: "Explicitly retry a failed review after checking its error. Reconciles existing work first; new inference consumes the same five-attempt PR budget. Does not bypass uncertain-publication safeguards." } }, required: ["run_id", "contribution_id", "expected_head_sha"], additionalProperties: false },
   },
   {
     name: "github_contribution_begin", description: "Start or resume this requester's contribution to an enabled repository. Returns a pinned file tree and head_sha. Starting is local; resuming may finish an interrupted, previously requested branch write. Does not create a PR.",
