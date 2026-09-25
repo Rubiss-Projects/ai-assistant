@@ -30,17 +30,22 @@ test("review inputs reject traversal, credentials, incomplete patches, missing f
 
 test("worker deduplicates jobs, caps reviews durably, and never retries interrupted inference", async t => {
   const directory = fs.mkdtempSync(path.join(tmpdir(), "review-worker-test-"));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   let calls = 0;
   const run = async () => { calls++; await delay(5); return empty; };
   const worker = new CodexReviewWorker(directory, run);
+  t.after(async () => { await worker.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  const completed = async (id: string) => {
+    const deadline = Date.now() + 5000;
+    while (worker.get(id)?.state !== "completed" && Date.now() < deadline) await delay(5);
+    assert.equal(worker.get(id)?.state, "completed");
+  };
   const first = input();
   worker.submit(first); worker.submit(first);
   assert.throws(() => worker.submit({ ...first, files: [{ path: "src/main.ts", content: "different" }] }), /different snapshot/);
   assert.throws(() => worker.submit(input()), /busy/);
-  await delay(20);
+  await completed(first.id);
   assert.equal(calls, 1); assert.equal(worker.get(first.id)?.state, "completed");
-  for (let i = 0; i < 4; i++) { worker.submit(input()); await delay(20); }
+  for (let i = 0; i < 4; i++) { const next = input(); worker.submit(next); await completed(next.id); }
   await worker.close();
   const restarted = new CodexReviewWorker(directory, run);
   assert.equal(restarted.submit(first).state, "completed");
