@@ -145,6 +145,7 @@ test("host publishes a pinned App review once and survives a lost GitHub respons
   // Make the durable poll due without wall-clock waits.
   const due = () => { const records = JSON.parse(fs.readFileSync(state, "utf8")); records[0].nextPoll = 0; fs.writeFileSync(state, JSON.stringify(records)); return new ContributionReviewWorker(state, host, transport); };
   await due().tick(); assert.equal(writes, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(state, "utf8"))[0].changes, original.changes);
   const restarted = due(); await restarted.tick();
   assert.equal(writes, 1); assert.equal(restarted.status(owner.contribution).state, "completed");
   assert.equal(JSON.parse(fs.readFileSync(state, "utf8"))[0].changes, undefined);
@@ -179,6 +180,32 @@ test("queue wait does not expire a recovered submission, and running polls make 
   await new ContributionReviewWorker(state, host, transport).tick();
   assert.equal(polls, 2); assert.equal(github, 0);
   assert.equal(fs.readFileSync(state, "utf8"), persisted);
+});
+
+for (const failure of ["confirmed", "unreachable"] as const) test(`${failure} worker failure retains only necessary recovery patches`, async t => {
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "review-failed-patches-"));
+  const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true", AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true", AI_ASSISTANT_WORKSPACE_ROOT: path.join(directory, "workspace") };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(directory, { recursive: true, force: true }); });
+  const original = input(), state = path.join(directory, "reviews.json");
+  const receipt = { id: original.id, repository: original.repository, pull: original.pull, head: original.head, base: original.base, digest: reviewDigest(original) };
+  const seed = { ...receipt, contribution: randomUUID(), session: "discord-1", requester: { userId: "123" }, changes: original.changes,
+    createdAt: Date.now(), state: "submitted", failures: 0, nextPoll: 0 };
+  writeReviewState(state, [seed]);
+  const host: ReviewHost = { target: async () => { throw new Error("Unexpected GitHub read"); }, request: async () => { throw new Error("Unexpected GitHub request"); } };
+  const transport: ReviewTransport = {
+    get: async () => { if (failure === "unreachable") throw new Error("Worker unavailable"); return { ...receipt, state: "failed", error: "Inference failed" }; },
+    submit: async () => { throw new Error("Unexpected inference"); },
+  };
+  for (let i = 0; i < (failure === "confirmed" ? 1 : 3); i++) {
+    await new ContributionReviewWorker(state, host, transport).tick();
+    const records = JSON.parse(fs.readFileSync(state, "utf8")) as (Omit<typeof seed, "changes"> & { changes?: ReviewInput["changes"] })[];
+    assert.equal(records.length, 1); // Cleanup never removes the durable attempt budget.
+    assert.deepEqual(records[0].changes, failure === "confirmed" ? undefined : original.changes);
+    records[0].nextPoll = 0; writeReviewState(state, records);
+  }
+  assert.equal(new ContributionReviewWorker(state, host, transport).status(seed.contribution).state, "failed");
 });
 
 test("explicit retry preserves receipt reconciliation and the durable PR and history limits", async t => {

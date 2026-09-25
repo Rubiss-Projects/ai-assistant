@@ -148,7 +148,12 @@ export class ContributionReviewWorker {
         job = await this.transport.submit(input, signal);
       }
       if (job.id !== item.id || job.digest !== item.digest || job.head !== item.head || job.base !== item.base || job.repository !== item.repository || job.pull !== item.pull) throw new Error("Review worker returned a mismatched receipt.");
-      if (job.state === "failed") { item.state = "failed"; item.error = job.error; this.save(); return; }
+      if (job.state === "failed") {
+        item.state = "failed"; item.error = job.error;
+        // A confirmed inference failure cannot reuse its patches; preserve uncertain publication evidence.
+        if (!item.publicationAttempted && !item.result) delete item.changes;
+        this.save(); return;
+      }
       if (job.state !== "completed") {
         const changed = item.state !== "submitted";
         item.state = "submitted"; item.nextPoll = Date.now() + 5000;

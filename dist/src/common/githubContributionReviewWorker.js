@@ -186,6 +186,9 @@ export class ContributionReviewWorker {
             if (job.state === "failed") {
                 item.state = "failed";
                 item.error = job.error;
+                // A confirmed inference failure cannot reuse its patches; preserve uncertain publication evidence.
+                if (!item.publicationAttempted && !item.result)
+                    delete item.changes;
                 this.save();
                 return;
             }
