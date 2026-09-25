@@ -59,12 +59,15 @@ export function validateContributionChanges(value) {
 export class GitHubContributions {
     config;
     api;
+    reviewTransport;
     records;
     queue = Promise.resolve();
     reviewWorker;
-    constructor(config, api = new GitHubContributionApi(config)) {
+    reviewRequester;
+    constructor(config, api = new GitHubContributionApi(config), reviewTransport) {
         this.config = config;
         this.api = api;
+        this.reviewTransport = reviewTransport;
         hostOnlyGitHubPath(config.stateFile);
         this.records = fs.existsSync(config.stateFile) ? JSON.parse(fs.readFileSync(config.stateFile, "utf8")) : [];
         if (!Array.isArray(this.records) || this.records.length > 1000 || this.records.some(record => !record || !/^[0-9a-f-]{36}$/.test(record.id) || record.branch !== `ai-assistant/${record.id}`
@@ -72,28 +75,42 @@ export class GitHubContributions {
             throw new Error("Invalid contribution state; restore the host-owned state file before enabling contributions.");
         }
     }
-    startReviews() {
+    startReviews(resolveRequester) {
+        if (resolveRequester)
+            this.reviewRequester = resolveRequester;
         if (!contributionReviewsEnabled() || this.reviewWorker)
             return;
-        const caller = (owner, signal) => ({ session: owner.session, requester: owner.requester, access: createAccessPolicy(), signal });
+        if (!this.reviewRequester)
+            throw new Error("Configure live Discord membership checks before enabling background reviews.");
+        const subjects = new Map();
+        const caller = async (owner, signal, refresh) => {
+            if (refresh || !subjects.has(owner.contribution)) {
+                const subject = await this.reviewRequester(owner.requester.userId, owner.requester.guildId ?? null);
+                if (subject.userId !== owner.requester.userId || (subject.guildId ?? null) !== (owner.requester.guildId ?? null))
+                    throw new Error("Review requester identity changed.");
+                subjects.set(owner.contribution, subject);
+            }
+            signal.throwIfAborted();
+            return { session: owner.session, requester: subjects.get(owner.contribution), access: createAccessPolicy(), signal };
+        };
         this.reviewWorker = new ContributionReviewWorker(`${this.config.stateFile}.reviews.json`, {
-            target: (owner, signal) => {
-                const current = caller(owner, signal);
+            target: async (owner, signal) => {
+                const current = await caller(owner, signal, true);
                 return this.serial(current, async () => {
                     const record = this.owned(current, owner.contribution);
                     await this.verify(current, this.repository(record.repository));
                     return this.reviewTarget(record, await this.reviewPull(current, record));
                 });
             },
-            request: (owner, repository, role, method, suffix, body, signal) => {
-                const current = caller(owner, signal);
+            request: async (owner, repository, role, method, suffix, body, signal) => {
+                const current = await caller(owner, signal, method !== "GET");
                 this.authorize(current);
                 const record = this.owned(current, owner.contribution);
                 if (record.repository !== repository.upstream)
                     throw new Error("Review repository ownership changed.");
                 return this.request(current, repository, role, method, suffix, body);
             },
-        });
+        }, this.reviewTransport);
         this.reviewWorker.start();
     }
     async stopReviews() { await this.reviewWorker?.close(); }
@@ -104,7 +121,7 @@ export class GitHubContributions {
         if (!contributionReviewsEnabled())
             return { enabled: false };
         this.startReviews();
-        return this.reviewWorker.enqueue({ contribution: record.id, session: caller.session, requester: structuredClone(caller.requester) }, this.reviewTarget(record, pull));
+        return this.reviewWorker.enqueue({ contribution: record.id, session: caller.session, requester: { userId: caller.requester.userId, guildId: caller.requester.guildId } }, this.reviewTarget(record, pull));
     }
     autoReviewStatus(id) { return contributionReviewsEnabled() ? this.reviewWorker?.status(id) ?? { enabled: true, state: "not_requested" } : { enabled: false }; }
     authorize(caller) {

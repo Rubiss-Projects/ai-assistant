@@ -13,8 +13,14 @@ function toml(value) {
     return JSON.stringify(value);
 }
 export function reviewSandboxConfiguration(workspace, temporary) {
-    const denied = [".git", ".git/**", "**/.git", "**/.git/**", ...SENSITIVE_FILE_DENY_GLOBS, ...SENSITIVE_DIRECTORY_DENY_GLOBS];
-    const filesystem = `permissions.review.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",glob_scan_max_depth=16,":workspace_roots"={"."="read",${denied.map(glob => `${JSON.stringify(glob)}="deny"`).join(",")}}}`;
+    // This workspace contains only the host-validated snapshot, not live project secrets.
+    // Keep ordinary repository dotfiles readable while denying actual credential paths.
+    const denied = [".git", ".git/**", "**/.git", "**/.git/**", ".env", "**/.env",
+        ...SENSITIVE_FILE_DENY_GLOBS.filter(glob => ![".*", "**/.*", "**/.*/**"].includes(glob)),
+        ...[".netrc", ".npmrc", ".pypirc", ".git-credentials"].flatMap(name => [name, `**/${name}`])];
+    // reviewPath rejects every source .env.* except .env.example before writing it.
+    const rules = [...denied.map(glob => `${JSON.stringify(glob)}="deny"`), ...SENSITIVE_DIRECTORY_DENY_GLOBS.map(glob => `${JSON.stringify(glob)}="deny"`)];
+    const filesystem = `permissions.review.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",glob_scan_max_depth=16,":workspace_roots"={"."="read",${rules.join(",")}}}`;
     const shell = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: workspace, USERPROFILE: workspace, TMPDIR: temporary, TMP: temporary, TEMP: temporary, LANG: "C.UTF-8" };
     const disabled = ["apps", "network_proxy", "hooks", "plugins", "remote_plugin", "memories", "multi_agent", "multi_agent_v2", "computer_use", "browser_use", "browser_use_external", "image_generation", "view_image", "request_permissions_tool", "shell_snapshot", "skill_mcp_dependency_install", "workspace_dependencies", "code_mode", "goals", "apply_patch_freeform", "js_repl", "sleep_tool", "default_mode_request_user_input"];
     const config = {

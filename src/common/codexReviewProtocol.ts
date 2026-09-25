@@ -24,8 +24,8 @@ export function reviewId(value: string): string {
 }
 export function reviewPath(value: string): string {
   if (typeof value !== "string" || value.length > 240 || !/^[A-Za-z0-9_.@/ -]+$/.test(value)
-    || value.split("/").some(p => !p || p === "." || p === ".." || [".git", ".codex", ".ssh", "node_modules"].includes(p.toLowerCase()))
-    || /(?:^|\/)(?:auth\.json|\.netrc|\.npmrc|\.git-credentials|\.env(?:\.(?!example$)[^/]*)?)$|\.(?:pem|key|p12|pfx)$/i.test(value)) {
+    || value.split("/").some(p => !p || p === "." || p === ".." || [".git", ".codex", ".ssh", ".aws", ".config", ".copilot", ".opencode", "node_modules"].includes(p.toLowerCase()))
+    || /(?:^|\/)(?:auth\.json|\.netrc|\.npmrc|\.pypirc|\.git-credentials|\.env(?:\.(?!example$)[^/]*)?)$|\.(?:pem|key|p12|pfx)$/i.test(value)) {
     throw new Error("Unsupported or protected review path.");
   }
   return value;

@@ -11,7 +11,7 @@ export { contributionReviewsEnabled } from "./githubContributionConfig.js";
 export interface ReviewOwner { contribution: string; session: string; requester: AccessSubject }
 export interface ReviewTarget { repository: ContributionRepository; pull: number; head: string; base: string; changedFiles: number }
 interface Attempt extends ReviewOwner {
-  id: string; repository: string; pull: number; head: string; base: string; createdAt: number;
+  id: string; repository: string; pull: number; head: string; base: string; createdAt: number; startedAt?: number;
   state: "queued" | "submitted" | "publishing" | "completed" | "failed" | "stale";
   digest?: string; changes?: ReviewChange[]; result?: ReviewResult; error?: string; url?: string;
   failures: number; nextPoll: number;
@@ -110,14 +110,15 @@ export class ContributionReviewWorker {
     if (!item || item.nextPoll > Date.now()) return;
     const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(5 * 60_000)]);
     try {
-      if (Date.now() - item.createdAt > REVIEW_TIMEOUT_MS + 15 * 60_000) throw new Error("Review job expired.");
-      const target = await this.host.target(item, signal);
-      if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) {
-        item.state = "stale"; item.error = "PR head or base changed; no current-head review was published."; this.save(); return;
-      }
+      item.startedAt ??= Date.now(); // Queue wait never consumes the execution/recovery deadline.
+      if (Date.now() - item.startedAt > REVIEW_TIMEOUT_MS + 15 * 60_000) throw new Error("Review job expired.");
       let job = await this.transport.get(item.id, signal);
       if (!job) {
         if (item.state !== "queued") throw new Error("Worker lost the review receipt; do not retry automatically.");
+        const target = await this.host.target(item, signal);
+        if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) {
+          item.state = "stale"; item.error = "PR head or base changed; no current-head review was published."; this.save(); return;
+        }
         const input = await snapshot(this.host, item, target, item.id, signal);
         item.digest = reviewDigest(input); item.changes = input.changes; this.save();
         job = await this.transport.submit(input, signal);
@@ -128,8 +129,8 @@ export class ContributionReviewWorker {
       if (!item.changes) throw new Error("Review snapshot receipt is missing.");
       item.result = validateReviewResult(job.result, { changes: item.changes });
       // Recheck live authorization and PR identity immediately before publication.
-      const current = await this.host.target(item, signal);
-      if (current.head !== item.head || current.base !== item.base) { item.state = "stale"; this.save(); return; }
+      const target = await this.host.target(item, signal);
+      if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) { item.state = "stale"; this.save(); return; }
       const marker = `<!-- ai-assistant-codex-review:${item.id} -->`;
       const request = <T>(method: "GET" | "POST", suffix: string, body?: unknown) => this.host.request<T>(item, target.repository, "publisher", method, suffix, body, signal);
       let previous: { body: string; html_url: string; commit_id: string } | undefined;
