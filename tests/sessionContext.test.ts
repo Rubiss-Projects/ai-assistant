@@ -6,6 +6,26 @@ import { join } from "node:path";
 import { contextFingerprint, resolveSessionContext, withContextTurn, type ContextContributor } from "../src/common/sessionContext.js";
 import { SessionStore } from "../src/common/sessionStore.js";
 import { UserInstructionStore } from "../src/common/userInstructionStore.js";
+import { githubContributionTools } from "../src/common/githubContributionToolDefinitions.js";
+
+test("server review enablement refreshes existing shared context and removes tools when disabled", t => {
+  const values = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true", AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "false" };
+  const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  Object.assign(process.env, values);
+  const before = resolveSessionContext();
+  const oneShot = resolveSessionContext({ profile: "one-shot" });
+  assert(!githubContributionTools().some(tool => tool.name === "github_contribution_review"));
+  process.env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS = "true";
+  const enabled = resolveSessionContext();
+  assert.notEqual(enabled.applied.instructions, before.applied.instructions);
+  assert.notEqual(enabled.applied.capabilities, before.applied.capabilities);
+  assert.match(enabled.systemPrompt, /Server-side Codex review is enabled/);
+  assert(githubContributionTools().some(tool => tool.name === "github_contribution_review"));
+  assert.equal(resolveSessionContext({ profile: "one-shot" }).fingerprint, oneShot.fingerprint);
+  process.env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS = "false";
+  assert.equal(resolveSessionContext().fingerprint, before.fingerprint);
+});
 
 test("context fingerprints track instruction removal and tool contracts independently", () => {
   let instructions = "Be brief.";

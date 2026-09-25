@@ -16,6 +16,12 @@ export function githubContributionAccess(env = process.env) {
         throw new Error("GITHUB_CONTRIBUTIONS_ACCESS must be chat or granted.");
     return value;
 }
+export function contributionReviewsEnabled(env = process.env) {
+    const value = env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS?.trim().toLowerCase() || "false";
+    if (value !== "true" && value !== "false")
+        throw new Error("AI_ASSISTANT_ENABLE_CODEX_REVIEWS must be true or false.");
+    return value === "true" && githubContributionsEnabled(env);
+}
 export function hostOnlyGitHubPath(file, env = process.env) {
     const root = configuredWorkspaceRoot(env);
     if (!root || !path.isAbsolute(file))

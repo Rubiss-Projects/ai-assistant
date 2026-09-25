@@ -3,9 +3,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SendMessageOptions } from "../providers/types.js";
-import { githubContributionsEnabled } from "./githubContributionConfig.js";
+import { githubContributionsEnabled, contributionReviewsEnabled } from "./githubContributionConfig.js";
 import { githubContributionService, validateContributionChanges, type GitHubContributions } from "./githubContributions.js";
-import { GITHUB_CONTRIBUTION_CALL_LIMITS, GITHUB_CONTRIBUTION_TIMEOUT_MS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { GITHUB_CONTRIBUTION_CALL_LIMITS, GITHUB_CONTRIBUTION_TIMEOUT_MS, githubContributionTools } from "./githubContributionToolDefinitions.js";
 import { operationSignal } from "./operationSignal.js";
 
 export interface GitHubContributionMcpConfig { command: string; args: string[]; env: Record<string, string> }
@@ -24,7 +24,7 @@ export class GitHubContributionRun {
       if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
         || !context.access.can(context.requester, "github.contribute")) throw new Error("GitHub contribution access is unavailable for this requester or run.");
       if (args.run_id !== this.id) throw new Error("GitHub contribution run has expired or belongs to another session.");
-      const tool = GITHUB_CONTRIBUTION_TOOLS.find(tool => tool.name === name);
+      const tool = githubContributionTools().find(tool => tool.name === name);
       if (!tool || Object.keys(args).some(key => !Object.hasOwn(tool.inputSchema.properties, key))) throw new Error("Invalid contribution tool arguments.");
       const schema = tool.inputSchema;
       for (const key of schema.required) {
@@ -41,6 +41,7 @@ export class GitHubContributionRun {
           case "github_contribution_begin": return service.begin(caller, text("repository"));
           case "github_contribution_read": return service.read(caller, text("contribution_id"), text("path"));
           case "github_contribution_status": return service.status(caller, text("contribution_id"));
+          case "github_contribution_review": return service.review(caller, text("contribution_id"), text("expected_head_sha"));
           case "github_contribution_publish": return service.publish(caller, text("contribution_id"), text("expected_head_sha"), text("title"), text("body"), validateContributionChanges(args.changes));
           case "github_contribution_reviews": return service.reviews(caller, text("contribution_id"), args.after === undefined ? undefined : text("after"));
           case "github_contribution_reply_review": return service.replyReview(caller, text("contribution_id"), text("thread_id"), text("expected_head_sha"), text("expected_thread_version"), text("body"));
@@ -96,7 +97,7 @@ class GitHubContributionConnection {
         const development = import.meta.url.endsWith(".ts");
         const script = fileURLToPath(new URL(`../githubContributionMcp.${development ? "ts" : "js"}`, import.meta.url));
         const args = development ? ["--import", pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href, script] : [script];
-        resolve({ command: process.execPath, args, env: { AI_GITHUB_BRIDGE_URL: `http://127.0.0.1:${address.port}/call`, AI_GITHUB_BRIDGE_TOKEN: this.token } });
+        resolve({ command: process.execPath, args, env: { AI_GITHUB_BRIDGE_URL: `http://127.0.0.1:${address.port}/call`, AI_GITHUB_BRIDGE_TOKEN: this.token, AI_GITHUB_CODEX_REVIEWS: String(contributionReviewsEnabled()) } });
       });
     });
   }

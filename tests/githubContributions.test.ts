@@ -317,7 +317,7 @@ test("parallel reads cannot exhaust publishing or recovery and budgets reset nex
   await assert.rejects(run.call("github_contribution_read", { ...args, path: "README.md" }), /read limit reached.*Other tool budgets are independent/);
   assert.equal(api.calls.length, calls, "exhausted reads must not reach GitHub");
   await run.call("github_contribution_status", args);
-  for (let index = 0; index < 3; index++) {
+  for (let index = 0; index < GITHUB_CONTRIBUTION_CALL_LIMITS.github_contribution_publish; index++) {
     const current = await service.status(caller, started.contribution_id);
     await run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, title: "docs: update", body: "Tested.", changes: [{ path: "README.md", content: `Revision ${index}` }] });
   }

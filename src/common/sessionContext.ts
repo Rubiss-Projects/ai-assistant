@@ -4,8 +4,8 @@ import { ARTIFACT_INSTRUCTIONS } from "./agentResponse.js";
 import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
 import { RULESET_INSTRUCTIONS } from "./rulesetToolBridge.js";
-import { githubContributionsEnabled, githubContributionAccess } from "./githubContributionConfig.js";
-import { GITHUB_CONTRIBUTION_INSTRUCTIONS, GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { githubContributionsEnabled, githubContributionAccess, contributionReviewsEnabled } from "./githubContributionConfig.js";
+import { CODEX_REVIEW_INSTRUCTIONS, GITHUB_CONTRIBUTION_INSTRUCTIONS, githubContributionTools } from "./githubContributionToolDefinitions.js";
 import { configuredSecurityMode, configuredSitesEnabled, secureSystemPrompt } from "./providerSecurity.js";
 import { activeUserInstructionBlock } from "../utils/userInstructions.js";
 import { userInstructionFeaturesEnabled, type UserInstructionContext } from "./userInstructionStore.js";
@@ -85,7 +85,15 @@ export const CONTEXT_CONTRIBUTORS: readonly ContextContributor[] = [
     profiles: ["conversation"],
     resolve: () => githubContributionsEnabled() ? {
       instructions: GITHUB_CONTRIBUTION_INSTRUCTIONS,
-      capabilities: { tools: GITHUB_CONTRIBUTION_TOOLS, access: githubContributionAccess() },
+      capabilities: { tools: githubContributionTools(), access: githubContributionAccess() },
+    } : undefined,
+  },
+  {
+    id: "codex-contribution-reviews",
+    profiles: ["conversation"],
+    resolve: () => contributionReviewsEnabled() ? {
+      instructions: CODEX_REVIEW_INSTRUCTIONS,
+      capabilities: { version: 1, enabled: true, maxReviewsPerPr: 5, independent: true, staticReadOnly: true },
     } : undefined,
   },
   {

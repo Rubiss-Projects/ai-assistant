@@ -295,6 +295,65 @@ Say “remember this” or “put this in memory” to save information for the 
 
 Support also depends on the configured security mode. Copilot's additional features include custom agents, plans, workspace commands, and user-scope skills loaded from `~/.agents/skills` at session start.
 
+## Server-side Codex contribution reviews
+
+Optional `AI_ASSISTANT_ENABLE_CODEX_REVIEWS=true` automatically reviews PRs published
+through the contribution tools, including GitHub-App-authored fork PRs. It requires
+shared mode, the existing GitHub contribution App configuration, and the separate
+Linux `reviewer` container. This uses the native Codex CLI with a **ChatGPT login**;
+API keys and endpoint overrides are rejected. It consumes the account's Codex
+allowance and does not trigger the hosted GitHub Codex integration or GitHub Actions.
+
+The assistant sends a hash-verified, head/base-pinned text snapshot through a private
+Unix socket. The reviewer has its own persistent login volume, no GitHub/Discord
+credentials, and no TCP control port. It launches at most one Codex process at a
+time, with a ten-minute deadline. Codex's commands are sandboxed read-only, with
+network, connected apps, MCP, plugins, hooks, and repository instructions disabled.
+The worker does not execute project tests/builds. The host publishes a `COMMENT`
+review as the publisher App, including actionable inline findings where supported;
+neither service approves or merges. This is a Codex-powered static review, not a
+review posted by the hosted Codex connector.
+
+For the supplied Compose example, provision a **separate** login (do not copy or
+concurrently share the assistant's live `auth.json`):
+
+```sh
+docker compose --profile reviews run --rm --no-deps --entrypoint /usr/local/lib/codex/bin/codex reviewer login --device-auth
+# Complete the displayed sign-in, then enable AI_ASSISTANT_ENABLE_CODEX_REVIEWS.
+docker compose --profile reviews up -d
+```
+
+The review listener remains running but Codex starts only for a review. Its Compose
+limits are 1 CPU, 1 GiB memory/no additional swap, 128 processes, and 256 MiB temporary
+storage; these are ceilings, not idle allocations. The socket volume is mounted only
+by the assistant and reviewer. Never mount the assistant's data volume or the Docker
+socket into the reviewer, and never expose its socket to agent workspaces.
+
+Five attempts per PR is a persistent hard ceiling in both host and worker, including
+failed/interrupted attempts. Repeated requests for the same head/base reuse a job.
+New commits automatically queue the next review if budget remains. A changed PR
+head/base invalidates an in-flight result. Review inference and publication continue
+after a Discord turn ends, but do not start a new unsolicited author conversation.
+The current author turn is instructed to wait, evaluate findings, fix/test/publish,
+and repeat within its tool budget. Failed, stale, exhausted, or uncertain outcomes
+are never reported as a clean current-head review. Findings on deleted lines remain
+in the review summary even when GitHub cannot place them inline.
+
+Process preferences (what to test, how to respond, when to hand off) belong in the
+existing operator/user instructions. Hard limits, repository ownership, and sandbox
+permissions are enforced in code and cannot be overridden by those instructions.
+The shared context registry includes enablement, review instructions, and tool
+contracts, so existing sessions refresh at their next turn after a configuration
+restart. One-shot and scheduled profiles do not gain contribution/review tools.
+
+Both durable ledgers must be retained: the host's `github-contributions.json.reviews.json`
+beside its contribution state, and `/data/review-jobs` in the reviewer's volume.
+Do not clear them to retry a failed review or reset a budget. Interrupted inference
+fails closed rather than spending another review; ambiguous publication checks for
+the existing review marker instead of posting duplicates. Large, binary, unsupported,
+or incomplete patches fail closed. Unchanged generated/lock files and excess context
+may be omitted and are explicitly listed in the review snapshot.
+
 ## Scheduled tasks and named rights
 
 Authorization is centralized in `src/common/accessPolicy.ts`. Existing
