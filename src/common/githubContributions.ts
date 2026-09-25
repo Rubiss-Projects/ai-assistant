@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { createAccessPolicy, type AccessPolicy, type AccessSubject } from "./accessPolicy.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ReviewTransport } from "./codexReviewWorker.js";
-import { ContributionReviewWorker, contributionReviewsEnabled, type ReviewOwner, type ReviewTarget } from "./githubContributionReviewWorker.js";
+import { ContributionReviewWorker, ReviewCapacityError, contributionReviewsEnabled, type ReviewOwner, type ReviewTarget } from "./githubContributionReviewWorker.js";
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "./githubContributionConfig.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion, type ReviewThread } from "./githubContributionReviews.js";
@@ -329,7 +329,13 @@ export class GitHubContributions {
       this.validatePull(record, published);
       record.pull = published.number; this.save(record);
       console.info(`[github-contribution] published id=${record.id} repository=${record.repository} pr=${record.pull}`);
-      return { ...this.summary(record), draft: published.draft, auto_review: await this.enqueueReview(caller, record, published) };
+      const result = { ...this.summary(record), draft: published.draft };
+      try { return { ...result, auto_review: await this.enqueueReview(caller, record, published) }; }
+      catch (error) {
+        // The PR is already persisted. Review startup/queue failure must not disguise that success.
+        return { ...result, auto_review: { enabled: true, state: error instanceof ReviewCapacityError ? "not_requested" : "unavailable", head_sha: record.headSha,
+          error: error instanceof ReviewCapacityError ? error.message : "The PR was published, but automatic review scheduling could not be confirmed. Check review service/state health and request the review explicitly. No clean review is claimed." } };
+      }
     });
   }
 

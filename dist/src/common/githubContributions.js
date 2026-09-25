@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createAccessPolicy } from "./accessPolicy.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { ContributionReviewWorker, contributionReviewsEnabled } from "./githubContributionReviewWorker.js";
+import { ContributionReviewWorker, ReviewCapacityError, contributionReviewsEnabled } from "./githubContributionReviewWorker.js";
 import { GitHubContributionApi, GitHubRequestError } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration } from "./githubContributionConfig.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion } from "./githubContributionReviews.js";
@@ -373,7 +373,15 @@ export class GitHubContributions {
             record.pull = published.number;
             this.save(record);
             console.info(`[github-contribution] published id=${record.id} repository=${record.repository} pr=${record.pull}`);
-            return { ...this.summary(record), draft: published.draft, auto_review: await this.enqueueReview(caller, record, published) };
+            const result = { ...this.summary(record), draft: published.draft };
+            try {
+                return { ...result, auto_review: await this.enqueueReview(caller, record, published) };
+            }
+            catch (error) {
+                // The PR is already persisted. Review startup/queue failure must not disguise that success.
+                return { ...result, auto_review: { enabled: true, state: error instanceof ReviewCapacityError ? "not_requested" : "unavailable", head_sha: record.headSha,
+                        error: error instanceof ReviewCapacityError ? error.message : "The PR was published, but automatic review scheduling could not be confirmed. Check review service/state health and request the review explicitly. No clean review is claimed." } };
+            }
         });
     }
     status(caller, id) {

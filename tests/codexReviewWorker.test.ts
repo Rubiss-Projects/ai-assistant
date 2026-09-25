@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { changedLines, reviewDigest, validateReviewInput, validateReviewResult, type ReviewInput, type ReviewResult } from "../src/common/codexReviewProtocol.js";
 import { CodexReviewWorker, ReviewSocketClient, serveReviews, writeReviewState, type ReviewTransport } from "../src/common/codexReviewWorker.js";
 import { ContributionReviewWorker, type ReviewHost, type ReviewTarget } from "../src/common/githubContributionReviewWorker.js";
+import { GitHubRequestError } from "../src/common/githubContributionApi.js";
 import { reviewSandboxConfiguration } from "../src/common/codexReviewRunner.js";
 
 const empty: ReviewResult = { summary: "No defects found in static review; no tests executed.", findings: [] };
@@ -217,7 +218,7 @@ test("explicit retry preserves receipt reconciliation and the durable PR and his
   const original = input(), state = path.join(directory, "reviews.json"), contribution = randomUUID();
   const owner = { contribution, session: "discord-1", requester: { userId: "123" } };
   const target: ReviewTarget = { repository: { upstream: original.repository, upstreamId: 1, fork: "Rubiss/contributions", forkId: 2 }, pull: 90, head: original.head, base: original.base, changedFiles: 1 };
-  const failed = { ...owner, id: original.id, repository: original.repository, pull: original.pull, head: original.head, base: original.base, digest: reviewDigest(original), createdAt: Date.now(), state: "failed", failures: 3, nextPoll: 0 };
+  const failed = { ...owner, id: original.id, repository: original.repository, pull: original.pull, head: original.head, base: original.base, digest: reviewDigest(original), changes: original.changes, createdAt: Date.now(), state: "failed", failures: 3, nextPoll: 0 };
   let receipt: "failed" | "completed" | "missing" = "failed";
   const transport: ReviewTransport = {
     get: async id => receipt === "missing" ? undefined : { ...failed, id, state: receipt, ...(receipt === "completed" ? { result: empty } : {}) },
@@ -225,18 +226,72 @@ test("explicit retry preserves receipt reconciliation and the durable PR and his
   };
   const host: ReviewHost = { target: async () => target, request: async () => { throw new Error("Unexpected GitHub request"); } };
   const load = (records: unknown[]) => { writeReviewState(state, records); return new ContributionReviewWorker(state, host, transport); };
+  const persisted = () => JSON.parse(fs.readFileSync(state, "utf8")) as { changes?: ReviewInput["changes"] }[];
   const controller = load([failed]);
   assert.equal(controller.enqueue(owner, target).attempts, 1);
   assert.equal((await controller.retry(owner, target, new AbortController().signal)).attempts, 2);
+  assert.equal(persisted()[0].changes, undefined);
   assert.equal((await controller.retry(owner, target, new AbortController().signal)).attempts, 2);
   const five = load(Array.from({ length: 5 }, () => ({ ...failed, id: randomUUID() })));
   assert.equal((await five.retry(owner, target, new AbortController().signal)).budget_exhausted, true);
+  assert.equal(persisted().length, 5); assert.equal(persisted().at(-1)!.changes, undefined);
   receipt = "completed";
   const publishing = load([{ ...failed, result: empty, publicationAttempted: true }]);
   const reconciled = await publishing.retry(owner, target, new AbortController().signal);
   assert.equal(reconciled.state, "publishing"); assert.equal(reconciled.attempts, 1);
+  assert.deepEqual(persisted()[0].changes, original.changes);
   receipt = "missing";
   await assert.rejects(load([{ ...failed, result: empty, publicationAttempted: true }]).retry(owner, target, new AbortController().signal), /reconciliation/);
+  assert.deepEqual(persisted()[0].changes, original.changes);
+  receipt = "failed";
   const full = load(Array.from({ length: 5000 }, () => ({ ...failed, id: randomUUID() })));
   assert.throws(() => full.enqueue(owner, { ...target, pull: 91 }), /capacity.*maintenance/);
+  await assert.rejects(full.retry(owner, target, new AbortController().signal), /capacity.*maintenance/);
+  assert.equal(persisted().length, 5000); assert.equal(persisted().at(-1)!.changes, undefined);
+  load([failed]);
+  const mismatched = new ContributionReviewWorker(state, host, { ...transport, get: async id => ({ ...failed, id, head: "c".repeat(40), state: "failed" }) });
+  await assert.rejects(mismatched.retry(owner, target, new AbortController().signal), /mismatched receipt/);
+  assert.deepEqual(persisted()[0].changes, original.changes);
+});
+
+for (const status of [403, 422, 429, 408, 500]) test(`review POST HTTP ${status} preserves the correct retry boundary`, async t => {
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "review-http-recovery-"));
+  const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true", AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true", AI_ASSISTANT_WORKSPACE_ROOT: path.join(directory, "workspace") };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(directory, { recursive: true, force: true }); });
+  const original = input(), state = path.join(directory, "reviews.json");
+  const owner = { contribution: randomUUID(), session: "discord-1", requester: { userId: "123" } };
+  const target: ReviewTarget = { repository: { upstream: original.repository, upstreamId: 1, fork: "Rubiss/contributions", forkId: 2 }, pull: original.pull, head: original.head, base: original.base, changedFiles: 1 };
+  const receipt = { id: original.id, repository: original.repository, pull: original.pull, head: original.head, base: original.base, digest: reviewDigest(original) };
+  writeReviewState(state, [{ ...owner, ...receipt, changes: original.changes, createdAt: Date.now(), state: "submitted", failures: 0, nextPoll: 0 }]);
+  const transport: ReviewTransport = { get: async () => ({ ...receipt, state: "completed", result: empty }), submit: async () => { throw new Error("Must reuse completed inference"); } };
+  let posts = 0, rejectPost = true, rejectRead = false;
+  const host: ReviewHost = {
+    target: async () => target,
+    async request<T>(_owner, _repository, _role, method, _suffix, _body, _signal, _expected, beforeSend): Promise<T> {
+      if (method === "GET") { if (rejectRead) throw new GitHubRequestError(403); return [] as T; }
+      assert(beforeSend); beforeSend(); posts++;
+      if (rejectPost) throw new GitHubRequestError(status);
+      return { html_url: "https://github.com/review" } as T;
+    },
+  };
+  const persisted = () => JSON.parse(fs.readFileSync(state, "utf8")) as { nextPoll: number; publicationAttempted?: boolean; changes?: ReviewInput["changes"] }[];
+  const resume = () => { const records = persisted(); records[0].nextPoll = 0; writeReviewState(state, records); return new ContributionReviewWorker(state, host, transport); };
+  await resume().tick();
+  const definitive = [403, 422, 429].includes(status);
+  assert.equal(persisted()[0].publicationAttempted, definitive ? undefined : true);
+  assert.deepEqual(persisted()[0].changes, original.changes);
+  assert.equal(posts, 1);
+  if (!definitive) {
+    // A rejected reconciliation GET must not erase uncertainty about an earlier POST.
+    rejectRead = true; await resume().tick(); await resume().tick(); rejectRead = false;
+    assert.equal(persisted()[0].publicationAttempted, true);
+  }
+  const recovered = resume();
+  assert.equal(recovered.status(owner.contribution).state, "failed");
+  assert.equal((await recovered.retry(owner, target, new AbortController().signal)).attempts, 1);
+  rejectPost = false; await recovered.tick();
+  assert.equal(posts, definitive ? 2 : 1);
+  assert.equal(recovered.status(owner.contribution).state, definitive ? "completed" : "publishing");
 });

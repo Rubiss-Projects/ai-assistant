@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import type { AccessSubject } from "./accessPolicy.js";
-import type { GitHubRole } from "./githubContributionApi.js";
+import { GitHubRequestError, type GitHubRole } from "./githubContributionApi.js";
 import type { ContributionRepository } from "./githubContributionConfig.js";
 import { hostOnlyGitHubPath, contributionReviewsEnabled } from "./githubContributionConfig.js";
-import { REVIEW_LIMIT, REVIEW_TIMEOUT_MS, changedLines, reviewDigest, reviewPath, validateReviewInput, validateReviewResult, type ReviewChange, type ReviewInput, type ReviewResult } from "./codexReviewProtocol.js";
+import { REVIEW_LIMIT, REVIEW_TIMEOUT_MS, changedLines, reviewDigest, reviewPath, validateReviewInput, validateReviewResult, type ReviewChange, type ReviewInput, type ReviewJob, type ReviewResult } from "./codexReviewProtocol.js";
 import { ReviewSocketClient, writeReviewState, type ReviewTransport } from "./codexReviewWorker.js";
 
 export { contributionReviewsEnabled } from "./githubContributionConfig.js";
@@ -23,6 +23,15 @@ export interface ReviewHost {
 }
 interface TreeEntry { path: string; sha: string; mode: string; type: string; size?: number }
 interface PullFile { filename: string; previous_filename?: string; status: string; patch?: string; additions: number; deletions: number }
+
+export class ReviewCapacityError extends Error {
+  constructor() { super("Review history capacity reached; operator maintenance required."); }
+}
+
+function verifyReceipt(item: Attempt, job: ReviewJob): void {
+  if (job.id !== item.id || job.digest !== item.digest || job.head !== item.head || job.base !== item.base || job.repository !== item.repository || job.pull !== item.pull
+    || !["queued", "running", "completed", "failed"].includes(job.state)) throw new Error("Review worker returned a mismatched receipt.");
+}
 
 async function snapshot(host: ReviewHost, owner: ReviewOwner, target: ReviewTarget, id: string, signal: AbortSignal): Promise<ReviewInput> {
   const request = <T>(role: GitHubRole, suffix: string) => host.request<T>(owner, target.repository, role, "GET", suffix, undefined, signal);
@@ -98,16 +107,21 @@ export class ContributionReviewWorker {
     if (!previous || previous.state !== "failed") return this.enqueue(owner, target);
     const job = await this.transport.get(previous.id, signal);
     signal.throwIfAborted();
+    if (job) verifyReceipt(previous, job);
     if (job && job.state !== "failed") {
       previous.state = previous.publicationAttempted ? "publishing" : "submitted";
       previous.failures = 0; previous.nextPoll = 0; previous.startedAt = Date.now(); delete previous.error;
       this.save(); return this.status(owner.contribution);
     }
     if (previous.publicationAttempted || previous.result) throw new Error("Publication may have succeeded but its worker receipt is unavailable; operator reconciliation required.");
+    if (previous.changes) {
+      // Reconciled failure (or a missing job) needs a fresh snapshot, even if the budget prevents retry.
+      delete previous.changes; this.save();
+    }
     return this.add(owner, target);
   }
   private add(owner: ReviewOwner, target: ReviewTarget) {
-    if (this.attempts.length >= 5000) throw new Error("Review history capacity reached; operator maintenance required.");
+    if (this.attempts.length >= 5000) throw new ReviewCapacityError();
     if (this.attempts.filter(item => item.repository === target.repository.upstream && item.pull === target.pull).length >= REVIEW_LIMIT) return this.status(owner.contribution);
     this.attempts.push({ ...owner, id: randomUUID(), repository: target.repository.upstream, pull: target.pull, head: target.head, base: target.base,
       state: "queued", createdAt: Date.now(), failures: 0, nextPoll: 0 });
@@ -118,7 +132,8 @@ export class ContributionReviewWorker {
     const attempts = this.attempts.filter(item => item.contribution === contribution);
     const last = attempts.at(-1);
     return { enabled: true, attempts: attempts.length, limit: REVIEW_LIMIT, budget_exhausted: attempts.length >= REVIEW_LIMIT,
-      state: last?.state ?? "not_requested", head_sha: last?.head, base_sha: last?.base, result: last?.result, error: last?.error, review_url: last?.url };
+      state: last?.state ?? "not_requested", head_sha: last?.head, base_sha: last?.base, result: last?.result,
+      error: last?.error ?? (!last && this.attempts.length >= 5000 ? new ReviewCapacityError().message : undefined), review_url: last?.url };
   }
   start() {
     if (this.timer) return;
@@ -147,7 +162,7 @@ export class ContributionReviewWorker {
         item.digest = reviewDigest(input); item.changes = input.changes; this.save();
         job = await this.transport.submit(input, signal);
       }
-      if (job.id !== item.id || job.digest !== item.digest || job.head !== item.head || job.base !== item.base || job.repository !== item.repository || job.pull !== item.pull) throw new Error("Review worker returned a mismatched receipt.");
+      verifyReceipt(item, job);
       if (job.state === "failed") {
         item.state = "failed"; item.error = job.error;
         // A confirmed inference failure cannot reuse its patches; preserve uncertain publication evidence.
@@ -181,10 +196,21 @@ export class ContributionReviewWorker {
       const body = `## Codex-powered static review\n\n${safeText(item.result.summary)}\n\n${findings || "No actionable findings in this static review."}\n\nHead: \`${item.head}\`; base: \`${item.base}\`. Reviewed in a fresh, read-only server-side Codex session using the operator's ChatGPT login. Published by AI Assistant, not the hosted Codex GitHub integration. No tests or repository code were executed. This is not approval; human review remains required.\n\n${marker}`;
       const comments = item.result.findings.filter(finding => item.changes?.some(change => change.path === finding.path && changedLines(change).has(finding.line)))
         .map(finding => ({ path: finding.path, line: finding.line, side: "RIGHT", body: `[P${finding.priority}] ${safeText(finding.title)}\n\n${safeText(finding.body)}` }));
-      const published = await request<{ html_url: string }>("POST", `/pulls/${item.pull}/reviews`, { commit_id: item.head, event: "COMMENT", body, ...(comments.length ? { comments } : {}) }, () => {
-        // Preflight failures are retryable; only an actual send creates an uncertain outcome.
-        item.state = "publishing"; item.publicationAttempted = true; this.save();
-      });
+      let published: { html_url: string };
+      try {
+        published = await request<{ html_url: string }>("POST", `/pulls/${item.pull}/reviews`, { commit_id: item.head, event: "COMMENT", body, ...(comments.length ? { comments } : {}) }, () => {
+          // Preflight failures are retryable; only an actual send creates an uncertain outcome.
+          item.state = "publishing"; item.publicationAttempted = true; this.save();
+        });
+      } catch (error) {
+        // Only this POST's definitive rejection clears uncertainty, never a later read failure or timeout/5xx.
+        if (item.publicationAttempted && error instanceof GitHubRequestError && [400, 401, 403, 404, 422, 429].includes(error.status)) {
+          delete item.publicationAttempted; item.state = "failed";
+          item.error = `GitHub rejected review publication (HTTP ${error.status}). Check access, validation, and rate limits before retrying explicitly; completed inference will be reused.`;
+          this.save(); return;
+        }
+        throw error;
+      }
       item.url = published.html_url; item.state = "completed"; this.save();
       console.info(`[codex-review] published repository=${item.repository} pr=${item.pull} head=${item.head} findings=${item.result.findings.length}`);
     } catch {

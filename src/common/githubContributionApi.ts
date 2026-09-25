@@ -33,7 +33,7 @@ export class GitHubContributionApi implements ContributionApi {
       operation.signal.throwIfAborted();
       beforeSend?.();
       const response = await this.fetcher(`https://api.github.com${endpoint}`, options);
-      if (!response.ok) { await response.body?.cancel(); throw new GitHubRequestError(response.status); }
+      if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new GitHubRequestError(response.status); }
       const chunks: Uint8Array[] = [];
       let size = 0;
       for await (const chunk of response.body ?? []) {

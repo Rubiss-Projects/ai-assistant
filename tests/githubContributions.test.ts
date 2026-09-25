@@ -162,6 +162,40 @@ function fixture(t: TestContext) {
   return { directory, config, api, service, caller };
 }
 
+for (const failure of ["capacity", "startup"] as const) test(`review ${failure} failure preserves confirmed PR publication`, async t => {
+  const { service, config, api, caller } = fixture(t);
+  const started = await service.begin(caller, repository.upstream);
+  const previous = process.env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS;
+  process.env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS = "true";
+  t.after(async () => { await service.stopReviews(); if (previous === undefined) delete process.env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS; else process.env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS = previous; });
+  const ledger = `${config.stateFile}.reviews.json`;
+  if (failure === "capacity") {
+    writeReviewState(ledger, Array.from({ length: 5000 }, () => ({ id: randomUUID(), contribution: randomUUID(), requester: { userId: "123" }, state: "failed" })));
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    service.startReviews(async (userId, guildId) => ({ userId, guildId }));
+  }
+  // Startup case intentionally has no live-member resolver; neither failure may conceal the PR.
+  const published = await service.publish(caller, started.contribution_id, started.head_sha, "docs: example", "", [{ path: "README.md", content: "Changed\n" }]);
+  assert.equal(published.pull_request_url, `https://github.com/${repository.upstream}/pull/1`);
+  assert.equal(api.pulls.length, 1);
+  assert("error" in published.auto_review);
+  assert.match(published.auto_review.error!, failure === "capacity" ? /capacity.*maintenance/ : /published.*could not be confirmed/);
+  assert.equal(published.auto_review.state, failure === "capacity" ? "not_requested" : "unavailable");
+  const mutations = api.calls.filter(call => call.method !== "GET").length;
+  const restored = new GitHubContributions(config, api);
+  if (failure === "capacity") restored.startReviews(async (userId, guildId) => ({ userId, guildId }));
+  t.after(() => restored.stopReviews());
+  const status = await restored.status(caller, started.contribution_id);
+  assert.equal(status.pull_request_url, published.pull_request_url);
+  assert.equal(status.head_sha, published.head_sha);
+  assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations);
+  if (failure === "capacity") {
+    assert("error" in status.auto_review); assert.match(status.auto_review.error!, /capacity/);
+    await assert.rejects(restored.review(caller, started.contribution_id, published.head_sha), /capacity/);
+    assert.equal(JSON.parse(readFileSync(ledger, "utf8")).length, 5000);
+  }
+});
+
 for (const changed of ["roles", "head"] as const) test(`background reviews recheck ${changed} immediately before publication`, async t => {
   const { service, config, api, caller, directory } = fixture(t);
   const started = await service.begin(caller, repository.upstream);
@@ -533,7 +567,7 @@ test("App tokens are scoped to one repository and errors do not expose response 
     const url = String(input); calls.push({ url, options });
     assert.equal(options?.redirect, "error");
     if (url.endsWith("/access_tokens")) return Response.json({ token: "installation-secret", expires_at: new Date(Date.now() + 3600000).toISOString(), repositories: [{ id: 1 }], permissions: { metadata: "read", contents: "read", pull_requests: "write" } });
-    return new Response(JSON.stringify({ message: "SECRET_RESPONSE_TOKEN" }), { status: 403 });
+    return new Response(new ReadableStream({ cancel() { throw new Error("SECRET_RESPONSE_TOKEN"); } }), { status: 403 });
   });
   await assert.rejects(api.request("publisher", repository, "POST", "/pulls", {}, new AbortController().signal), error => error instanceof GitHubRequestError && error.status === 403 && !error.message.includes("SECRET_RESPONSE_TOKEN"));
   assert.deepEqual(JSON.parse(String(calls[0].options?.body)), { repository_ids: [1], permissions: { contents: "read", pull_requests: "write" } });
