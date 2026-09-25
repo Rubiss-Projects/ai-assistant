@@ -334,6 +334,9 @@ failed/interrupted attempts. Repeated requests for the same head/base reuse a jo
 After checking a failure, `github_contribution_review` accepts `retry: true`:
 it reconciles the old receipt first and only spends another attempt if inference
 failed or its receipt is unavailable. An uncertain GitHub write is never reposted.
+Definite GitHub rejections stop publication until an explicit retry, which reuses
+completed inference. A successful PR publish still returns its URL if review
+scheduling fails, with a separate `auto_review` error; this is not a clean review.
 New commits automatically queue the next review if budget remains. A changed PR
 head/base invalidates an in-flight result. Review inference and publication continue
 after a Discord turn ends, but do not start a new unsolicited author conversation.

@@ -32,7 +32,7 @@ export class GitHubContributionApi {
             beforeSend?.();
             const response = await this.fetcher(`https://api.github.com${endpoint}`, options);
             if (!response.ok) {
-                await response.body?.cancel();
+                await response.body?.cancel().catch(() => { });
                 throw new GitHubRequestError(response.status);
             }
             const chunks = [];
