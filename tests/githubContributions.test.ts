@@ -160,7 +160,7 @@ function fixture(t: TestContext) {
   return { directory, config, api, service, caller };
 }
 
-test("background reviews refresh Discord roles immediately before publication", async t => {
+for (const changed of ["roles", "head"] as const) test(`background reviews recheck ${changed} immediately before publication`, async t => {
   const { service, config, api, caller, directory } = fixture(t);
   const started = await service.begin(caller, repository.upstream);
   const published = await service.publish(caller, started.contribution_id, started.head_sha, "docs: test", "", [{ path: "README.md", content: "Changed\n" }]);
@@ -178,13 +178,18 @@ test("background reviews refresh Discord roles immediately before publication", 
   const resumed = new GitHubContributions(config, api, transport);
   let refreshes = 0;
   t.mock.timers.enable({ apis: ["setInterval"] });
-  resumed.startReviews(async (userId, guildId) => ({ userId, guildId, roleIds: ++refreshes === 1 ? ["999"] : [] }));
+  resumed.startReviews(async (userId, guildId) => {
+    refreshes++;
+    if (changed === "head" && refreshes === 2) api.refs.set(api.pulls[0].head.ref, "f".repeat(40));
+    return { userId, guildId, roleIds: changed === "roles" && refreshes > 1 ? [] : ["999"] };
+  });
   t.after(() => resumed.stopReviews());
   const mutations = api.calls.filter(call => call.method !== "GET").length;
   t.mock.timers.tick(2000);
-  for (let i = 0; i < 100 && refreshes < 2; i++) await delay(5);
+  const expectedRefreshes = changed === "roles" ? 2 : 3;
+  for (let i = 0; i < 100 && refreshes < expectedRefreshes; i++) await delay(5);
   await resumed.stopReviews();
-  assert.equal(refreshes, 2);
+  assert.equal(refreshes, expectedRefreshes);
   assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations);
   assert.notEqual(JSON.parse(readFileSync(state, "utf8"))[0].state, "completed");
 });

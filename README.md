@@ -331,6 +331,9 @@ socket into the reviewer, and never expose its socket to agent workspaces.
 
 Five attempts per PR is a persistent hard ceiling in both host and worker, including
 failed/interrupted attempts. Repeated requests for the same head/base reuse a job.
+After checking a failure, `github_contribution_review` accepts `retry: true`:
+it reconciles the old receipt first and only spends another attempt if inference
+failed or its receipt is unavailable. An uncertain GitHub write is never reposted.
 New commits automatically queue the next review if budget remains. A changed PR
 head/base invalidates an in-flight result. Review inference and publication continue
 after a Discord turn ends, but do not start a new unsolicited author conversation.
