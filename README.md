@@ -51,7 +51,7 @@ Native video conversion also requires `ffmpeg` and `ffprobe` on `PATH`, with the
 
 #### Global npm install
 
-Requires Node.js 18+ and authentication for your chosen provider.
+Requires Node.js 22.14+ and authentication for your chosen provider. Native dependency installation may also require Python and a C++ build toolchain (`python3 make g++` on Debian/Ubuntu, or Visual Studio's Desktop development with C++ workload on Windows).
 
 ```bash
 npm install -g --install-links github:Rubiss-Projects/ai-assistant
@@ -109,7 +109,7 @@ Compose loads the project's host-side `.env` and passes its tokens and API keys 
 
 #### Run from source
 
-Requires Node.js 18+ and authentication for your chosen provider.
+Requires Node.js 22.14+ and authentication for your chosen provider. Install Python and a C++ build toolchain before running `npm ci` (`python3 make g++` on Debian/Ubuntu, or Visual Studio's Desktop development with C++ workload on Windows).
 
 ```bash
 git clone https://github.com/Rubiss-Projects/ai-assistant.git

@@ -8,7 +8,7 @@
     "url": "https://github.com/Rubiss-Projects/ai-assistant.git"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.14.0"
   },
   "bin": {
     "ai-assistant": "./dist/src/cli.js"

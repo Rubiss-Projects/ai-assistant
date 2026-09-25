@@ -1,7 +1,13 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-bookworm-slim AS build
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
+
+# npm ci invokes node-gyp for better-sqlite3 even with bundled prebuilds.
+# Keep its build tools out of the runtime image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json patch-deps.cjs ./
 RUN npm ci
@@ -17,7 +23,7 @@ RUN npm run build && npm prune --omit=dev
 RUN node -e "const fs=require('fs');const path=require('path');const arch=process.arch==='arm64'?'arm64':'x64';const triple=arch==='arm64'?'aarch64-unknown-linux-musl':'x86_64-unknown-linux-musl';const pkg=require.resolve('@openai/codex-linux-'+arch+'/package.json');fs.cpSync(path.join(path.dirname(pkg),'vendor',triple),'/app/codex-runtime',{recursive:true})" \
     && chmod 0555 /app/codex-runtime/bin/* /app/codex-runtime/codex-path/* /app/codex-runtime/codex-resources/bwrap /app/codex-runtime/codex-resources/zsh/bin/zsh
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 ARG VERSION=dev
 ARG REVISION=unknown
