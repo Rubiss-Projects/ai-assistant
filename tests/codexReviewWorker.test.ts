@@ -116,7 +116,7 @@ test("host publishes a pinned App review once and survives a lost GitHub respons
   const published: { body: string; html_url: string; commit_id: string }[] = [];
   const host: ReviewHost = {
     target: async () => structuredClone(target),
-    async request<T>(_owner, _repository, role, method, suffix, body): Promise<T> {
+    async request<T>(_owner, _repository, role, method, suffix, body, _signal, _expected, beforeSend): Promise<T> {
       let result: unknown;
       if (suffix.includes("/compare/")) result = { files: [{ filename: "src/main.ts", status: "modified", patch: original.changes[0].patch, additions: 1, deletions: 1 }] };
       else if (suffix.includes("/git/trees/")) result = { truncated: false, tree: [{ path: "src/main.ts", sha: blob, mode: "100644", type: "blob", size: 4 }] };
@@ -126,6 +126,8 @@ test("host publishes a pinned App review once and survives a lost GitHub respons
         assert.equal(role, "publisher");
         const review = body as { event: string; body: string; commit_id: string };
         assert.equal(review.event, "COMMENT"); assert.equal(review.commit_id, original.head);
+        assert(beforeSend); beforeSend();
+        assert.equal(JSON.parse(fs.readFileSync(state, "utf8"))[0].publicationAttempted, true);
         writes++; published.push({ ...review, html_url: "https://github.com/review" });
         throw new Error("Lost response after GitHub persisted the review");
       } else throw new Error(`Unexpected ${suffix}`);

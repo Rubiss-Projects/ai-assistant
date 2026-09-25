@@ -19,15 +19,18 @@ export class GitHubContributionApi {
         this.fetcher = fetcher;
         this.keys = { publisher: createPrivateKey(fs.readFileSync(config.publisher.keyFile)), writer: createPrivateKey(fs.readFileSync(config.writer.keyFile)) };
     }
-    async send(token, method, endpoint, body, signal) {
+    async send(token, method, endpoint, body, signal, beforeSend) {
         signal.throwIfAborted();
         const operation = operationSignal(signal, 30_000, "GitHub request timed out.");
         try {
-            const response = await this.fetcher(`https://api.github.com${endpoint}`, {
+            const options = {
                 method, redirect: "error", signal: operation.signal,
                 headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "content-type": "application/json", "x-github-api-version": "2026-03-10" },
                 ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-            });
+            };
+            operation.signal.throwIfAborted();
+            beforeSend?.();
+            const response = await this.fetcher(`https://api.github.com${endpoint}`, options);
             if (!response.ok) {
                 await response.body?.cancel();
                 throw new GitHubRequestError(response.status);
@@ -53,7 +56,7 @@ export class GitHubContributionApi {
         const data = `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ iss: app.appId, iat: now - 60, exp: now + 540 })}`;
         return `${data}.${sign("RSA-SHA256", Buffer.from(data), this.keys[role]).toString("base64url")}`;
     }
-    async authenticated(role, repository, method, endpoint, body, signal) {
+    async authenticated(role, repository, method, endpoint, body, signal, beforeSend) {
         const app = this.config[role];
         const repositoryId = role === "publisher" ? repository.upstreamId : repository.forkId;
         const key = `${role}:${repositoryId}`;
@@ -69,7 +72,7 @@ export class GitHubContributionApi {
             this.tokens.set(key, token);
         }
         try {
-            return await this.send(token.value, method, endpoint, body, signal);
+            return await this.send(token.value, method, endpoint, body, signal, beforeSend);
         }
         catch (error) {
             if (error instanceof GitHubRequestError && error.status === 401)
@@ -77,9 +80,9 @@ export class GitHubContributionApi {
             throw error; // No automatic mutation retries: the broker reconciles remote state first.
         }
     }
-    request(role, repository, method, suffix, body, signal) {
+    request(role, repository, method, suffix, body, signal, beforeSend) {
         const name = role === "publisher" ? repository.upstream : repository.fork;
-        return this.authenticated(role, repository, method, `/repos/${name}${suffix}`, body, signal);
+        return this.authenticated(role, repository, method, `/repos/${name}${suffix}`, body, signal, beforeSend);
     }
     /** Only host-owned review documents reach this transport; no query is accepted from tools. */
     async graphql(repository, query, variables, signal) {

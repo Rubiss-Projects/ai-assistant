@@ -84,10 +84,11 @@ class RepositoryApi implements ContributionApi {
     } else throw new Error("Unexpected GraphQL document");
     return structuredClone(result) as T;
   }
-  async request<T>(role: GitHubRole, _repository: ContributionRepository, method: string, suffix: string, raw: unknown, signal: AbortSignal): Promise<T> {
+  async request<T>(role: GitHubRole, _repository: ContributionRepository, method: string, suffix: string, raw: unknown, signal: AbortSignal, beforeSend?: () => void): Promise<T> {
     signal.throwIfAborted();
     await this.beforeRequest?.(signal);
     signal.throwIfAborted();
+    beforeSend?.();
     this.calls.push({ role, method, suffix, body: raw });
     if (method !== "GET") this.beforeMutation?.();
     const body = raw as Record<string, unknown> | undefined;
@@ -137,6 +138,7 @@ class RepositoryApi implements ContributionApi {
       this.pulls.push(pull); result = pull;
       if (this.failAfterPull) { this.failAfterPull = false; throw new Error("Simulated lost PR response"); }
     } else if (/^\/pulls\/\d+\/reviews\?/.test(suffix) && method === "GET") result = [];
+    else if (/^\/pulls\/\d+\/reviews$/.test(suffix) && method === "POST") result = { html_url: "https://github.com/example/pull/1#review" };
     else if (/^\/pulls\/\d+$/.test(suffix)) {
       assert.equal(role, "publisher"); const pull = this.pulls[Number(suffix.split("/").at(-1)) - 1];
       pull.head.sha = this.refs.get(pull.head.ref)!; result = pull;
@@ -191,7 +193,21 @@ for (const changed of ["roles", "head"] as const) test(`background reviews reche
   await resumed.stopReviews();
   assert.equal(refreshes, expectedRefreshes);
   assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations);
-  assert.notEqual(JSON.parse(readFileSync(state, "utf8"))[0].state, "completed");
+  const records = JSON.parse(readFileSync(state, "utf8"));
+  assert.equal(records[0].state, "submitted");
+  assert.equal(records[0].publicationAttempted, undefined);
+  // Once preflight recovers, publish the same completed inference after a restart.
+  records[0].nextPoll = 0; writeReviewState(state, records);
+  api.refs.set(api.pulls[0].head.ref, published.head_sha);
+  const recovered = new GitHubContributions(config, api, transport);
+  recovered.startReviews(async (userId, guildId) => ({ userId, guildId, roleIds: ["999"] }));
+  t.after(() => recovered.stopReviews());
+  api.beforeMutation = () => assert.equal(JSON.parse(readFileSync(state, "utf8"))[0].publicationAttempted, true);
+  t.mock.timers.tick(2000);
+  for (let i = 0; i < 100 && JSON.parse(readFileSync(state, "utf8"))[0].state !== "completed"; i++) await delay(5);
+  await recovered.stopReviews();
+  assert.equal(JSON.parse(readFileSync(state, "utf8"))[0].state, "completed");
+  assert.equal(api.calls.filter(call => call.method !== "GET").length, mutations + 1);
 });
 
 test("a contribution keeps identity, unchanged files, and session ownership through draft PR revisions", async t => {
@@ -478,6 +494,34 @@ test("bridge credentials are session-specific and expired runs reject requests",
     assert.equal(publishResult.isError, undefined);
     assert.equal(JSON.parse(publishResult.content[0].text).draft, true);
   });
+});
+
+test("publication send marker follows token acquisition, serialization, and cancellation checks", async t => {
+  const { config } = fixture(t);
+  const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
+  writeFileSync(config.publisher.keyFile, key); writeFileSync(config.writer.keyFile, key);
+  const events: string[] = [];
+  let failToken = true;
+  const api = new GitHubContributionApi(config, async input => {
+    if (String(input).endsWith("/access_tokens")) {
+      events.push("token");
+      if (failToken) throw new Error("Token unavailable");
+      return Response.json({ token: "installation-secret", expires_at: new Date(Date.now() + 3600000).toISOString(), repositories: [{ id: 1 }], permissions: { metadata: "read", contents: "read", pull_requests: "write" } });
+    }
+    events.push("post");
+    return Response.json({ html_url: "https://github.com/review" });
+  });
+  const send = (body: unknown, signal = new AbortController().signal, beforeSend = () => { events.push("marker"); }) => api.request("publisher", repository, "POST", "/pulls/1/reviews", body, signal, beforeSend);
+  await assert.rejects(send({}), /Token unavailable/);
+  assert.deepEqual(events, ["token"]);
+  failToken = false;
+  await assert.rejects(send({ toJSON() { throw new Error("Serialization failed"); } }), /Serialization failed/);
+  assert.deepEqual(events, ["token", "token"]);
+  await assert.rejects(send({}, AbortSignal.abort()));
+  await assert.rejects(send({}, undefined, () => { throw new Error("Receipt unavailable"); }), /Receipt unavailable/);
+  assert.deepEqual(events, ["token", "token"]);
+  await send({});
+  assert.deepEqual(events, ["token", "token", "marker", "post"]);
 });
 
 test("App tokens are scoped to one repository and errors do not expose response secrets", async t => {

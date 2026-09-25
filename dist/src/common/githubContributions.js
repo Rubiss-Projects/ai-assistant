@@ -102,7 +102,7 @@ export class GitHubContributions {
                     return this.reviewTarget(record, await this.reviewPull(current, record));
                 });
             },
-            request: async (owner, repository, role, method, suffix, body, signal, expected) => {
+            request: async (owner, repository, role, method, suffix, body, signal, expected, beforeSend) => {
                 const current = await caller(owner, signal, method !== "GET");
                 const request = async () => {
                     // Serialize publication with contribution revisions and recheck after waiting for the lock.
@@ -118,7 +118,7 @@ export class GitHubContributions {
                         if (pull.number !== expected.pull || pull.base.sha !== expected.base)
                             throw new Error("Review target changed before publication.");
                     }
-                    return this.request(authorized, repository, role, method, suffix, body);
+                    return this.request(authorized, repository, role, method, suffix, body, beforeSend);
                 };
                 return method === "GET" ? request() : this.serial(current, request);
             },
@@ -169,9 +169,9 @@ export class GitHubContributions {
             throw new Error("Choose an enabled contribution repository.");
         return repository;
     }
-    request(caller, repository, role, method, suffix, body) {
+    request(caller, repository, role, method, suffix, body, beforeSend) {
         this.authorize(caller); // Recheck before every remote operation, including after network waits.
-        return this.api.request(role, repository, method, suffix, body, caller.signal);
+        return this.api.request(role, repository, method, suffix, body, caller.signal, beforeSend);
     }
     async verify(caller, repository) {
         const upstream = await this.request(caller, repository, "publisher", "GET", "");

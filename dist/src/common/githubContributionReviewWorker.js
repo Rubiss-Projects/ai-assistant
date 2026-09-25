@@ -208,7 +208,7 @@ export class ContributionReviewWorker {
                 return;
             }
             const marker = `<!-- ai-assistant-codex-review:${item.id} -->`;
-            const request = (method, suffix, body) => this.host.request(item, target.repository, "publisher", method, suffix, body, signal, target);
+            const request = (method, suffix, body, beforeSend) => this.host.request(item, target.repository, "publisher", method, suffix, body, signal, target, beforeSend);
             let previous;
             for (let page = 1; page <= 10; page++) {
                 const reviews = await request("GET", `/pulls/${item.pull}/reviews?per_page=100&page=${page}`);
@@ -231,10 +231,12 @@ export class ContributionReviewWorker {
             const body = `## Codex-powered static review\n\n${safeText(item.result.summary)}\n\n${findings || "No actionable findings in this static review."}\n\nHead: \`${item.head}\`; base: \`${item.base}\`. Reviewed in a fresh, read-only server-side Codex session using the operator's ChatGPT login. Published by AI Assistant, not the hosted Codex GitHub integration. No tests or repository code were executed. This is not approval; human review remains required.\n\n${marker}`;
             const comments = item.result.findings.filter(finding => item.changes?.some(change => change.path === finding.path && changedLines(change).has(finding.line)))
                 .map(finding => ({ path: finding.path, line: finding.line, side: "RIGHT", body: `[P${finding.priority}] ${safeText(finding.title)}\n\n${safeText(finding.body)}` }));
-            item.state = "publishing";
-            item.publicationAttempted = true;
-            this.save();
-            const published = await request("POST", `/pulls/${item.pull}/reviews`, { commit_id: item.head, event: "COMMENT", body, ...(comments.length ? { comments } : {}) });
+            const published = await request("POST", `/pulls/${item.pull}/reviews`, { commit_id: item.head, event: "COMMENT", body, ...(comments.length ? { comments } : {}) }, () => {
+                // Preflight failures are retryable; only an actual send creates an uncertain outcome.
+                item.state = "publishing";
+                item.publicationAttempted = true;
+                this.save();
+            });
             item.url = published.html_url;
             item.state = "completed";
             this.save();

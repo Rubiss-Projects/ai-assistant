@@ -19,7 +19,7 @@ interface Attempt extends ReviewOwner {
 }
 export interface ReviewHost {
   target(owner: ReviewOwner, signal: AbortSignal): Promise<ReviewTarget>;
-  request<T>(owner: ReviewOwner, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST", suffix: string, body: unknown, signal: AbortSignal, expected?: ReviewTarget): Promise<T>;
+  request<T>(owner: ReviewOwner, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST", suffix: string, body: unknown, signal: AbortSignal, expected?: ReviewTarget, beforeSend?: () => void): Promise<T>;
 }
 interface TreeEntry { path: string; sha: string; mode: string; type: string; size?: number }
 interface PullFile { filename: string; previous_filename?: string; status: string; patch?: string; additions: number; deletions: number }
@@ -161,7 +161,7 @@ export class ContributionReviewWorker {
       const target = await this.host.target(item, signal);
       if (target.repository.upstream !== item.repository || target.pull !== item.pull || target.head !== item.head || target.base !== item.base) { item.state = "stale"; this.save(); return; }
       const marker = `<!-- ai-assistant-codex-review:${item.id} -->`;
-      const request = <T>(method: "GET" | "POST", suffix: string, body?: unknown) => this.host.request<T>(item, target.repository, "publisher", method, suffix, body, signal, target);
+      const request = <T>(method: "GET" | "POST", suffix: string, body?: unknown, beforeSend?: () => void) => this.host.request<T>(item, target.repository, "publisher", method, suffix, body, signal, target, beforeSend);
       let previous: { body: string; html_url: string; commit_id: string } | undefined;
       for (let page = 1; page <= 10; page++) {
         const reviews = await request<{ body: string; html_url: string; commit_id: string }[]>("GET", `/pulls/${item.pull}/reviews?per_page=100&page=${page}`);
@@ -176,8 +176,10 @@ export class ContributionReviewWorker {
       const body = `## Codex-powered static review\n\n${safeText(item.result.summary)}\n\n${findings || "No actionable findings in this static review."}\n\nHead: \`${item.head}\`; base: \`${item.base}\`. Reviewed in a fresh, read-only server-side Codex session using the operator's ChatGPT login. Published by AI Assistant, not the hosted Codex GitHub integration. No tests or repository code were executed. This is not approval; human review remains required.\n\n${marker}`;
       const comments = item.result.findings.filter(finding => item.changes?.some(change => change.path === finding.path && changedLines(change).has(finding.line)))
         .map(finding => ({ path: finding.path, line: finding.line, side: "RIGHT", body: `[P${finding.priority}] ${safeText(finding.title)}\n\n${safeText(finding.body)}` }));
-      item.state = "publishing"; item.publicationAttempted = true; this.save();
-      const published = await request<{ html_url: string }>("POST", `/pulls/${item.pull}/reviews`, { commit_id: item.head, event: "COMMENT", body, ...(comments.length ? { comments } : {}) });
+      const published = await request<{ html_url: string }>("POST", `/pulls/${item.pull}/reviews`, { commit_id: item.head, event: "COMMENT", body, ...(comments.length ? { comments } : {}) }, () => {
+        // Preflight failures are retryable; only an actual send creates an uncertain outcome.
+        item.state = "publishing"; item.publicationAttempted = true; this.save();
+      });
       item.url = published.html_url; item.state = "completed"; this.save();
       console.info(`[codex-review] published repository=${item.repository} pr=${item.pull} head=${item.head} findings=${item.result.findings.length}`);
     } catch {

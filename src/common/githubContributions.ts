@@ -106,7 +106,7 @@ export class GitHubContributions {
           return this.reviewTarget(record, await this.reviewPull(current, record));
         });
       },
-      request: async <T>(owner: ReviewOwner, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST", suffix: string, body: unknown, signal: AbortSignal, expected?: ReviewTarget) => {
+      request: async <T>(owner: ReviewOwner, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST", suffix: string, body: unknown, signal: AbortSignal, expected?: ReviewTarget, beforeSend?: () => void) => {
         const current = await caller(owner, signal, method !== "GET");
         const request = async () => {
           // Serialize publication with contribution revisions and recheck after waiting for the lock.
@@ -119,7 +119,7 @@ export class GitHubContributions {
             const pull = await this.reviewPull(authorized, record, expected.head);
             if (pull.number !== expected.pull || pull.base.sha !== expected.base) throw new Error("Review target changed before publication.");
           }
-          return this.request<T>(authorized, repository, role, method, suffix, body);
+          return this.request<T>(authorized, repository, role, method, suffix, body, beforeSend);
         };
         return method === "GET" ? request() : this.serial(current, request);
       },
@@ -163,9 +163,9 @@ export class GitHubContributions {
     if (!repository) throw new Error("Choose an enabled contribution repository.");
     return repository;
   }
-  private request<T>(caller: ContributionCaller, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST" | "PATCH", suffix: string, body?: unknown): Promise<T> {
+  private request<T>(caller: ContributionCaller, repository: ContributionRepository, role: GitHubRole, method: "GET" | "POST" | "PATCH", suffix: string, body?: unknown, beforeSend?: () => void): Promise<T> {
     this.authorize(caller); // Recheck before every remote operation, including after network waits.
-    return this.api.request<T>(role, repository, method, suffix, body, caller.signal);
+    return this.api.request<T>(role, repository, method, suffix, body, caller.signal, beforeSend);
   }
   private async verify(caller: ContributionCaller, repository: ContributionRepository): Promise<RepositoryMetadata> {
     const upstream = await this.request<RepositoryMetadata>(caller, repository, "publisher", "GET", "");
