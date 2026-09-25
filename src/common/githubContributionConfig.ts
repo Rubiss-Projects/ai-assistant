@@ -16,6 +16,12 @@ export function githubContributionAccess(env: NodeJS.ProcessEnv = process.env): 
   return value;
 }
 
+export function contributionReviewsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.AI_ASSISTANT_ENABLE_CODEX_REVIEWS?.trim().toLowerCase() || "false";
+  if (value !== "true" && value !== "false") throw new Error("AI_ASSISTANT_ENABLE_CODEX_REVIEWS must be true or false.");
+  return value === "true" && githubContributionsEnabled(env);
+}
+
 export interface GitHubAppConfiguration { appId: number; installationId: number; keyFile: string }
 export interface ContributionRepository { upstream: string; upstreamId: number; fork: string; forkId: number }
 export interface GitHubContributionConfiguration {

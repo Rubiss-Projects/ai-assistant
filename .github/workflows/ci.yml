@@ -47,6 +47,9 @@ jobs:
       - name: Verify software transcoding and artifact MCP delivery
         run: docker run --rm --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-artifacts.js
 
+      - name: Verify isolated Codex review worker
+        run: docker run --rm --init --memory 1g --memory-swap 1g --read-only --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp.json --pids-limit 128 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001 --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-codex-review.js
+
       - name: Verify sandboxed Chromium runtime
         # Exercise the same syscall profile and filesystem restrictions as Compose.
         run: docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --security-opt seccomp=./seccomp.json --pids-limit 256 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001 --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-ebay-browser.js

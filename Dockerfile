@@ -41,7 +41,8 @@ RUN apt-get update \
     && npm install --global "opencode-ai@${OPENCODE_VERSION}" \
     && npm cache clean --force \
     && groupadd --gid 10001 assistant \
-    && useradd --uid 10001 --gid assistant --home-dir /data --create-home assistant
+    && useradd --uid 10001 --gid assistant --home-dir /data --create-home assistant \
+    && install -d -o 10001 -g 10001 -m 0700 /review-control
 
 WORKDIR /app
 COPY --from=build /app/package.json ./package.json

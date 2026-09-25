@@ -1,6 +1,6 @@
 import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
-import { GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { githubContributionTools } from "./githubContributionToolDefinitions.js";
 function localServerToml(config, tools, timeoutSec) {
     const env = Object.entries(config.env).map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(",");
     const toolConfig = tools.map(({ name }) => `${JSON.stringify(name)}={approval_mode="approve"}`).join(",");
@@ -15,7 +15,7 @@ export function codexHostMcpOverride(artifacts, rulesets, github) {
     if (rulesets)
         servers.push(`ruleset_tools=${localServerToml(rulesets, RULESET_TOOLS, 120)}`);
     if (github)
-        servers.push(`github_contributions=${localServerToml(github, GITHUB_CONTRIBUTION_TOOLS, 120)}`);
+        servers.push(`github_contributions=${localServerToml(github, githubContributionTools(), 120)}`);
     return `mcp_servers={${servers.join(",")}}`;
 }
 export function codexHostMcpOverrides(artifacts, rulesets, replaceAll = true, github) {
@@ -27,6 +27,6 @@ export function codexHostMcpOverrides(artifacts, rulesets, replaceAll = true, gi
     if (rulesets)
         overrides.push(`mcp_servers.ruleset_tools=${localServerToml(rulesets, RULESET_TOOLS, 120)}`);
     if (github)
-        overrides.push(`mcp_servers.github_contributions=${localServerToml(github, GITHUB_CONTRIBUTION_TOOLS, 120)}`);
+        overrides.push(`mcp_servers.github_contributions=${localServerToml(github, githubContributionTools(), 120)}`);
     return overrides;
 }

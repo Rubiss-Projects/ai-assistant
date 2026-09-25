@@ -2,7 +2,7 @@ import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
 import type { ArtifactMcpConfig } from "./artifactToolBridge.js";
 import type { RulesetMcpConfig } from "./rulesetToolBridge.js";
-import { GITHUB_CONTRIBUTION_TOOLS } from "./githubContributionToolDefinitions.js";
+import { githubContributionTools } from "./githubContributionToolDefinitions.js";
 import type { GitHubContributionMcpConfig } from "./githubContributionToolBridge.js";
 
 function localServerToml(
@@ -20,7 +20,7 @@ export function codexHostMcpOverride(artifacts?: ArtifactMcpConfig, rulesets?: R
   const servers: string[] = [];
   if (artifacts) servers.push(`artifact_tools=${localServerToml(artifacts, ARTIFACT_TOOLS, 960)}`);
   if (rulesets) servers.push(`ruleset_tools=${localServerToml(rulesets, RULESET_TOOLS, 120)}`);
-  if (github) servers.push(`github_contributions=${localServerToml(github, GITHUB_CONTRIBUTION_TOOLS, 120)}`);
+  if (github) servers.push(`github_contributions=${localServerToml(github, githubContributionTools(), 120)}`);
   return `mcp_servers={${servers.join(",")}}`;
 }
 
@@ -29,6 +29,6 @@ export function codexHostMcpOverrides(artifacts?: ArtifactMcpConfig, rulesets?: 
   const overrides: string[] = [];
   if (artifacts) overrides.push(`mcp_servers.artifact_tools=${localServerToml(artifacts, ARTIFACT_TOOLS, 960)}`);
   if (rulesets) overrides.push(`mcp_servers.ruleset_tools=${localServerToml(rulesets, RULESET_TOOLS, 120)}`);
-  if (github) overrides.push(`mcp_servers.github_contributions=${localServerToml(github, GITHUB_CONTRIBUTION_TOOLS, 120)}`);
+  if (github) overrides.push(`mcp_servers.github_contributions=${localServerToml(github, githubContributionTools(), 120)}`);
   return overrides;
 }

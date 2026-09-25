@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createAccessPolicy } from "./accessPolicy.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { ContributionReviewWorker, contributionReviewsEnabled } from "./githubContributionReviewWorker.js";
 import { GitHubContributionApi, GitHubRequestError } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration } from "./githubContributionConfig.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion } from "./githubContributionReviews.js";
@@ -58,6 +61,7 @@ export class GitHubContributions {
     api;
     records;
     queue = Promise.resolve();
+    reviewWorker;
     constructor(config, api = new GitHubContributionApi(config)) {
         this.config = config;
         this.api = api;
@@ -68,6 +72,41 @@ export class GitHubContributions {
             throw new Error("Invalid contribution state; restore the host-owned state file before enabling contributions.");
         }
     }
+    startReviews() {
+        if (!contributionReviewsEnabled() || this.reviewWorker)
+            return;
+        const caller = (owner, signal) => ({ session: owner.session, requester: owner.requester, access: createAccessPolicy(), signal });
+        this.reviewWorker = new ContributionReviewWorker(`${this.config.stateFile}.reviews.json`, {
+            target: (owner, signal) => {
+                const current = caller(owner, signal);
+                return this.serial(current, async () => {
+                    const record = this.owned(current, owner.contribution);
+                    await this.verify(current, this.repository(record.repository));
+                    return this.reviewTarget(record, await this.reviewPull(current, record));
+                });
+            },
+            request: (owner, repository, role, method, suffix, body, signal) => {
+                const current = caller(owner, signal);
+                this.authorize(current);
+                const record = this.owned(current, owner.contribution);
+                if (record.repository !== repository.upstream)
+                    throw new Error("Review repository ownership changed.");
+                return this.request(current, repository, role, method, suffix, body);
+            },
+        });
+        this.reviewWorker.start();
+    }
+    async stopReviews() { await this.reviewWorker?.close(); }
+    reviewTarget(record, pull) {
+        return { repository: this.repository(record.repository), pull: pull.number, head: sha(pull.head.sha), base: sha(pull.base.sha), changedFiles: pull.changed_files };
+    }
+    enqueueReview(caller, record, pull) {
+        if (!contributionReviewsEnabled())
+            return { enabled: false };
+        this.startReviews();
+        return this.reviewWorker.enqueue({ contribution: record.id, session: caller.session, requester: structuredClone(caller.requester) }, this.reviewTarget(record, pull));
+    }
+    autoReviewStatus(id) { return contributionReviewsEnabled() ? this.reviewWorker?.status(id) ?? { enabled: true, state: "not_requested" } : { enabled: false }; }
     authorize(caller) {
         caller.signal.throwIfAborted();
         if (!githubContributionsEnabled() || !caller.access.can(caller.requester, "github.contribute"))
@@ -304,19 +343,37 @@ export class GitHubContributions {
             record.pull = published.number;
             this.save(record);
             console.info(`[github-contribution] published id=${record.id} repository=${record.repository} pr=${record.pull}`);
-            return { ...this.summary(record), draft: published.draft };
+            return { ...this.summary(record), draft: published.draft, auto_review: this.enqueueReview(caller, record, published) };
         });
     }
     status(caller, id) {
         return this.serial(caller, async () => {
             const record = this.owned(caller, id);
             const pull = await this.refresh(caller, record);
-            return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha };
+            return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha, auto_review: this.autoReviewStatus(id) };
         });
     }
     reviewRequest(caller, record, query, variables) {
         this.authorize(caller);
         return this.api.graphql(this.repository(record.repository), query, variables, caller.signal);
+    }
+    /** Wait without holding the contribution mutex; review inference and publication continue after this turn ends. */
+    async review(caller, id, expectedHead) {
+        if (!contributionReviewsEnabled())
+            throw new Error("Server-side Codex reviews are disabled.");
+        await this.serial(caller, async () => {
+            const record = this.owned(caller, id);
+            const pull = await this.reviewPull(caller, record, expectedHead);
+            this.enqueueReview(caller, record, pull);
+        });
+        for (let count = 0; count < 25; count++) {
+            this.authorize(caller);
+            const status = this.reviewWorker.status(id);
+            if (!["queued", "submitted", "publishing"].includes(status.state))
+                return { auto_review: status };
+            await delay(2000, undefined, { signal: caller.signal });
+        }
+        return { auto_review: this.reviewWorker.status(id) };
     }
     /** Review tools never recover pending writes or accept a model-selected PR/repository identity. */
     async reviewPull(caller, record, expectedHead) {
@@ -351,7 +408,7 @@ export class GitHubContributions {
                 throw new Error("Contribution review threads are unavailable.");
             for (const thread of threads.nodes)
                 this.validateReviewThread(record, thread);
-            return { ...this.summary(record), threads: threads.nodes.map(reviewThreadSummary),
+            return { ...this.summary(record), auto_review: this.autoReviewStatus(id), threads: threads.nodes.map(reviewThreadSummary),
                 next_cursor: threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null };
         });
     }

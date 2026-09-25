@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { AccessPolicy, AccessSubject } from "./accessPolicy.js";
+import { createAccessPolicy, type AccessPolicy, type AccessSubject } from "./accessPolicy.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { ContributionReviewWorker, contributionReviewsEnabled, type ReviewOwner, type ReviewTarget } from "./githubContributionReviewWorker.js";
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "./githubContributionConfig.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion, type ReviewThread } from "./githubContributionReviews.js";
@@ -18,7 +20,7 @@ interface GitTree { sha: string; tree: GitEntry[]; truncated: boolean }
 interface PullRequest {
   number: number; html_url: string; state: string; draft: boolean; merged: boolean;
   user: { login: string }; head: { ref: string; sha: string; repo: { id: number } | null };
-  base: { ref: string; repo: { id: number } };
+  base: { ref: string; sha: string; repo: { id: number } }; changed_files: number;
 }
 export interface ContributionChange { path: string; content: string | null }
 function rejectCredentials(text: string): void {
@@ -68,6 +70,7 @@ export function validateContributionChanges(value: unknown): ContributionChange[
 export class GitHubContributions {
   private records: Contribution[];
   private queue: Promise<unknown> = Promise.resolve();
+  private reviewWorker?: ContributionReviewWorker;
   constructor(readonly config: GitHubContributionConfiguration, private readonly api: ContributionApi = new GitHubContributionApi(config)) {
     hostOnlyGitHubPath(config.stateFile);
     this.records = fs.existsSync(config.stateFile) ? JSON.parse(fs.readFileSync(config.stateFile, "utf8")) as Contribution[] : [];
@@ -77,6 +80,39 @@ export class GitHubContributions {
       throw new Error("Invalid contribution state; restore the host-owned state file before enabling contributions.");
     }
   }
+
+  startReviews(): void {
+    if (!contributionReviewsEnabled() || this.reviewWorker) return;
+    const caller = (owner: ReviewOwner, signal: AbortSignal): ContributionCaller => ({ session: owner.session, requester: owner.requester, access: createAccessPolicy(), signal });
+    this.reviewWorker = new ContributionReviewWorker(`${this.config.stateFile}.reviews.json`, {
+      target: (owner, signal) => {
+        const current = caller(owner, signal);
+        return this.serial(current, async () => {
+          const record = this.owned(current, owner.contribution);
+          await this.verify(current, this.repository(record.repository));
+          return this.reviewTarget(record, await this.reviewPull(current, record));
+        });
+      },
+      request: (owner, repository, role, method, suffix, body, signal) => {
+        const current = caller(owner, signal);
+        this.authorize(current);
+        const record = this.owned(current, owner.contribution);
+        if (record.repository !== repository.upstream) throw new Error("Review repository ownership changed.");
+        return this.request(current, repository, role, method, suffix, body);
+      },
+    });
+    this.reviewWorker.start();
+  }
+  async stopReviews(): Promise<void> { await this.reviewWorker?.close(); }
+  private reviewTarget(record: Contribution, pull: PullRequest): ReviewTarget {
+    return { repository: this.repository(record.repository), pull: pull.number, head: sha(pull.head.sha), base: sha(pull.base.sha), changedFiles: pull.changed_files };
+  }
+  private enqueueReview(caller: ContributionCaller, record: Contribution, pull: PullRequest) {
+    if (!contributionReviewsEnabled()) return { enabled: false };
+    this.startReviews();
+    return this.reviewWorker!.enqueue({ contribution: record.id, session: caller.session, requester: structuredClone(caller.requester) }, this.reviewTarget(record, pull));
+  }
+  private autoReviewStatus(id: string) { return contributionReviewsEnabled() ? this.reviewWorker?.status(id) ?? { enabled: true, state: "not_requested" } : { enabled: false }; }
 
   private authorize(caller: ContributionCaller): void {
     caller.signal.throwIfAborted();
@@ -269,7 +305,7 @@ export class GitHubContributions {
       this.validatePull(record, published);
       record.pull = published.number; this.save(record);
       console.info(`[github-contribution] published id=${record.id} repository=${record.repository} pr=${record.pull}`);
-      return { ...this.summary(record), draft: published.draft };
+      return { ...this.summary(record), draft: published.draft, auto_review: this.enqueueReview(caller, record, published) };
     });
   }
 
@@ -277,13 +313,30 @@ export class GitHubContributions {
     return this.serial(caller, async () => {
       const record = this.owned(caller, id);
       const pull = await this.refresh(caller, record);
-      return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha };
+      return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha, auto_review: this.autoReviewStatus(id) };
     });
   }
 
   private reviewRequest<T>(caller: ContributionCaller, record: Contribution, query: string, variables: Record<string, unknown>) {
     this.authorize(caller);
     return this.api.graphql<T>(this.repository(record.repository), query, variables, caller.signal);
+  }
+
+  /** Wait without holding the contribution mutex; review inference and publication continue after this turn ends. */
+  async review(caller: ContributionCaller, id: string, expectedHead: string) {
+    if (!contributionReviewsEnabled()) throw new Error("Server-side Codex reviews are disabled.");
+    await this.serial(caller, async () => {
+      const record = this.owned(caller, id);
+      const pull = await this.reviewPull(caller, record, expectedHead);
+      this.enqueueReview(caller, record, pull);
+    });
+    for (let count = 0; count < 25; count++) {
+      this.authorize(caller);
+      const status = this.reviewWorker!.status(id);
+      if (!["queued", "submitted", "publishing"].includes(status.state)) return { auto_review: status };
+      await delay(2000, undefined, { signal: caller.signal });
+    }
+    return { auto_review: this.reviewWorker!.status(id) };
   }
 
   /** Review tools never recover pending writes or accept a model-selected PR/repository identity. */
@@ -317,7 +370,7 @@ export class GitHubContributions {
       const threads = result.repository?.pullRequest?.reviewThreads;
       if (!threads) throw new Error("Contribution review threads are unavailable.");
       for (const thread of threads.nodes) this.validateReviewThread(record, thread);
-      return { ...this.summary(record), threads: threads.nodes.map(reviewThreadSummary),
+      return { ...this.summary(record), auto_review: this.autoReviewStatus(id), threads: threads.nodes.map(reviewThreadSummary),
         next_cursor: threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null };
     });
   }

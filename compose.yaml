@@ -25,6 +25,7 @@ services:
     volumes:
       # Named volume only: no part of the host filesystem is exposed to the agent.
       - assistant-data:/data
+      - review-control:/review-control
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001
@@ -64,10 +65,50 @@ services:
       - browser-control
       - browser-egress
 
+  reviewer:
+    image: ghcr.io/rubiss-projects/ai-assistant:latest
+    build:
+      context: .
+    profiles: [reviews]
+    entrypoint: ["node", "/app/dist/src/reviewWorker.js"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      HOME: /data
+      CODEX_HOME: /data/.codex
+      CODEX_REVIEW_MODEL: ${CODEX_REVIEW_MODEL:-gpt-6-astra}
+      CODEX_REVIEW_REASONING_EFFORT: ${CODEX_REVIEW_REASONING_EFFORT:-medium}
+    # Deliberately no env_file, assistant data, GitHub credentials, Docker socket, or TCP listener.
+    volumes:
+      - review-data:/data
+      - review-control:/review-control
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp.json
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--unix-socket", "/review-control/review.sock", "http://localhost/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - review-egress
+
 volumes:
   assistant-data:
+  review-data:
+  review-control:
 
 networks:
   browser-control:
     internal: true
   browser-egress:
+  review-egress:

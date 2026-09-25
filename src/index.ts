@@ -4,6 +4,8 @@ config();
 import { SessionManager } from "./sessionManager.js";
 import { createBot } from "./bot.js";
 import { reportProviderSecurityConfiguration } from "./common/providerSecurity.js";
+import { contributionReviewsEnabled } from "./common/githubContributionReviewWorker.js";
+import { githubContributionService } from "./common/githubContributions.js";
 
 reportProviderSecurityConfiguration();
 
@@ -15,11 +17,13 @@ if (!token) {
 
 const sessions = new SessionManager();
 const client = createBot(sessions);
+if (contributionReviewsEnabled()) githubContributionService().startReviews();
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`\n${signal} received — shutting down...`);
   try {
     await client.stopScheduler();
+    if (contributionReviewsEnabled()) await githubContributionService().stopReviews();
     client.destroy();
     await sessions.shutdown();
     console.log("✅ Shutdown complete.");
