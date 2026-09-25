@@ -145,6 +145,7 @@ test("host publishes a pinned App review once and survives a lost GitHub respons
   await due().tick(); assert.equal(writes, 1);
   const restarted = due(); await restarted.tick();
   assert.equal(writes, 1); assert.equal(restarted.status(owner.contribution).state, "completed");
+  assert.equal(JSON.parse(fs.readFileSync(state, "utf8"))[0].changes, undefined);
   target.head = "c".repeat(40);
   restarted.enqueue(owner, target); target.head = "d".repeat(40);
   await restarted.tick(); assert.equal(restarted.status(owner.contribution).state, "stale");
@@ -172,8 +173,10 @@ test("queue wait does not expire a recovered submission, and running polls make 
   assert.equal(records[0].state, "submitted");
   assert(records[0].startedAt > createdAt + 59 * 60_000);
   records[0].nextPoll = 0; writeReviewState(state, records);
+  const persisted = fs.readFileSync(state, "utf8");
   await new ContributionReviewWorker(state, host, transport).tick();
   assert.equal(polls, 2); assert.equal(github, 0);
+  assert.equal(fs.readFileSync(state, "utf8"), persisted);
 });
 
 test("explicit retry preserves receipt reconciliation and the durable PR and history limits", async t => {
