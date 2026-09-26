@@ -57,9 +57,9 @@ function rangeFor(prompt: string, invocation: Invocation): Range | string {
 
 /** Host-side chronological retrieval; history is data, never a new invocation. */
 export async function channelSummaryContext(invocation: Invocation, prompt: string, client: Client, canIncludeAuthor: (id: string) => boolean): Promise<string | null> {
-  if (!isChannelSummaryRequest(prompt)) return null;
+  // Guild-history enrichment must not intercept ordinary DM session summaries.
+  if (!invocation.guildId || !isChannelSummaryRequest(prompt)) return null;
   const notice = (text: string) => `[Channel summary unavailable: ${text} Explain this limitation; do not invent a summary from other context.]\n\n${prompt}`;
-  if (!invocation.guildId) return notice("Use a server channel.");
   const range = rangeFor(prompt, invocation);
   if (typeof range === "string") return notice(range);
   const requester = "user" in invocation ? invocation.user.id : invocation.author.id;

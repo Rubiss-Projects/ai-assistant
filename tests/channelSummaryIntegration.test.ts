@@ -1,3 +1,4 @@
+import { enrichDiscordRequest } from "../src/utils/discordKnowledge.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { handleMention } from "../src/handlers/mention.js";
@@ -62,4 +63,16 @@ test("thread chat does not reintroduce ambient context after summary preparation
   ]);
   assert.equal(f.sent.length, 1);
   assert.doesNotMatch(f.sent[0], /AMBIENT HISTORY|history.txt/);
+});
+
+
+test("DM summary enrichment preserves the prompt and ordinary conversation metadata", async () => {
+  const prompt = "summarize this conversation";
+  for (const source of [
+    { guildId: null, author: { id: "user" } },
+    { guildId: null, user: { id: "user" } },
+  ]) {
+    const result = await enrichDiscordRequest(source as never, prompt, {} as never);
+    assert.deepEqual(result, { prompt, isChannelSummary: false });
+  }
 });
