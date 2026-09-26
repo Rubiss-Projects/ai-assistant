@@ -7,7 +7,7 @@ import { SlackAdapter } from '../src/adapters/slack.js';
 import { ConversationService, MemoryTurnJournal } from '../src/application/conversationService.js';
 const event = (id:string,ts:string,thread?:string) => ({team_id:'T',event_id:id,event:{type:'app_mention',user:'U',channel:'C',text:'<@BOT> question',ts,...(thread?{thread_ts:thread}:{})}});
 function setup(){
- const dir=mkdtempSync(join(tmpdir(),'slack-adapter-'));const journal=new MemoryTurnJournal();const service=new ConversationService(journal);const prompts:string[]=[],posts:Record<string,string>[]=[];let reads=0,authorized=true,extra=false,resets=0;let history:Record<string,unknown>[]=[{ts:'1700000001.000000',user:'U',text:'<@BOT> question',thread_ts:'1700000001.000000'},{ts:'1700000002.000000',user:'FRIEND',text:'unmentioned clarification',thread_ts:'1700000001.000000'}];
+ const dir=mkdtempSync(join(tmpdir(),'slack-adapter-'));const journal=new MemoryTurnJournal();const service=new ConversationService(journal);const prompts:string[]=[],posts:Record<string,string>[]=[];let identity="provider-a/session-1";let reads=0,authorized=true,extra=false,resets=0;let history:Record<string,unknown>[]=[{ts:'1700000001.000000',user:'U',text:'<@BOT> question',thread_ts:'1700000001.000000'},{ts:'1700000002.000000',user:'FRIEND',text:'unmentioned clarification',thread_ts:'1700000001.000000'}];
  const api={call:async(method:string,args?:Record<string,string>)=>{
   if(method==='conversations.info')return {ok:true,channel:{is_member:true}};
   if(method==='conversations.members')return {ok:true,members:authorized?['U','FRIEND','BOT',...(extra?['NEW']:[])]:['FRIEND','BOT']};
@@ -15,9 +15,9 @@ function setup(){
   if(method==='conversations.replies'||method==='conversations.history'){reads++;return {ok:true,messages:history}}
   throw Error(method);
  }};
- const engine={sendMessage:async(_key:string,prompt:string)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
+ const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
  const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors:new Set(),stateDirectory:dir},api,api,engine,service);
- return {adapter,prompts,posts,journal,setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
+ return {adapter,prompts,posts,journal,changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 test('Slack explicit thread mention includes unmentioned discussion and replies in thread',async()=>{
  const f=setup();try{const h=await f.adapter.receive(event('e','1700000003.000000','1700000001.000000'));assert.ok(h);assert.equal((await h.completion).state,'delivered');assert.match(f.prompts[0],/unmentioned clarification/);assert.equal(f.posts[0].thread_ts,'1700000001.000000');assert.ok(f.reads()>0);}finally{await f.close()}
@@ -63,5 +63,18 @@ test('a confirmed deletion rebuilds context while complete fetched records are s
  await (await f.adapter.receive(event('original','1700000001.000000')))!.completion;const resets=f.resets();f.setHistory([]);
  await (await f.adapter.receive(event('deleted','1700000003.000000','1700000001.000000')))!.completion;
  assert.equal(f.resets(),resets+1);
+ }finally{await f.close()}
+});
+
+for(const identity of ['provider-b/session-1','provider-a/session-2'])test('Slack replays history when context identity becomes '+identity,async()=>{
+ const f=setup();try{
+ const root='1700000001.000000';
+ await (await f.adapter.receive(event('identity-first','1700000003.000000',root)))!.completion;
+ const history=[{ts:root,thread_ts:root,user:'U',text:'<@BOT> question'},{ts:'1700000002.000000',thread_ts:root,user:'FRIEND',text:'unmentioned clarification'},{ts:'1700000003.000000',thread_ts:root,user:'U',text:'<@BOT> question'}];f.setHistory(history);
+ await (await f.adapter.receive(event('identity-same','1700000004.000000',root)))!.completion;
+ assert.doesNotMatch(f.prompts[1],/unmentioned clarification/);
+ const resets=f.resets();f.setHistory([...history,{ts:'1700000004.000000',thread_ts:root,user:'U',text:'<@BOT> question'}]);f.changeIdentity(identity);
+ await (await f.adapter.receive(event('identity-changed','1700000005.000000',root)))!.completion;
+ assert.equal(f.resets(),resets+1);assert.match(f.prompts[2],/unmentioned clarification/);
  }finally{await f.close()}
 });
