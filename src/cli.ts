@@ -343,7 +343,8 @@ function help(): void {
   console.log("Usage: ai-assistant <command>\n");
   console.log("Commands:");
   console.log("  setup            Interactive setup wizard — creates ~/.ai-assistant/.env");
-  console.log("  start            Start the bot");
+  console.log("  start            Start configured network adapters");
+  console.log("  cli              Local conversation (--provider fake, --message, --json)");
   console.log("  register         Register Discord slash commands with the Discord API");
   console.log("  install-service  Install and enable as a systemd service");
   console.log("  update           Print update instructions");
@@ -356,6 +357,13 @@ function help(): void {
 const cmd = process.argv[2];
 
 switch (cmd) {
+  case "cli":
+    try {
+      if (existsSync(ENV_FILE)) { dotenv.config({ path: ENV_FILE, quiet: true }); process.chdir(CONFIG_DIR); }
+      await (await import("./adapters/cli/run.js")).runCli();
+    }
+    catch { console.error("CLI failed. Check arguments, local state ownership and provider configuration."); process.exitCode = 1; }
+    break;
   case "setup":
     await setup();
     break;

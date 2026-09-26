@@ -1,6 +1,6 @@
 import os from "os";
 import path from "path";
-import { BuiltInTools, CopilotClient, CopilotSession, MCPServerConfig, ToolSet, approveAll } from "@github/copilot-sdk";
+import { BuiltInTools, CopilotClient, type CopilotSession, type MCPServerConfig, ToolSet, approveAll } from "@github/copilot-sdk";
 import type { CopilotClientOptions, PermissionHandler, SessionConfigBase, SessionEvent } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
@@ -225,7 +225,6 @@ export class CopilotProvider implements Provider {
   // Serializes concurrent sendMessage calls per session to prevent state corruption
   private messageQueues: Map<string, Promise<unknown>> = new Map();
   // Persists Discord key → Copilot session ID across restarts
-  private store: SessionStore = new SessionStore(this.name);
   // Per-session working directory override (affects MCP loading and agent file ops)
   private workingDirOverrides: Map<string, string> = new Map();
   // Directory actually bound into each live SDK session.
@@ -238,7 +237,7 @@ export class CopilotProvider implements Provider {
   // Per-session reasoning-effort override (host tracks the effective value)
   private reasoningEffortOverrides: Map<string, ReasoningEffort> = new Map();
 
-  constructor() {
+  constructor(private readonly store: SessionStore = new SessionStore('copilot')) {
     this.client = new CopilotClient(copilotClientOptions());
   }
 
@@ -257,7 +256,7 @@ export class CopilotProvider implements Provider {
     // Workspace MCP configuration may contain stdio commands. Loading it in shared mode
     // would execute repository-controlled code before the permission handler can intervene.
     const mcpServers = copilotWorkspaceMcpEnabled() ? this.buildMcpConfig(key) : {};
-    mcpServers.artifact_tools = { ...(await this.artifactTools.config(key)), type: "local", tools: ["*"], timeout: 960_000 };
+    mcpServers.artifact_tools = { ...(await this.artifactTools.config(key, context.transportContext)), type: "local", tools: ["*"], timeout: 960_000 };
     delete mcpServers.github_contributions;
     if (context.githubContributionsEnabled) {
       mcpServers.github_contributions = { ...(await this.githubTools.config(key)), type: "local", tools: ["*"], timeout: 120_000 };
@@ -416,7 +415,7 @@ export class CopilotProvider implements Provider {
   ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
-      const context = resolveSessionContext({ profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
+      const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
       return this.withLiveSession(userId, async (session) => {
         try {
           const workingDirectory = this.sessionWorkingDirectories.get(userId)
@@ -428,7 +427,7 @@ export class CopilotProvider implements Provider {
               : action();
           return await this.githubTools.run(userId, options, context.githubContributionsEnabled, githubRun => runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
             const attachments = staged.filter((file) => !file.binary).map((file) => ({ type: "file" as const, path: file.path, displayName: file.displayName }));
-            const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun);
+            const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
             return sendUntilIdle(
               session,
               {

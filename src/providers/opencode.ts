@@ -128,7 +128,7 @@ export function openCodeChildEnvironment(
       const name = agentName ?? openCodeAgentName(systemPrompt);
       config.agent = {
         ...(typeof config.agent === "object" && config.agent !== null ? config.agent : {}),
-        [name]: { mode: "primary", prompt: secureSystemPrompt(systemPrompt, source) },
+        [name]: { mode: "primary", prompt: secureSystemPrompt(systemPrompt, { ...source, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: github ? "true" : "false" }) },
       };
     }
     config.mcp = { ...(config.mcp ?? {}) };
@@ -304,7 +304,7 @@ export class OpenCodeProvider implements Provider {
   readonly displayName = "OpenCode";
 
   private sessions: Map<string, string> = new Map(); // key -> opencode session id (live)
-  private store: SessionStore = new SessionStore(this.name);
+  constructor(private readonly store: SessionStore = new SessionStore('opencode')) {}
   private histories: Map<string, HistoryEvent[]> = new Map();
   private workingDirOverrides: Map<string, string> = new Map();
   private modelOverrides: Map<string, string> = new Map();
@@ -332,7 +332,7 @@ export class OpenCodeProvider implements Provider {
       if (sessionId) args.push("--session", sessionId);
       const model = this.modelOverrides.get(userId) ?? this.configuredModel();
       if (model) args.push("--model", model);
-      const context = resolveSessionContext({ profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
+      const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
       const systemPrompt = context.systemPrompt;
       const agentName = openCodeAgentName(systemPrompt);
       args.push("--agent", agentName);
@@ -345,14 +345,14 @@ export class OpenCodeProvider implements Provider {
           : action();
       const response = await this.githubTools.run(userId, options, context.githubContributionsEnabled, githubRun => runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
         for (const file of staged.filter((file) => !file.binary)) args.push("--file", file.path);
-        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun);
+        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
         args.push(githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun));
         const stopProgress = startProgressUpdates(options);
         const { stdout, stderr, code } = await runOpenCode(args, {
           cwd: workingDirectory,
           timeoutMs,
           providerName: this.displayName,
-          artifacts: await this.artifactTools.config(userId),
+          artifacts: await this.artifactTools.config(userId, options?.transportContext),
           rulesets: context.rulesetsEnabled ? await this.rulesetTools.config(userId) : undefined,
           github: context.githubContributionsEnabled ? await this.githubTools.config(userId) : undefined,
           systemPrompt,
