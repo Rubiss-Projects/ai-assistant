@@ -1,3 +1,4 @@
+import { channelHistoryResolver } from "../../utils/channelSummary.js";
 import { artifactMessageResolver } from "../../utils/artifactMessage.js";
 import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
 import { prepareSlashAttachments } from "../../utils/prepareSlashAttachments.js";
@@ -30,6 +31,7 @@ export async function handleAsk(interaction, sessions, canIncludeContextAuthor =
                     contextProfile: "one-shot",
                     rulesetContext,
                     userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+                    resolveChannelHistory: channelHistoryResolver(interaction, interaction.client, canIncludeContextAuthor),
                     resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
                     onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }),
                 });

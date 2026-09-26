@@ -27,6 +27,29 @@ test("server review enablement refreshes existing shared context and removes too
   assert.equal(resolveSessionContext().fingerprint, before.fingerprint);
 });
 
+test("operator contribution limits refresh shared instructions and capabilities, not one-shot sessions", t => {
+  const values = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true", AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true", GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT: "20", CODEX_REVIEW_LIMIT: "20" };
+  const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  Object.assign(process.env, values);
+  const initial = resolveSessionContext(), oneShot = resolveSessionContext({ profile: "one-shot" });
+  process.env.GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT = "2";
+  const finite = resolveSessionContext();
+  assert.notEqual(finite.applied.instructions, initial.applied.instructions);
+  assert.notEqual(finite.applied.capabilities, initial.applied.capabilities);
+  assert.match(finite.systemPrompt, /2 publish attempts/);
+  process.env.CODEX_REVIEW_LIMIT = "0";
+  const unlimited = resolveSessionContext();
+  assert.notEqual(unlimited.applied.instructions, finite.applied.instructions);
+  assert.notEqual(unlimited.applied.capabilities, finite.applied.capabilities);
+  assert.match(unlimited.systemPrompt, /unlimited review attempts per PR/);
+  assert.match(unlimited.systemPrompt, /stop requesting reviews as soon as the current head has a completed review with no remaining actionable findings/);
+  assert.equal(resolveSessionContext({ profile: "one-shot" }).fingerprint, oneShot.fingerprint);
+  process.env.GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT = " ";
+  delete process.env.CODEX_REVIEW_LIMIT;
+  assert.equal(resolveSessionContext().fingerprint, initial.fingerprint);
+});
+
 test("context fingerprints track instruction removal and tool contracts independently", () => {
   let instructions = "Be brief.";
   let description = "Read a public page.";

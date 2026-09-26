@@ -1,3 +1,4 @@
+import { channelHistoryResolver } from "../../utils/channelSummary.js";
 import { artifactMessageResolver } from "../../utils/artifactMessage.js";
 import { ThreadAutoArchiveDuration } from "discord.js";
 import { chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
@@ -28,6 +29,7 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                 response = await sessions.sendMessage(interaction.user.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, {
                     rulesetContext,
                     userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+                    resolveChannelHistory: channelHistoryResolver(interaction, interaction.client, canIncludeContextAuthor),
                     resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
                     onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }),
                 });
@@ -80,12 +82,13 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                 const context = threadContext ? await threadContext(durableReply) : [];
                 const prepared = await prepare(context);
                 try {
-                    const prompt = context.length
+                    const prompt = !prepared.isChannelSummary && context.length
                         ? `${participationReplyContext(context, [durableReply.id])}\n\nCurrent speaker: ${interaction.user.id}\n${prepared.prompt}`
                         : prepared.prompt;
                     const response = await sessions.sendMessage(currentSessionKey, prompt, prepared.attachments.length ? prepared.attachments : undefined, {
                         rulesetContext,
                         userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+                        resolveChannelHistory: channelHistoryResolver(interaction, interaction.client, canIncludeContextAuthor),
                         resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
                         onProgress: ({ elapsedMs }) => durableReply.edit(progressMessage(elapsedMs)).then(() => { }),
                     });
@@ -118,6 +121,7 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                 const response = await sessions.sendMessage(thread.id, prepared.prompt, prepared.attachments.length ? prepared.attachments : undefined, {
                     rulesetContext,
                     userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+                    resolveChannelHistory: channelHistoryResolver(interaction, interaction.client, canIncludeContextAuthor),
                     resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
                     onProgress: ({ elapsedMs }) => replyMsg.edit(progressMessage(elapsedMs)).then(() => { }),
                 });

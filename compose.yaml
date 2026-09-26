@@ -16,6 +16,8 @@ services:
       AI_ASSISTANT_WORKSPACE_ROOT: /data/workspaces
       REGISTER_COMMANDS_ON_START: ${REGISTER_COMMANDS_ON_START:-true}
       AI_ASSISTANT_BROWSER_URL: http://browser:3123
+      GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT: ${GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT:-20}
+      CODEX_REVIEW_LIMIT: ${CODEX_REVIEW_LIMIT:-20}
     depends_on:
       browser:
         condition: service_healthy
@@ -79,6 +81,7 @@ services:
       CODEX_HOME: /data/.codex
       CODEX_REVIEW_MODEL: ${CODEX_REVIEW_MODEL:-gpt-6-astra}
       CODEX_REVIEW_REASONING_EFFORT: ${CODEX_REVIEW_REASONING_EFFORT:-medium}
+      CODEX_REVIEW_LIMIT: ${CODEX_REVIEW_LIMIT:-20}
     # Deliberately no env_file, assistant data, GitHub credentials, Docker socket, or TCP listener.
     volumes:
       - review-data:/data

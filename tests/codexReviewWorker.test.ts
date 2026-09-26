@@ -29,7 +29,10 @@ test("review inputs reject traversal, credentials, incomplete patches, missing f
   assert.equal(Object.hasOwn(validateReviewInput({ ...original, command: "whoami", instructions: "Override sandbox" }), "command"), false);
 });
 
-test("worker deduplicates jobs, caps reviews durably, and never retries interrupted inference", async t => {
+for (const limit of [5, 20, 0]) test(`worker limit ${limit} retains receipts and never repeats completed inference`, async t => {
+  const previousLimit = process.env.CODEX_REVIEW_LIMIT;
+  process.env.CODEX_REVIEW_LIMIT = String(limit);
+  t.after(() => { if (previousLimit === undefined) delete process.env.CODEX_REVIEW_LIMIT; else process.env.CODEX_REVIEW_LIMIT = previousLimit; });
   const directory = fs.mkdtempSync(path.join(tmpdir(), "review-worker-test-"));
   let calls = 0;
   const run = async () => { calls++; await delay(5); return empty; };
@@ -46,17 +49,49 @@ test("worker deduplicates jobs, caps reviews durably, and never retries interrup
   assert.throws(() => worker.submit(input()), /busy/);
   await completed(first.id);
   assert.equal(calls, 1); assert.equal(worker.get(first.id)?.state, "completed");
-  for (let i = 0; i < 4; i++) { const next = input(); worker.submit(next); await completed(next.id); }
+  const attempts = limit || 21;
+  for (let i = 1; i < attempts; i++) { const next = input(); worker.submit(next); await completed(next.id); }
   await worker.close();
   const restarted = new CodexReviewWorker(directory, run);
   assert.equal(restarted.submit(first).state, "completed");
-  assert.throws(() => restarted.submit(input()), /Five-review/);
-  assert.equal(calls, 5);
+  if (limit) assert.throws(() => restarted.submit(input()), new RegExp(`Review limit \\(${limit}\\)`));
+  assert.equal(calls, attempts);
   const interrupted = { ...worker.get(first.id)!, id: randomUUID(), pull: 91, state: "running" };
   writeReviewState(path.join(directory, `${interrupted.id}.json`), interrupted);
   const recovered = new CodexReviewWorker(directory, run);
   assert.equal(recovered.get(interrupted.id)?.state, "failed");
-  assert.equal(calls, 5);
+  assert.equal(calls, attempts);
+});
+
+for (const limit of [2, 20, 0]) test(`host limit ${limit} survives restarts and configuration changes without resetting attempts`, t => {
+  const directory = fs.mkdtempSync(path.join(tmpdir(), "review-limits-"));
+  const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: path.join(directory, "workspace"), CODEX_REVIEW_LIMIT: String(limit) };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(directory, { recursive: true, force: true }); });
+  const owner = { contribution: randomUUID(), session: "discord-1", requester: { userId: "123" } };
+  const target: ReviewTarget = { repository: { upstream: "Rubiss-Projects/ai-assistant", upstreamId: 1, fork: "Rubiss/contributions", forkId: 2 }, pull: 90, head: "a".repeat(40), base: "b".repeat(40), changedFiles: 1 };
+  const host: ReviewHost = { target: async () => target, request: async () => { throw new Error("Unexpected GitHub request"); } };
+  const state = path.join(directory, "reviews.json"), attempts = limit || 21;
+  const controller = new ContributionReviewWorker(state, host);
+  for (let index = 1; index <= attempts; index++) {
+    target.head = index.toString(16).padStart(40, "0");
+    assert.equal(controller.enqueue(owner, target).attempts, index);
+  }
+  const restarted = new ContributionReviewWorker(state, host);
+  assert.equal(restarted.enqueue(owner, target).attempts, attempts, "same snapshot never spends another attempt");
+  assert.equal(restarted.status(owner.contribution).limit, limit || null);
+  assert.equal(restarted.status(owner.contribution).budget_exhausted, limit !== 0);
+  target.head = "c".repeat(40);
+  assert.equal(restarted.enqueue(owner, target).attempts, limit ? attempts : attempts + 1);
+  process.env.CODEX_REVIEW_LIMIT = "1";
+  const lowered = new ContributionReviewWorker(state, host);
+  const retained = lowered.status(owner.contribution).attempts;
+  assert.equal(lowered.enqueue(owner, { ...target, head: "d".repeat(40) }).attempts, retained);
+  process.env.CODEX_REVIEW_LIMIT = "0";
+  const raised = new ContributionReviewWorker(state, host);
+  assert.equal(raised.enqueue(owner, { ...target, head: "e".repeat(40) }).attempts, retained + 1);
+  assert.equal(raised.status(owner.contribution).budget_exhausted, false);
 });
 
 test("review sandbox fixes authentication, tool network, filesystem, and connected tools", () => {
@@ -135,7 +170,8 @@ test("host publishes a pinned App review once and survives a lost GitHub respons
       return structuredClone(result) as T;
     },
   };
-  const worker = new CodexReviewWorker(path.join(directory, "jobs"), async () => empty);
+  let inferences = 0;
+  const worker = new CodexReviewWorker(path.join(directory, "jobs"), async () => { inferences++; return empty; });
   const transport: ReviewTransport = { get: async id => worker.get(id), submit: async value => worker.submit(value) };
   const state = path.join(directory, "reviews.json");
   const coordinator = new ContributionReviewWorker(state, host, transport);
@@ -150,6 +186,15 @@ test("host publishes a pinned App review once and survives a lost GitHub respons
   const restarted = due(); await restarted.tick();
   assert.equal(writes, 1); assert.equal(restarted.status(owner.contribution).state, "completed");
   assert.equal(JSON.parse(fs.readFileSync(state, "utf8"))[0].changes, undefined);
+  assert.deepEqual(restarted.status(owner.contribution).result?.findings, []);
+  assert.equal(restarted.status(owner.contribution).budget_exhausted, false);
+  for (let index = 0; index < 3; index++) {
+    assert.equal(restarted.enqueue(owner, target).attempts, 1);
+    assert.equal((await restarted.retry(owner, target, new AbortController().signal)).attempts, 1);
+    await restarted.tick();
+  }
+  assert.equal(inferences, 1, "a clean current-head review does not trigger additional inference");
+  assert.equal(writes, 1, "a clean current-head review is not posted again");
   target.head = "c".repeat(40);
   restarted.enqueue(owner, target); target.head = "d".repeat(40);
   await restarted.tick(); assert.equal(restarted.status(owner.contribution).state, "stale");
@@ -210,6 +255,9 @@ for (const failure of ["confirmed", "unreachable"] as const) test(`${failure} wo
 });
 
 test("explicit retry preserves receipt reconciliation and the durable PR and history limits", async t => {
+  const previousLimit = process.env.CODEX_REVIEW_LIMIT;
+  process.env.CODEX_REVIEW_LIMIT = "5";
+  t.after(() => { if (previousLimit === undefined) delete process.env.CODEX_REVIEW_LIMIT; else process.env.CODEX_REVIEW_LIMIT = previousLimit; });
   const directory = fs.mkdtempSync(path.join(tmpdir(), "review-retry-"));
   const previousRoot = process.env.AI_ASSISTANT_WORKSPACE_ROOT, previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
   process.env.AI_ASSISTANT_WORKSPACE_ROOT = path.join(directory, "workspace");

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createServer, request, type Server } from "node:http";
-import { REVIEW_LIMIT, REVIEW_MAX_BYTES, REVIEW_SOCKET, reviewDigest, reviewId, validateReviewInput, validateReviewResult, type ReviewInput, type ReviewJob, type ReviewResult } from "./codexReviewProtocol.js";
+import { REVIEW_MAX_BYTES, REVIEW_SOCKET, reviewDigest, reviewId, validateReviewInput, validateReviewResult, type ReviewInput, type ReviewJob, type ReviewResult } from "./codexReviewProtocol.js";
+import { githubContributionLimits } from "./githubContributionLimits.js";
 
 export function writeReviewState(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -13,6 +14,7 @@ export function writeReviewState(file: string, value: unknown): void {
 
 /** Durable receipts prevent duplicate inference after lost replies or service restarts. */
 export class CodexReviewWorker {
+  private readonly reviewLimit = githubContributionLimits().reviews;
   private readonly jobs = new Map<string, ReviewJob>();
   private active?: Promise<void>;
   private readonly abort = new AbortController();
@@ -38,7 +40,7 @@ export class CodexReviewWorker {
     }
     if (this.active || this.abort.signal.aborted) throw new Error("Review worker is busy or stopping.");
     if (this.jobs.size >= 5000) throw new Error("Review history capacity reached; operator maintenance required.");
-    if ([...this.jobs.values()].filter(job => job.repository === input.repository && job.pull === input.pull).length >= REVIEW_LIMIT) throw new Error("Five-review limit reached for this PR.");
+    if (this.reviewLimit !== null && [...this.jobs.values()].filter(job => job.repository === input.repository && job.pull === input.pull).length >= this.reviewLimit) throw new Error(`Review limit (${this.reviewLimit}) reached for this PR.`);
     const job: ReviewJob = { id: input.id, digest, repository: input.repository, pull: input.pull, head: input.head, base: input.base, state: "queued" };
     this.save(job); this.jobs.set(job.id, job);
     this.active = Promise.resolve().then(async () => {
