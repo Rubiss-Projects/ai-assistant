@@ -27,7 +27,7 @@ export const ARTIFACT_INSTRUCTIONS = [
     "Animated GIFs must use a standards-compliant encoder and every frame must decode successfully before delivery.",
     "This Discord client cannot see images displayed only inside a provider interface: even if an image-generation tool says its output is already displayed, call attach_file with its saved file path (or copy it into the artifact-output directory first).",
     "Only if attach_file is unavailable, include one legacy marker on its own line at the end of your final response using the workspace-relative path: [[artifact:artifact-output/path/to/file]].",
-    "Include only completed output artifacts, not every file edited during ordinary coding work.",
+    "Include only completed output artifacts, not every file edited during ordinary coding work."
 ].join(" ");
 function boundedConfiguration(key, fallback, maximum) {
     return Math.min(configuredMilliseconds(key, fallback, 1), maximum);
@@ -42,73 +42,87 @@ const RASTER_EXTENSIONS = {
     "image/gif": ".gif",
     "image/jpeg": ".jpg",
     "image/png": ".png",
-    "image/webp": ".webp",
+    "image/webp": ".webp"
 };
 export function rasterSignatureMatches(data, mimeType) {
-    switch (mimeType) {
+    switch(mimeType){
         case "image/png":
             return data.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
         case "image/jpeg":
             return data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
         case "image/gif":
-            return data.subarray(0, 6).toString("ascii") === "GIF87a"
-                || data.subarray(0, 6).toString("ascii") === "GIF89a";
+            return data.subarray(0, 6).toString("ascii") === "GIF87a" || data.subarray(0, 6).toString("ascii") === "GIF89a";
         case "image/webp":
-            return data.subarray(0, 4).toString("ascii") === "RIFF"
-                && data.subarray(8, 12).toString("ascii") === "WEBP";
+            return data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP";
         default:
             return false;
     }
 }
-/** Unwrap the single embedded raster emitted by some image tools as an SVG shell. */
 export function normalizePreviewableImage(data, displayName) {
-    if (path.extname(displayName).toLowerCase() !== ".svg")
-        return { data, displayName };
+    if (path.extname(displayName).toLowerCase() !== ".svg") return {
+        data,
+        displayName
+    };
     const svg = data.toString("utf8");
     const imageTag = svg.match(/<image\b[\s\S]*?(?:\/\s*>|>\s*<\/image\s*>)/i)?.[0];
-    if (!imageTag)
-        return { data, displayName };
+    if (!imageTag) return {
+        data,
+        displayName
+    };
     const shell = svg.replace(imageTag, "");
     if (!/^\s*(?:<\?xml[^>]*>\s*)?<svg\b[^>]*>\s*<\/svg\s*>\s*$/is.test(shell)) {
-        return { data, displayName };
+        return {
+            data,
+            displayName
+        };
     }
     const embedded = imageTag.match(/\b(?:href|xlink:href)\s*=\s*(["'])data:(image\/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/=\s]+)\1/i);
-    if (!embedded)
-        return { data, displayName };
+    if (!embedded) return {
+        data,
+        displayName
+    };
     const mimeType = embedded[2].toLowerCase();
     const base64 = embedded[3].replace(/\s/g, "");
-    if (base64.length === 0 || base64.length % 4 !== 0)
-        return { data, displayName };
+    if (base64.length === 0 || base64.length % 4 !== 0) return {
+        data,
+        displayName
+    };
     const raster = Buffer.from(base64, "base64");
-    if (raster.toString("base64") !== base64)
-        return { data, displayName };
-    if (!rasterSignatureMatches(raster, mimeType))
-        return { data, displayName };
+    if (raster.toString("base64") !== base64) return {
+        data,
+        displayName
+    };
+    if (!rasterSignatureMatches(raster, mimeType)) return {
+        data,
+        displayName
+    };
     const extension = RASTER_EXTENSIONS[mimeType];
-    return { data: raster, displayName: `${path.basename(displayName, path.extname(displayName))}${extension}` };
+    return {
+        data: raster,
+        displayName: `${path.basename(displayName, path.extname(displayName))}${extension}`
+    };
 }
 function gifRepeatCount(parsed) {
-    const loopExtensions = new Set(["NETSCAPE2.0", "ANIMEXTS1.0"]);
-    const application = parsed.frames.find((frame) => {
-        if (!("application" in frame))
-            return false;
+    const loopExtensions = new Set([
+        "NETSCAPE2.0",
+        "ANIMEXTS1.0"
+    ]);
+    const application = parsed.frames.find((frame)=>{
+        if (!("application" in frame)) return false;
         const metadata = frame.application;
         return loopExtensions.has(`${metadata.id}${metadata.authCode ?? ""}`);
     });
-    if (!application || !("application" in application) || application.application.blocks.length < 3)
-        return -1;
-    return application.application.blocks[1] | (application.application.blocks[2] << 8);
+    if (!application || !("application" in application) || application.application.blocks.length < 3) return -1;
+    return application.application.blocks[1] | application.application.blocks[2] << 8;
 }
 function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
-    if (minCodeSize < 2 || minCodeSize > 8 || pixelCount < 1)
-        return false;
+    if (minCodeSize < 2 || minCodeSize > 8 || pixelCount < 1) return false;
     const dictionarySize = 4_096;
     const prefix = new Int32Array(dictionarySize);
     const suffix = new Int32Array(dictionarySize);
     const clearCode = 1 << minCodeSize;
     const endCode = clearCode + 1;
-    for (let code = 0; code < clearCode; code++)
-        suffix[code] = code;
+    for(let code = 0; code < clearCode; code++)suffix[code] = code;
     let available = clearCode + 2;
     let codeSize = minCodeSize + 1;
     let codeMask = (1 << codeSize) - 1;
@@ -120,10 +134,9 @@ function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
     let produced = 0;
     let codesRead = 0;
     const maxCodes = pixelCount * 2 + 1_024;
-    const readCode = () => {
-        while (bits < codeSize) {
-            if (byteIndex >= data.length)
-                return undefined;
+    const readCode = ()=>{
+        while(bits < codeSize){
+            if (byteIndex >= data.length) return undefined;
             datum |= data[byteIndex++] << bits;
             bits += 8;
         }
@@ -132,13 +145,11 @@ function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
         bits -= codeSize;
         return code;
     };
-    while (true) {
+    while(true){
         let code = readCode();
-        if (code === undefined)
-            return false;
+        if (code === undefined) return false;
         codesRead += 1;
-        if (codesRead > maxCodes)
-            return false;
+        if (codesRead > maxCodes) return false;
         if (code === clearCode) {
             available = clearCode + 2;
             codeSize = minCodeSize + 1;
@@ -146,13 +157,10 @@ function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
             oldCode = -1;
             continue;
         }
-        if (code === endCode)
-            return produced === pixelCount;
-        if (code > available)
-            return false;
+        if (code === endCode) return produced === pixelCount;
+        if (code > available) return false;
         if (oldCode === -1) {
-            if (code >= clearCode)
-                return false;
+            if (code >= clearCode) return false;
             produced += 1;
             first = code;
             oldCode = code;
@@ -165,19 +173,16 @@ function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
             code = oldCode;
         }
         let depth = 0;
-        while (code > clearCode) {
-            if (code >= available || depth++ >= dictionarySize)
-                return false;
+        while(code > clearCode){
+            if (code >= available || depth++ >= dictionarySize) return false;
             emitted += 1;
             code = prefix[code];
         }
-        if (code >= clearCode)
-            return false;
+        if (code >= clearCode) return false;
         first = suffix[code] & 0xff;
         emitted += 1;
         produced += emitted;
-        if (produced > pixelCount)
-            return false;
+        if (produced > pixelCount) return false;
         if (available < dictionarySize) {
             prefix[available] = oldCode;
             suffix[available] = first;
@@ -192,17 +197,14 @@ function gifLzwDecodesExactly(minCodeSize, data, pixelCount) {
 }
 function skipGifSubBlocks(data, start) {
     let offset = start;
-    while (offset < data.length) {
+    while(offset < data.length){
         const size = data[offset++];
-        if (size === 0)
-            return offset;
-        if (offset + size > data.length)
-            throw new Error("GIF contains a truncated data block.");
+        if (size === 0) return offset;
+        if (offset + size > data.length) throw new Error("GIF contains a truncated data block.");
         offset += size;
     }
     throw new Error("GIF contains an unterminated data block.");
 }
-/** Enforce structural limits without materializing gifuct-js's complete frame tree. */
 function preflightGifStructure(data) {
     if (data.length < 13 || !rasterSignatureMatches(data, "image/gif")) {
         throw new Error("GIF header is invalid.");
@@ -213,17 +215,15 @@ function preflightGifStructure(data) {
         throw new Error("GIF dimensions are invalid.");
     }
     const packed = data[10];
-    let offset = 13 + ((packed & 0x80) === 0 ? 0 : 3 * (1 << ((packed & 0x07) + 1)));
-    if (offset > data.length)
-        throw new Error("GIF global color table is truncated.");
+    let offset = 13 + ((packed & 0x80) === 0 ? 0 : 3 * (1 << (packed & 0x07) + 1));
+    if (offset > data.length) throw new Error("GIF global color table is truncated.");
     let frameCount = 0;
     let blockCount = 0;
     let decodedPixels = 0;
-    while (offset < data.length) {
+    while(offset < data.length){
         const marker = data[offset];
         if (marker === 0x3b) {
-            if (frameCount < 1)
-                throw new Error("GIF does not contain an image frame.");
+            if (frameCount < 1) throw new Error("GIF does not contain an image frame.");
             return;
         }
         blockCount += 1;
@@ -231,8 +231,7 @@ function preflightGifStructure(data) {
             throw new Error("GIF exceeds the safe structural complexity limit.");
         }
         if (marker === 0x21) {
-            if (offset + 2 > data.length)
-                throw new Error("GIF extension is truncated.");
+            if (offset + 2 > data.length) throw new Error("GIF extension is truncated.");
             offset = skipGifSubBlocks(data, offset + 2);
             continue;
         }
@@ -248,112 +247,113 @@ function preflightGifStructure(data) {
         }
         frameCount += 1;
         decodedPixels += frameWidth * frameHeight;
-        if (frameCount > MAX_GIF_FRAMES || decodedPixels > MAX_GIF_TOTAL_PIXELS
-            || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
+        if (frameCount > MAX_GIF_FRAMES || decodedPixels > MAX_GIF_TOTAL_PIXELS || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
             throw new Error("GIF exceeds the safe animation complexity limit.");
         }
         const imagePacked = data[offset + 9];
-        offset += 10 + ((imagePacked & 0x80) === 0 ? 0 : 3 * (1 << ((imagePacked & 0x07) + 1)));
-        if (offset >= data.length)
-            throw new Error("GIF image data is truncated.");
+        offset += 10 + ((imagePacked & 0x80) === 0 ? 0 : 3 * (1 << (imagePacked & 0x07) + 1));
+        if (offset >= data.length) throw new Error("GIF image data is truncated.");
         offset = skipGifSubBlocks(data, offset + 1);
     }
     throw new Error("GIF trailer is missing.");
 }
 function composeGifFrame(canvas, frame, width, height) {
     const { left, top, width: frameWidth, height: frameHeight } = frame.dims;
-    if (left < 0 || top < 0 || frameWidth < 1 || frameHeight < 1
-        || left + frameWidth > width || top + frameHeight > height
-        || frame.patch.length !== frameWidth * frameHeight * 4) {
+    if (left < 0 || top < 0 || frameWidth < 1 || frameHeight < 1 || left + frameWidth > width || top + frameHeight > height || frame.patch.length !== frameWidth * frameHeight * 4) {
         throw new Error("GIF frame dimensions are invalid.");
     }
-    for (let y = 0; y < frameHeight; y++) {
-        for (let x = 0; x < frameWidth; x++) {
+    for(let y = 0; y < frameHeight; y++){
+        for(let x = 0; x < frameWidth; x++){
             const source = (y * frameWidth + x) * 4;
-            if (frame.patch[source + 3] === 0)
-                continue;
+            if (frame.patch[source + 3] === 0) continue;
             const destination = ((top + y) * width + left + x) * 4;
             canvas.set(frame.patch.subarray(source, source + 4), destination);
         }
     }
 }
 function gifBackground(parsed, firstFrame, firstFrameUsesLocalColorTable) {
-    if (!parsed.lsd.gct.exists || !parsed.gct)
-        return [0, 0, 0, 0];
+    if (!parsed.lsd.gct.exists || !parsed.gct) return [
+        0,
+        0,
+        0,
+        0
+    ];
     const index = parsed.lsd.backgroundColorIndex;
-    const [red, green, blue] = parsed.gct[index] ?? [0, 0, 0];
+    const [red, green, blue] = parsed.gct[index] ?? [
+        0,
+        0,
+        0
+    ];
     const transparent = !firstFrameUsesLocalColorTable && firstFrame.transparentIndex === index;
-    return [red, green, blue, transparent ? 0 : 255];
+    return [
+        red,
+        green,
+        blue,
+        transparent ? 0 : 255
+    ];
 }
 function fillGifCanvas(canvas, color) {
-    for (let offset = 0; offset < canvas.length; offset += 4)
-        canvas.set(color, offset);
+    for(let offset = 0; offset < canvas.length; offset += 4)canvas.set(color, offset);
 }
 function clearGifFrame(canvas, frame, width, background) {
     const { left, top, width: frameWidth, height: frameHeight } = frame.dims;
-    for (let y = 0; y < frameHeight; y++) {
-        for (let x = 0; x < frameWidth; x++) {
+    for(let y = 0; y < frameHeight; y++){
+        for(let x = 0; x < frameWidth; x++){
             canvas.set(background, ((top + y) * width + left + x) * 4);
         }
     }
 }
-/** Fully decode and re-encode GIFs so Discord never receives header-only or browser-incompatible output. */
-export function normalizeGifForDiscord(data, displayName, maxBytes, workBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS }) {
+export function normalizeGifForDiscord(data, displayName, maxBytes, workBudget = {
+    remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS
+}) {
     preflightGifStructure(data);
     const parsed = parseGIF(new Uint8Array(data).buffer);
     const { width, height } = parsed.lsd;
-    if (parsed.header.signature !== "GIF" || !["87a", "89a"].includes(parsed.header.version)
-        || width < 1 || height < 1 || width > 8_192 || height > 8_192) {
+    if (parsed.header.signature !== "GIF" || ![
+        "87a",
+        "89a"
+    ].includes(parsed.header.version) || width < 1 || height < 1 || width > 8_192 || height > 8_192) {
         throw new Error("GIF header or dimensions are invalid.");
     }
     let frameCount = 0;
     let decodedPixels = 0;
     const frameUsesLocalColorTable = [];
-    for (const frame of parsed.frames) {
-        if (!("image" in frame))
-            continue;
+    for (const frame of parsed.frames){
+        if (!("image" in frame)) continue;
         const descriptor = frame.image.descriptor;
-        if (descriptor.left < 0 || descriptor.top < 0 || descriptor.width < 1 || descriptor.height < 1
-            || descriptor.left + descriptor.width > width || descriptor.top + descriptor.height > height) {
+        if (descriptor.left < 0 || descriptor.top < 0 || descriptor.width < 1 || descriptor.height < 1 || descriptor.left + descriptor.width > width || descriptor.top + descriptor.height > height) {
             throw new Error("GIF frame dimensions are invalid.");
         }
         frameCount += 1;
         decodedPixels += descriptor.width * descriptor.height;
         frameUsesLocalColorTable.push(descriptor.lct.exists);
-        if (frameCount > MAX_GIF_FRAMES || decodedPixels > MAX_GIF_TOTAL_PIXELS
-            || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
+        if (frameCount > MAX_GIF_FRAMES || decodedPixels > MAX_GIF_TOTAL_PIXELS || width * height * frameCount > MAX_GIF_TOTAL_PIXELS) {
             throw new Error("GIF exceeds the safe animation complexity limit.");
         }
     }
-    if (frameCount < 1)
-        throw new Error("GIF does not contain an image frame.");
-    // Reserve the maximum decode/composition work before traversing LZW streams.
-    // A single response shares this budget across all distinct artifact markers.
+    if (frameCount < 1) throw new Error("GIF does not contain an image frame.");
     const workPixels = decodedPixels + width * height * frameCount;
     if (workPixels > workBudget.remainingPixels) {
         throw new Error("GIF exceeds the safe response-wide animation work limit.");
     }
     workBudget.remainingPixels -= workPixels;
-    for (const frame of parsed.frames) {
-        if (!("image" in frame))
-            continue;
+    for (const frame of parsed.frames){
+        if (!("image" in frame)) continue;
         const descriptor = frame.image.descriptor;
         if (!gifLzwDecodesExactly(frame.image.data.minCodeSize, frame.image.data.blocks, descriptor.width * descriptor.height)) {
             throw new Error("GIF frame has an invalid LZW stream.");
         }
     }
     const frames = decompressFrames(parsed, true);
-    if (frames.length !== frameCount)
-        throw new Error("GIF frame decoding was incomplete.");
+    if (frames.length !== frameCount) throw new Error("GIF frame decoding was incomplete.");
     const { GIFEncoder, quantize, applyPalette } = gifenc;
     const encoder = GIFEncoder();
     const canvas = new Uint8ClampedArray(width * height * 4);
     const background = gifBackground(parsed, frames[0], frameUsesLocalColorTable[0]);
-    const reserveTransparentBackground = background[3] === 0 || frames.some((frame, frameIndex) => frame.disposalType === 2
-        && gifBackground(parsed, frame, frameUsesLocalColorTable[frameIndex])[3] === 0);
+    const reserveTransparentBackground = background[3] === 0 || frames.some((frame, frameIndex)=>frame.disposalType === 2 && gifBackground(parsed, frame, frameUsesLocalColorTable[frameIndex])[3] === 0);
     fillGifCanvas(canvas, background);
     const repeat = gifRepeatCount(parsed);
-    for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+    for(let frameIndex = 0; frameIndex < frames.length; frameIndex++){
         const frame = frames[frameIndex];
         const restore = frame.disposalType === 3 ? canvas.slice() : undefined;
         composeGifFrame(canvas, frame, width, height);
@@ -361,51 +361,48 @@ export function normalizeGifForDiscord(data, displayName, maxBytes, workBudget =
         const format = reserveTransparentBackground ? "rgba4444" : "rgb565";
         const palette = quantize(rendered, reserveTransparentBackground ? 255 : 256, {
             format,
-            oneBitAlpha: reserveTransparentBackground,
+            oneBitAlpha: reserveTransparentBackground
         });
         if (reserveTransparentBackground) {
-            const existingTransparentIndex = palette.findIndex((color) => color[3] === 0);
-            if (existingTransparentIndex >= 0)
-                palette.splice(existingTransparentIndex, 1);
-            // gifenc writes palette index 0 as the logical-screen background. Reserve
-            // it only when source disposal can expose transparency, retaining all 256
-            // color slots for fully opaque animations.
-            palette.unshift([0, 0, 0, 0]);
+            const existingTransparentIndex = palette.findIndex((color)=>color[3] === 0);
+            if (existingTransparentIndex >= 0) palette.splice(existingTransparentIndex, 1);
+            palette.unshift([
+                0,
+                0,
+                0,
+                0
+            ]);
         }
         const indexed = applyPalette(rendered, palette, format);
         encoder.writeFrame(indexed, width, height, {
             palette,
             delay: frame.delay,
             repeat,
-            // Every encoded frame is a full-canvas snapshot. Clearing it before the
-            // next frame makes transparent pixels erase prior opaque output in players.
             dispose: 2,
             transparent: reserveTransparentBackground,
-            transparentIndex: reserveTransparentBackground ? 0 : -1,
+            transparentIndex: reserveTransparentBackground ? 0 : -1
         });
         if (frame.disposalType === 2) {
             clearGifFrame(canvas, frame, width, gifBackground(parsed, frame, frameUsesLocalColorTable[frameIndex]));
-        }
-        else if (restore)
-            canvas.set(restore);
+        } else if (restore) canvas.set(restore);
     }
     encoder.finish();
     const normalized = Buffer.from(encoder.bytes());
     if (normalized.byteLength > maxBytes) {
         throw new Error(`normalized GIF exceeds the configured ${maxBytes}-byte limit.`);
     }
-    return { data: normalized, displayName };
+    return {
+        data: normalized,
+        displayName
+    };
 }
 function normalizeOutputAttachment(data, displayName, maxBytes, gifWorkBudget) {
     const normalized = normalizePreviewableImage(data, displayName);
     const extension = path.extname(normalized.displayName);
     const hasGifExtension = extension.toLowerCase() === ".gif";
     const hasGifSignature = rasterSignatureMatches(normalized.data, "image/gif");
-    if (!hasGifExtension && !hasGifSignature)
-        return normalized;
-    const normalizedName = hasGifSignature && !hasGifExtension
-        ? `${path.basename(normalized.displayName, extension)}.gif`
-        : normalized.displayName;
+    if (!hasGifExtension && !hasGifSignature) return normalized;
+    const normalizedName = hasGifSignature && !hasGifExtension ? `${path.basename(normalized.displayName, extension)}.gif` : normalized.displayName;
     return normalizeGifForDiscord(normalized.data, normalizedName, maxBytes, gifWorkBudget);
 }
 export function createArtifactRun(workingDirectory) {
@@ -418,50 +415,59 @@ export function createArtifactRun(workingDirectory) {
         if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
             throw new Error(`Artifact output path must be a regular directory: ${root}`);
         }
-    }
-    else {
-        fs.mkdirSync(root, { mode: 0o700 });
+    } else {
+        fs.mkdirSync(root, {
+            mode: 0o700
+        });
     }
     const runId = randomUUID();
     const relativeDirectory = path.join(ARTIFACT_ROOT, runId);
     const directory = path.join(workingDirectory, relativeDirectory);
-    fs.mkdirSync(directory, { mode: 0o700 });
-    return { workingDirectory, directory, relativeDirectory };
+    fs.mkdirSync(directory, {
+        mode: 0o700
+    });
+    return {
+        workingDirectory,
+        directory,
+        relativeDirectory
+    };
 }
 function removeEmptyArtifactRun(run) {
-    if (!workspacePathIsAllowed(run.workingDirectory, run.relativeDirectory))
-        return;
+    if (!workspacePathIsAllowed(run.workingDirectory, run.relativeDirectory)) return;
     try {
-        // Never recursively delete an agent-writable path: a raced junction could
-        // redirect recursive deletion outside the workspace. Empty-only removal is
-        // safe; completed artifacts intentionally remain in the ignored run folder.
         fs.rmdirSync(run.directory);
-    }
-    catch (error) {
+    } catch (error) {
         const code = error.code;
         if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") {
             console.warn("[artifacts] Could not remove an empty per-turn artifact directory:", error);
         }
     }
 }
-export function withArtifactOutputPrompt(prompt, run) {
+export function withArtifactOutputPrompt(prompt, run, transport) {
+    if (transport) return prompt + '\n\nHost tool run_id: ' + path.basename(run.directory) + '. This is a text-only response; file delivery is unavailable.';
     const portablePath = run.relativeDirectory.split(path.sep).join("/");
     return `${prompt}\n\n<artifact-output>Current run_id: ${path.basename(run.directory)}. Save outputs under ${portablePath}/. Call attach_file with the finished file path to register it for delivery. fetch_artifact accepts direct file URLs and Discord message URLs; transcode_video processes local video files using software encoding. Never infer that a provider-displayed image has been delivered to Discord.</artifact-output>`;
 }
 export function artifactValidationBudget() {
-    return { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS, remainingBytes: ABSOLUTE_MAX_TOTAL_BYTES };
+    return {
+        remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS,
+        remainingBytes: ABSOLUTE_MAX_TOTAL_BYTES
+    };
 }
 export async function validateArtifactFile(root, file, budget = artifactValidationBudget()) {
     const maxBytes = boundedConfiguration("AI_OUTPUT_ATTACHMENT_MAX_BYTES", DEFAULT_MAX_ATTACHMENT_BYTES, ABSOLUTE_MAX_TOTAL_BYTES);
-    const result = await loadAttachment({ workingDirectory: root, directory: root, relativeDirectory: "." }, file, maxBytes, budget, budget);
-    if (!result.attachment)
-        throw new Error(result.warning || "Could not read artifact.");
+    const result = await loadAttachment({
+        workingDirectory: root,
+        directory: root,
+        relativeDirectory: "."
+    }, file, maxBytes, budget, budget);
+    if (!result.attachment) throw new Error(result.warning || "Could not read artifact.");
     return result.attachment;
 }
 export function artifactOutputLimits() {
     return {
         count: boundedConfiguration("AI_OUTPUT_ATTACHMENT_MAX_COUNT", DISCORD_MAX_ATTACHMENTS, DISCORD_MAX_ATTACHMENTS),
-        bytes: boundedConfiguration("AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES", DEFAULT_MAX_TOTAL_BYTES, ABSOLUTE_MAX_TOTAL_BYTES),
+        bytes: boundedConfiguration("AI_OUTPUT_ATTACHMENT_MAX_TOTAL_BYTES", DEFAULT_MAX_TOTAL_BYTES, ABSOLUTE_MAX_TOTAL_BYTES)
     };
 }
 async function loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readBudget) {
@@ -469,70 +475,76 @@ async function loadAttachment(run, requestedPath, maxBytes, gifWorkBudget, readB
     const displayName = safeDisplayName(trimmed);
     const absolutePath = path.resolve(run.workingDirectory, trimmed);
     const relativeToRun = path.relative(run.directory, absolutePath);
-    if (!trimmed ||
-        trimmed.includes("\0") ||
-        relativeToRun === "" ||
-        relativeToRun === ".." ||
-        relativeToRun.startsWith(".." + path.sep) ||
-        path.isAbsolute(relativeToRun)) {
-        return { warning: attachmentWarning(displayName, "the path is outside this turn's artifact directory.") };
+    if (!trimmed || trimmed.includes("\0") || relativeToRun === "" || relativeToRun === ".." || relativeToRun.startsWith(".." + path.sep) || path.isAbsolute(relativeToRun)) {
+        return {
+            warning: attachmentWarning(displayName, "the path is outside this turn's artifact directory.")
+        };
     }
     if (!workspacePathIsAllowed(run.workingDirectory, trimmed)) {
-        return { warning: attachmentWarning(displayName, "the path is outside the allowed workspace.") };
+        return {
+            warning: attachmentWarning(displayName, "the path is outside the allowed workspace.")
+        };
     }
     let beforeOpen;
     try {
         beforeOpen = fs.lstatSync(absolutePath);
-    }
-    catch {
-        return { warning: attachmentWarning(displayName, "the file does not exist.") };
+    } catch  {
+        return {
+            warning: attachmentWarning(displayName, "the file does not exist.")
+        };
     }
     if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink() || beforeOpen.nlink !== 1) {
-        return { warning: attachmentWarning(displayName, "only regular files can be attached.") };
+        return {
+            warning: attachmentWarning(displayName, "only regular files can be attached.")
+        };
     }
     if (beforeOpen.size > maxBytes) {
-        return { warning: attachmentWarning(displayName, `it exceeds the configured ${maxBytes}-byte limit.`) };
+        return {
+            warning: attachmentWarning(displayName, `it exceeds the configured ${maxBytes}-byte limit.`)
+        };
     }
     let handle;
     try {
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
         handle = await fs.promises.open(absolutePath, fsConstants.O_RDONLY | noFollow);
         const opened = await handle.stat();
-        if (!opened.isFile() ||
-            opened.dev !== beforeOpen.dev ||
-            opened.ino !== beforeOpen.ino ||
-            opened.size !== beforeOpen.size ||
-            opened.nlink !== 1 ||
-            opened.nlink !== beforeOpen.nlink) {
-            return { warning: attachmentWarning(displayName, "the file changed while it was being opened.") };
+        if (!opened.isFile() || opened.dev !== beforeOpen.dev || opened.ino !== beforeOpen.ino || opened.size !== beforeOpen.size || opened.nlink !== 1 || opened.nlink !== beforeOpen.nlink) {
+            return {
+                warning: attachmentWarning(displayName, "the file changed while it was being opened.")
+            };
         }
         if (opened.size > readBudget.remainingBytes) {
-            return { warning: attachmentWarning(displayName, `it exceeds the remaining ${readBudget.remainingBytes}-byte limit.`) };
+            return {
+                warning: attachmentWarning(displayName, `it exceeds the remaining ${readBudget.remainingBytes}-byte limit.`)
+            };
         }
-        // Reserve bytes before reading or parsing. Failed decodes still consume the
-        // response-wide allowance, bounding work on attacker-controlled artifacts.
         readBudget.remainingBytes -= opened.size;
         const data = Buffer.alloc(opened.size + 1);
         let bytesRead = 0;
-        while (bytesRead < data.length) {
+        while(bytesRead < data.length){
             const part = await handle.read(data, bytesRead, data.length - bytesRead, bytesRead);
-            if (!part.bytesRead)
-                break;
+            if (!part.bytesRead) break;
             bytesRead += part.bytesRead;
         }
         if (bytesRead !== opened.size || !workspacePathIsAllowed(run.workingDirectory, trimmed)) {
-            return { warning: attachmentWarning(displayName, "the file changed while it was being read.") };
+            return {
+                warning: attachmentWarning(displayName, "the file changed while it was being read.")
+            };
         }
-        return { attachment: normalizeOutputAttachment(data.subarray(0, bytesRead), displayName, maxBytes, gifWorkBudget) };
-    }
-    catch (error) {
+        return {
+            attachment: normalizeOutputAttachment(data.subarray(0, bytesRead), displayName, maxBytes, gifWorkBudget)
+        };
+    } catch (error) {
         if (path.extname(displayName).toLowerCase() === ".gif") {
-            return { warning: attachmentWarning(displayName, `the GIF could not be decoded safely (${String(error)}).`) };
+            return {
+                warning: attachmentWarning(displayName, `the GIF could not be decoded safely (${String(error)}).`)
+            };
         }
-        return { warning: attachmentWarning(displayName, "the file could not be read safely.") };
-    }
-    finally {
-        await handle?.close().catch(() => { });
+        return {
+            warning: attachmentWarning(displayName, "the file could not be read safely.")
+        };
+    } finally{
+        await handle?.close().catch(()=>{});
     }
 }
 async function importProviderArtifact(run, artifact, index, recovery) {
@@ -542,81 +554,97 @@ async function importProviderArtifact(run, artifact, index, recovery) {
     try {
         canonicalRoot = fs.realpathSync.native(artifact.trustedRoot);
         canonicalSource = fs.realpathSync.native(artifact.path);
-    }
-    catch {
-        return { warning: attachmentWarning(requestedName, "the provider output does not exist.") };
+    } catch  {
+        return {
+            warning: attachmentWarning(requestedName, "the provider output does not exist.")
+        };
     }
     const relativeSource = path.relative(canonicalRoot, canonicalSource);
     if (relativeSource === "" || relativeSource === ".." || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
-        return { warning: attachmentWarning(requestedName, "the provider output is outside its trusted directory.") };
+        return {
+            warning: attachmentWarning(requestedName, "the provider output is outside its trusted directory.")
+        };
     }
     let beforeOpen;
     try {
         beforeOpen = fs.lstatSync(canonicalSource);
-    }
-    catch {
-        return { warning: attachmentWarning(requestedName, "the provider output does not exist.") };
+    } catch  {
+        return {
+            warning: attachmentWarning(requestedName, "the provider output does not exist.")
+        };
     }
     const maxBytes = recovery?.maxBytes ?? boundedConfiguration("AI_OUTPUT_ATTACHMENT_MAX_BYTES", DEFAULT_MAX_ATTACHMENT_BYTES, ABSOLUTE_MAX_TOTAL_BYTES);
     if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink() || beforeOpen.nlink !== 1) {
-        return { warning: attachmentWarning(requestedName, "the provider output is not a regular file.") };
+        return {
+            warning: attachmentWarning(requestedName, "the provider output is not a regular file.")
+        };
     }
     if (beforeOpen.size > maxBytes) {
-        return { warning: attachmentWarning(requestedName, `it exceeds the configured ${maxBytes}-byte limit.`) };
+        return {
+            warning: attachmentWarning(requestedName, `it exceeds the configured ${maxBytes}-byte limit.`)
+        };
     }
     if (recovery && beforeOpen.size > recovery.readBudget.remainingBytes) {
-        return { warning: attachmentWarning(requestedName, `it exceeds the remaining ${recovery.readBudget.remainingBytes}-byte limit.`) };
+        return {
+            warning: attachmentWarning(requestedName, `it exceeds the remaining ${recovery.readBudget.remainingBytes}-byte limit.`)
+        };
     }
     let handle;
     try {
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
         handle = await fs.promises.open(canonicalSource, fsConstants.O_RDONLY | noFollow);
         const opened = await handle.stat();
-        if (!opened.isFile() || opened.dev !== beforeOpen.dev || opened.ino !== beforeOpen.ino
-            || opened.size !== beforeOpen.size || opened.nlink !== 1) {
-            return { warning: attachmentWarning(requestedName, "the provider output changed while it was being opened.") };
+        if (!opened.isFile() || opened.dev !== beforeOpen.dev || opened.ino !== beforeOpen.ino || opened.size !== beforeOpen.size || opened.nlink !== 1) {
+            return {
+                warning: attachmentWarning(requestedName, "the provider output changed while it was being opened.")
+            };
         }
-        if (recovery)
-            recovery.readBudget.remainingBytes -= opened.size;
+        if (recovery) recovery.readBudget.remainingBytes -= opened.size;
         const data = await handle.readFile();
         if (data.byteLength !== opened.size) {
-            return { warning: attachmentWarning(requestedName, "the provider output changed while it was being read.") };
+            return {
+                warning: attachmentWarning(requestedName, "the provider output changed while it was being read.")
+            };
         }
-        // Recovery uses these bytes directly, avoiding a second disk read or decode.
-        // Authoritative imports are still normalized when their marker is loaded.
-        const normalized = recovery
-            ? normalizeOutputAttachment(data, safeDisplayName(requestedName), maxBytes, recovery.gifWorkBudget)
-            : normalizePreviewableImage(data, safeDisplayName(requestedName));
+        const normalized = recovery ? normalizeOutputAttachment(data, safeDisplayName(requestedName), maxBytes, recovery.gifWorkBudget) : normalizePreviewableImage(data, safeDisplayName(requestedName));
         if (recovery) {
             if (normalized.data.length > recovery.outputBudget.remainingBytes) {
-                return { warning: attachmentWarning(requestedName, `it exceeds the remaining ${recovery.outputBudget.remainingBytes}-byte output limit.`) };
+                return {
+                    warning: attachmentWarning(requestedName, `it exceeds the remaining ${recovery.outputBudget.remainingBytes}-byte output limit.`)
+                };
             }
-            // Charge all retained imports, including copies later deduplicated for
-            // delivery. Expanded GIFs must fit before anything is written to disk.
             recovery.outputBudget.remainingBytes -= normalized.data.length;
         }
         const baseName = safeDisplayName(normalized.displayName);
         const destinationName = fs.existsSync(path.join(run.directory, baseName)) ? `${index + 1}-${baseName}` : baseName;
         const destination = path.join(run.directory, destinationName);
-        await fs.promises.writeFile(destination, normalized.data, { flag: "wx", mode: 0o600 });
+        await fs.promises.writeFile(destination, normalized.data, {
+            flag: "wx",
+            mode: 0o600
+        });
         return {
             marker: path.relative(run.workingDirectory, destination),
-            attachment: recovery ? { data: normalized.data, displayName: destinationName } : undefined,
+            attachment: recovery ? {
+                data: normalized.data,
+                displayName: destinationName
+            } : undefined
         };
-    }
-    catch (error) {
+    } catch (error) {
         if (path.extname(requestedName).toLowerCase() === ".gif") {
-            return { warning: attachmentWarning(requestedName, `the provider GIF could not be decoded safely (${String(error)}).`) };
+            return {
+                warning: attachmentWarning(requestedName, `the provider GIF could not be decoded safely (${String(error)}).`)
+            };
         }
-        return { warning: attachmentWarning(requestedName, "the provider output could not be imported safely.") };
-    }
-    finally {
-        await handle?.close().catch(() => { });
+        return {
+            warning: attachmentWarning(requestedName, "the provider output could not be imported safely.")
+        };
+    } finally{
+        await handle?.close().catch(()=>{});
     }
 }
 async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
     const requestedPaths = [];
-    const text = content.replace(ARTIFACT_MARKER, (_marker, requestedPath) => {
+    const text = content.replace(ARTIFACT_MARKER, (_marker, requestedPath)=>{
         requestedPaths.push(requestedPath);
         return "";
     }).replace(/\n{3,}/g, "\n\n").trim();
@@ -629,13 +657,16 @@ async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
     const seenContent = new Set();
     let totalBytes = 0;
     let processedCandidates = 0;
-    const gifWorkBudget = { remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS };
-    const readBudget = { remainingBytes: maxTotalBytes };
-    const acceptResult = (result) => {
+    const gifWorkBudget = {
+        remainingPixels: MAX_GIF_RESPONSE_WORK_PIXELS
+    };
+    const readBudget = {
+        remainingBytes: maxTotalBytes
+    };
+    const acceptResult = (result)=>{
         if (result.attachment) {
             const contentIdentity = createHash("sha256").update(result.attachment.data).digest("hex");
-            if (seenContent.has(contentIdentity))
-                return;
+            if (seenContent.has(contentIdentity)) return;
             seenContent.add(contentIdentity);
             const remainingBytes = maxTotalBytes - totalBytes;
             if (result.attachment.data.byteLength > remainingBytes) {
@@ -645,15 +676,13 @@ async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
             totalBytes += result.attachment.data.byteLength;
             attachments.push(result.attachment);
         }
-        if (result.warning)
-            warnings.push(result.warning);
+        if (result.warning) warnings.push(result.warning);
     };
-    const processPaths = async (paths) => {
-        for (const requestedPath of paths) {
+    const processPaths = async (paths)=>{
+        for (const requestedPath of paths){
             const resolvedIdentity = path.resolve(run.workingDirectory, requestedPath.trim());
             const identity = process.platform === "win32" ? resolvedIdentity.toLowerCase() : resolvedIdentity;
-            if (seen.has(identity))
-                continue;
+            if (seen.has(identity)) continue;
             seen.add(identity);
             if (processedCandidates >= maxAttachments || attachments.length >= maxAttachments) {
                 warnings.push(attachmentWarning(requestedPath, `only ${maxAttachments} attachments are allowed per response.`));
@@ -665,34 +694,40 @@ async function prepareAgentResponse(content, run, fallbackArtifacts = []) {
         }
     };
     await processPaths(requestedPaths);
-    // Discovery can include intermediate images. Only recover them when no
-    // selected final output is deliverable, retaining all response-wide budgets.
     if (attachments.length === 0) {
-        const outputBudget = { remainingBytes: maxTotalBytes };
-        // One bounded recovery candidate remains available even when rejected model
-        // markers exhaust the normal candidate allowance (including a count of 1).
-        // This does not increase upload count, read bytes, or GIF decoding budgets.
+        const outputBudget = {
+            remainingBytes: maxTotalBytes
+        };
         const recoveryCandidateLimit = maxAttachments + 1;
-        for (let index = 0; index < fallbackArtifacts.length; index++) {
+        for(let index = 0; index < fallbackArtifacts.length; index++){
             const artifact = fallbackArtifacts[index];
             if (processedCandidates >= recoveryCandidateLimit || attachments.length >= maxAttachments) {
                 warnings.push(attachmentWarning(artifact.displayName ?? artifact.path, `only ${maxAttachments} attachments are allowed per response.`));
                 break;
             }
             processedCandidates += 1;
-            const imported = await importProviderArtifact(run, artifact, index, { readBudget, outputBudget, gifWorkBudget, maxBytes });
+            const imported = await importProviderArtifact(run, artifact, index, {
+                readBudget,
+                outputBudget,
+                gifWorkBudget,
+                maxBytes
+            });
             acceptResult(imported);
         }
     }
-    const visibleContent = [text || (attachments.length ? "📎 Attached file(s)." : "(no response)"), ...warnings]
-        .filter(Boolean)
-        .join("\n\n");
-    const claimsDelivery = /\b(?:attached|uploaded)\b/i.test(text)
-        && !/\b(?:not|never|wasn't|isn't|couldn't|failed to)\s+(?:attached|uploaded)\b/i.test(text);
-    const deliveryWarning = attachments.length === 0 && claimsDelivery
-        ? "⚠️ No attachment was produced for this response."
-        : "";
-    return { content: [visibleContent, deliveryWarning].filter(Boolean).join("\n\n"), attachments };
+    const visibleContent = [
+        text || (attachments.length ? "📎 Attached file(s)." : "(no response)"),
+        ...warnings
+    ].filter(Boolean).join("\n\n");
+    const claimsDelivery = /\b(?:attached|uploaded)\b/i.test(text) && !/\b(?:not|never|wasn't|isn't|couldn't|failed to)\s+(?:attached|uploaded)\b/i.test(text);
+    const deliveryWarning = attachments.length === 0 && claimsDelivery ? "⚠️ No attachment was produced for this response." : "";
+    return {
+        content: [
+            visibleContent,
+            deliveryWarning
+        ].filter(Boolean).join("\n\n"),
+        attachments
+    };
 }
 export async function captureAgentArtifacts(workingDirectory, operation) {
     const run = createArtifactRun(workingDirectory);
@@ -701,15 +736,16 @@ export async function captureAgentArtifacts(workingDirectory, operation) {
         if (run.registeredAttachments !== undefined) {
             const content = (typeof output === "string" ? output : output.content).replace(ARTIFACT_MARKER, "").trim();
             return {
-                content: [content || "(no response)", run.registeredAttachments.length ? "" : "⚠️ No file was registered for delivery."].filter(Boolean).join("\n\n"),
-                attachments: run.registeredAttachments,
+                content: [
+                    content || "(no response)",
+                    run.registeredAttachments.length ? "" : "⚠️ No file was registered for delivery."
+                ].filter(Boolean).join("\n\n"),
+                attachments: run.registeredAttachments
             };
         }
-        if (typeof output === "string")
-            return await prepareAgentResponse(output, run);
+        if (typeof output === "string") return await prepareAgentResponse(output, run);
         return await prepareProviderResponse(output.content, output.artifacts ?? [], run, output.fallbackArtifacts);
-    }
-    finally {
+    } finally{
         await run.cleanup?.();
         removeEmptyArtifactRun(run);
     }
@@ -717,13 +753,14 @@ export async function captureAgentArtifacts(workingDirectory, operation) {
 async function prepareProviderResponse(content, artifacts, run, fallbackArtifacts = []) {
     const markers = [];
     const warnings = [];
-    for (let index = 0; index < artifacts.length; index++) {
+    for(let index = 0; index < artifacts.length; index++){
         const imported = await importProviderArtifact(run, artifacts[index], index);
-        if (imported.marker)
-            markers.push(`[[artifact:${imported.marker}]]`);
-        if (imported.warning)
-            warnings.push(imported.warning);
+        if (imported.marker) markers.push(`[[artifact:${imported.marker}]]`);
+        if (imported.warning) warnings.push(imported.warning);
     }
-    // Authoritative provider outputs precede model markers; discovery is fallback only.
-    return prepareAgentResponse([...markers, content, ...warnings].filter(Boolean).join("\n\n"), run, fallbackArtifacts);
+    return prepareAgentResponse([
+        ...markers,
+        content,
+        ...warnings
+    ].filter(Boolean).join("\n\n"), run, fallbackArtifacts);
 }

@@ -1,6 +1,6 @@
 import { discordConversations } from "../../adapters/discord/turn.js";
-import { ChatInputCommandInteraction } from "discord.js";
-import { SessionManager } from "../../sessionManager.js";
+import type { ChatInputCommandInteraction } from "discord.js";
+import type { SessionManager } from "../../sessionManager.js";
 import { interactionSessionKey, interactionSessionLabel } from "../../common/discordSessionKey.js";
 
 export async function handleReset(
@@ -8,19 +8,15 @@ export async function handleReset(
   sessions: SessionManager
 ): Promise<void> {
   try {
+    await interaction.deferReply({ ephemeral: true });
     const sessionKey = interactionSessionKey(interaction);
     const scope = `${interactionSessionLabel(interaction)} (${sessions.activeProviderDisplayName(sessionKey)})`;
     await discordConversations(sessions).serial(sessionKey, () => sessions.resetSession(sessionKey));
-    await interaction.reply({
-      content: `✅ ${scope} has been reset.`,
-      ephemeral: true,
-    });
+    await interaction.editReply({ content: `✅ ${scope} has been reset.` });
   } catch (err) {
     console.error("[/reset] Error:", err);
-    await interaction.reply({
-      content: "❌ Failed to reset session. Please try again.",
-      ephemeral: true,
-    });
+    if (interaction.deferred) await interaction.editReply({ content: "❌ Failed to reset session. Please try again." });
+    else await interaction.reply({ content: "❌ Failed to reset session. Please try again.", ephemeral: true });
   }
 }
 

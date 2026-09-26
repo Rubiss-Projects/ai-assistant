@@ -9,46 +9,44 @@ import dotenv from "dotenv";
 import { setupSecurityMode, setupSitesEnabled } from "./common/providerSecurity.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname_local = dirname(__filename);
-// Config dir: ~/.ai-assistant/ or override via AI_ASSISTANT_CONFIG_DIR
-const CONFIG_DIR = process.env.AI_ASSISTANT_CONFIG_DIR
-    ? resolve(process.env.AI_ASSISTANT_CONFIG_DIR)
-    : resolve(homedir(), ".ai-assistant");
+const CONFIG_DIR = process.env.AI_ASSISTANT_CONFIG_DIR ? resolve(process.env.AI_ASSISTANT_CONFIG_DIR) : resolve(homedir(), ".ai-assistant");
 const ENV_FILE = resolve(CONFIG_DIR, ".env");
-// Package root = two directories up from dist/src/cli.js
 const PACKAGE_ROOT = resolve(__dirname_local, "../..");
-// ─── Helpers ───────────────────────────────────────────────────────────────
 function question(rl, prompt) {
-    return new Promise((res) => rl.question(prompt, res));
+    return new Promise((res)=>rl.question(prompt, res));
 }
 function parseEnvFile(path) {
-    if (!existsSync(path))
-        return {};
+    if (!existsSync(path)) return {};
     return dotenv.parse(readFileSync(path, "utf-8"));
 }
 async function promptVar(rl, label, key, existing, required) {
     const current = existing[key] ?? "";
-    // Mask sensitive values in the hint
     const isSensitive = key.toLowerCase().includes("token");
-    const hint = current
-        ? ` [${isSensitive ? current.slice(0, 6) + "..." : current}]`
-        : "";
+    const hint = current ? ` [${isSensitive ? current.slice(0, 6) + "..." : current}]` : "";
     const suffix = required ? "" : " (optional, Enter to skip)";
     const answer = await question(rl, `${label}${hint}${suffix}: `);
     return answer.trim() || current;
 }
-// ─── Commands ──────────────────────────────────────────────────────────────
 async function setup() {
-    if (!existsSync(CONFIG_DIR))
-        mkdirSync(CONFIG_DIR, { recursive: true });
+    if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, {
+        recursive: true
+    });
     const existing = parseEnvFile(ENV_FILE);
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
     console.log("\n🤖  AI Assistant Setup");
     console.log(`Config directory: ${CONFIG_DIR}\n`);
     const token = await promptVar(rl, "Discord Bot Token", "DISCORD_TOKEN", existing, true);
     const appId = await promptVar(rl, "Discord Application ID", "DISCORD_APP_ID", existing, true);
     const guildId = await promptVar(rl, "Discord Guild ID (for slash command registration)", "DISCORD_GUILD_ID", existing, true);
     const provider = await promptVar(rl, "AI provider (copilot | codex | opencode)", "PROVIDER", existing, false) || "copilot";
-    const validProviders = ["copilot", "codex", "opencode"];
+    const validProviders = [
+        "copilot",
+        "codex",
+        "opencode"
+    ];
     if (!validProviders.includes(provider)) {
         console.error(`\n❌ Invalid provider "${provider}". Choose one of: ${validProviders.join(", ")}.`);
         rl.close();
@@ -68,8 +66,7 @@ async function setup() {
     try {
         securityMode = setupSecurityMode(requestedSecurityMode);
         sitesEnabled = setupSitesEnabled(requestedSitesEnabled);
-    }
-    catch (err) {
+    } catch (err) {
         console.error(`\n❌ ${err instanceof Error ? err.message : String(err)}`);
         rl.close();
         process.exit(1);
@@ -87,44 +84,33 @@ async function setup() {
         freeChannels ? `DISCORD_FREE_CHANNELS=${freeChannels}` : "# DISCORD_FREE_CHANNELS=",
         allowedUsers ? `DISCORD_ALLOWED_USERS=${allowedUsers}` : "# DISCORD_ALLOWED_USERS=",
         adminUsers ? `DISCORD_ADMIN_USERS=${adminUsers}` : "# DISCORD_ADMIN_USERS=",
-        systemPrompt
-            ? `AI_ASSISTANT_SYSTEM_PROMPT=${JSON.stringify(systemPrompt)}`
-            : "# AI_ASSISTANT_SYSTEM_PROMPT=",
-        systemPromptFile
-            ? `AI_ASSISTANT_SYSTEM_PROMPT_FILE=${JSON.stringify(systemPromptFile)}`
-            : "# AI_ASSISTANT_SYSTEM_PROMPT_FILE=",
+        systemPrompt ? `AI_ASSISTANT_SYSTEM_PROMPT=${JSON.stringify(systemPrompt)}` : "# AI_ASSISTANT_SYSTEM_PROMPT=",
+        systemPromptFile ? `AI_ASSISTANT_SYSTEM_PROMPT_FILE=${JSON.stringify(systemPromptFile)}` : "# AI_ASSISTANT_SYSTEM_PROMPT_FILE=",
         `AI_ASSISTANT_SECURITY_MODE=${securityMode}`,
         `AI_ASSISTANT_ENABLE_SITES=${sitesEnabled}`,
-        `AI_ASSISTANT_WORKSPACE_ROOT=${JSON.stringify(workspaceRoot)}`,
+        `AI_ASSISTANT_WORKSPACE_ROOT=${JSON.stringify(workspaceRoot)}`
     ];
     if (provider === "codex") {
         const openaiKey = await promptVar(rl, "OpenAI API Key (optional if Codex CLI is logged in)", "OPENAI_API_KEY", existing, false);
         const codexModel = await promptVar(rl, "Default Codex model (e.g. gpt-5.6-sol)", "CODEX_MODEL", existing, false);
         const codexTimeout = await promptVar(rl, "Codex hard timeout in ms (default 3600000)", "CODEX_TIMEOUT_MS", existing, false);
         lines.push(openaiKey ? `OPENAI_API_KEY=${openaiKey}` : "# OPENAI_API_KEY=");
-        if (codexModel)
-            lines.push(`CODEX_MODEL=${codexModel}`);
-        if (codexTimeout)
-            lines.push(`CODEX_TIMEOUT_MS=${codexTimeout}`);
-    }
-    else if (provider === "opencode") {
+        if (codexModel) lines.push(`CODEX_MODEL=${codexModel}`);
+        if (codexTimeout) lines.push(`CODEX_TIMEOUT_MS=${codexTimeout}`);
+    } else if (provider === "opencode") {
         const opencodeModel = await promptVar(rl, "Default OpenCode model (provider/model, e.g. openrouter/...)", "OPENCODE_MODEL", existing, false);
         const opencodeTimeout = await promptVar(rl, "OpenCode hard timeout in ms (default 3600000)", "OPENCODE_TIMEOUT_MS", existing, false);
-        if (opencodeModel)
-            lines.push(`OPENCODE_MODEL=${opencodeModel}`);
-        if (opencodeTimeout)
-            lines.push(`OPENCODE_TIMEOUT_MS=${opencodeTimeout}`);
-    }
-    else {
+        if (opencodeModel) lines.push(`OPENCODE_MODEL=${opencodeModel}`);
+        if (opencodeTimeout) lines.push(`OPENCODE_TIMEOUT_MS=${opencodeTimeout}`);
+    } else {
         const copilotTimeout = await promptVar(rl, "Copilot hard timeout in ms (default 3600000)", "COPILOT_TIMEOUT_MS", existing, false);
-        if (copilotTimeout)
-            lines.push(`COPILOT_TIMEOUT_MS=${copilotTimeout}`);
+        if (copilotTimeout) lines.push(`COPILOT_TIMEOUT_MS=${copilotTimeout}`);
     }
     const progressInterval = await promptVar(rl, "Long-run progress update interval in ms (default 60000)", "AI_PROGRESS_INTERVAL_MS", existing, false);
-    if (progressInterval)
-        lines.push(`AI_PROGRESS_INTERVAL_MS=${progressInterval}`);
-    if (securityMode === "shared")
-        mkdirSync(workspaceRoot, { recursive: true });
+    if (progressInterval) lines.push(`AI_PROGRESS_INTERVAL_MS=${progressInterval}`);
+    if (securityMode === "shared") mkdirSync(workspaceRoot, {
+        recursive: true
+    });
     writeFileSync(ENV_FILE, lines.join("\n") + "\n");
     console.log(`\n✅ Config saved to ${ENV_FILE}`);
     console.log(`✅ Provider set to: ${provider}`);
@@ -144,7 +130,6 @@ async function start() {
         console.error(`❌ Config not found at ${ENV_FILE}\nRun: ai-assistant setup`);
         process.exit(1);
     }
-    // chdir so dotenv.config() in index.ts picks up the right .env
     process.chdir(CONFIG_DIR);
     await import("./index.js");
 }
@@ -162,37 +147,51 @@ async function installService() {
         console.error(`❌ Service template not found at ${templatePath}`);
         process.exit(1);
     }
-    // Prefer SUDO_USER so service runs as the calling user, not as root
     const user = process.env.SUDO_USER ?? process.env.USER ?? "root";
     if (user === "root") {
         console.warn("⚠️  Installing service to run as root. Run as a non-root user or set SUDO_USER.");
     }
     const nodePath = process.execPath;
     const cliPath = resolve(__dirname_local, "cli.js");
-    const patched = readFileSync(templatePath, "utf-8")
-        .replace(/%%USER%%/g, user)
-        .replace(/%%CONFIG_DIR%%/g, CONFIG_DIR)
-        .replace(/%%NODE_PATH%%/g, nodePath)
-        .replace(/%%CLI_PATH%%/g, cliPath);
-    // Write to a unique temp dir (not predictable /tmp path) to avoid TOCTOU before sudo cp
+    const patched = readFileSync(templatePath, "utf-8").replace(/%%USER%%/g, user).replace(/%%CONFIG_DIR%%/g, CONFIG_DIR).replace(/%%NODE_PATH%%/g, nodePath).replace(/%%CLI_PATH%%/g, cliPath);
     const tmpDir = mkdtempSync(join(tmpdir(), "ai-assistant-"));
     const tmpPath = join(tmpDir, "ai-assistant.service");
-    writeFileSync(tmpPath, patched, { mode: 0o600 });
-    console.log("Installing /etc/systemd/system/ai-assistant.service ...");
-    const cp = spawnSync("sudo", ["cp", tmpPath, "/etc/systemd/system/ai-assistant.service"], {
-        stdio: "inherit",
+    writeFileSync(tmpPath, patched, {
+        mode: 0o600
     });
-    rmSync(tmpDir, { recursive: true, force: true });
+    console.log("Installing /etc/systemd/system/ai-assistant.service ...");
+    const cp = spawnSync("sudo", [
+        "cp",
+        tmpPath,
+        "/etc/systemd/system/ai-assistant.service"
+    ], {
+        stdio: "inherit"
+    });
+    rmSync(tmpDir, {
+        recursive: true,
+        force: true
+    });
     if (cp.status !== 0) {
         console.error("❌ Failed to copy service file (sudo cp failed).");
         process.exit(1);
     }
-    const reload = spawnSync("sudo", ["systemctl", "daemon-reload"], { stdio: "inherit" });
+    const reload = spawnSync("sudo", [
+        "systemctl",
+        "daemon-reload"
+    ], {
+        stdio: "inherit"
+    });
     if (reload.status !== 0) {
         console.error("❌ systemctl daemon-reload failed.");
         process.exit(1);
     }
-    const enable = spawnSync("sudo", ["systemctl", "enable", "ai-assistant"], { stdio: "inherit" });
+    const enable = spawnSync("sudo", [
+        "systemctl",
+        "enable",
+        "ai-assistant"
+    ], {
+        stdio: "inherit"
+    });
     if (enable.status !== 0) {
         console.error("❌ systemctl enable failed.");
         process.exit(1);
@@ -212,16 +211,24 @@ function help() {
     console.log("Usage: ai-assistant <command>\n");
     console.log("Commands:");
     console.log("  setup            Interactive setup wizard — creates ~/.ai-assistant/.env");
-    console.log("  start            Start the bot");
+    console.log("  start            Start configured network adapters");
+    console.log("  cli              Local conversation (--provider fake, --message, --json)");
     console.log("  register         Register Discord slash commands with the Discord API");
     console.log("  install-service  Install and enable as a systemd service");
     console.log("  update           Print update instructions");
     console.log("\nEnvironment:");
     console.log("  AI_ASSISTANT_CONFIG_DIR  Override config directory (default: ~/.ai-assistant)");
 }
-// ─── Dispatch ──────────────────────────────────────────────────────────────
 const cmd = process.argv[2];
-switch (cmd) {
+switch(cmd){
+    case "cli":
+        try {
+            await (await import("./adapters/cli/run.js")).runCli();
+        } catch  {
+            console.error("CLI failed. Check arguments, local state ownership and provider configuration.");
+            process.exitCode = 1;
+        }
+        break;
     case "setup":
         await setup();
         break;
@@ -244,6 +251,5 @@ switch (cmd) {
         break;
     default:
         help();
-        if (cmd !== undefined)
-            process.exit(1);
+        if (cmd !== undefined) process.exit(1);
 }

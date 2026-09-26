@@ -59,3 +59,15 @@ test('cancelled queued work and failed turns do not deadlock the queue',async()=
  const s=new ConversationService();const h=await s.submit(input(),host({generate:async()=>{throw Error('failure')}}));assert.equal((await h.completion).state,'failed');
  const next=await s.submit(input('2'),host());assert.equal((await next.completion).state,'delivered');await s.shutdown();
 });
+test('Discord reset acknowledges before waiting on an active session',async()=>{
+ const { handleReset }=await import('../src/handlers/slash/reset.js');
+ const { discordConversations }=await import('../src/adapters/discord/turn.js');
+ const gate=deferred(),started=deferred();let deferredReply=false,reset=false,edited=false;
+ const sessions={activeProviderDisplayName:()=> 'Fake',resetSession:async()=>{reset=true}};
+ const service=discordConversations(sessions as never);
+ const pending=service.serial('user:channel',async()=>{started.resolve();await gate.promise});await started.promise;
+ const interaction={guildId:'guild',channelId:'channel',channel:{isThread:()=>false},user:{id:'user'},deferred:false,
+  deferReply:async()=>{deferredReply=true;interaction.deferred=true},editReply:async()=>{edited=true},reply:async()=>{throw Error('must use editReply')}};
+ const operation=handleReset(interaction as never,sessions as never);await Promise.resolve();await Promise.resolve();
+ assert.equal(deferredReply,true);assert.equal(reset,false);gate.resolve();await Promise.all([pending,operation]);assert.equal(reset,true);assert.equal(edited,true);await service.shutdown();
+});
