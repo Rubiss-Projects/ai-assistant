@@ -333,6 +333,8 @@ node --experimental-transform-types --loader ./scripts/typescript-loader.mjs --t
 
 All local TypeScript sources were also parsed with Node's `stripTypeScriptTypes` in transform mode. Parsing/emitting JavaScript is not TypeScript type checking. The npm installation attempt was blocked by sandbox network policy for `registry.npmjs.org`; no alternative registry was used to bypass that restriction. Existing SDK-dependent tests and real providers were not exercised.
 
+The focused suite currently passes 27 tests, including queued Discord reset acknowledgement, recovered-output audience checks, long-thread sampling, edited mentions and confirmed deletions. The emitted JavaScript CLI adapter also passed a one-shot fake-provider smoke check. Tracked runtime JavaScript was emitted with Node transform mode; a normal TypeScript build remains a release gate.
+
 ### Operator setup
 
 Discord remains the default `AI_ASSISTANT_ADAPTER`. Select `slack` to run Slack in a separate process; each process owns its adapter journal. Set:
@@ -369,6 +371,7 @@ The CLI principal comes from `AI_ASSISTANT_CLI_USER` or the operating-system acc
 - Discord preparation now runs inside the shared session queue. New `/chat` threads are created after durable admission and their resolved session binding is persisted before execution. A crash during remote thread creation is marked interrupted rather than silently creating another thread. Discord acknowledgement/progress messages remain transport-owned.
 - `chunkForDiscord` remains a compatibility export on the existing facade. New adapters import formatting directly; removing the public export would unnecessarily break existing consumers during migration.
 - History changes are observed in bounded fetched windows. No immediate deletion detection outside those windows is promised. The initial Slack deployment supports explicitly configured installations, not dynamic OAuth installation management.
+- Host-only fetched-record observations are kept separate from the smaller provider context selection. Deletions are inferred only from complete retrieval in the same history scope; dropping a reply from the context budget does not erase a session. Original requests and delivered replies have comparable content fingerprints. Recovered generated output must match its persisted generation audience before delivery.
 - Slack progress UI is not yet implemented. Cancellation/status diagnostics are available to the host; operator-facing replay/reconciliation commands are not included.
 - Full build, the existing Discord/provider suite, real-provider CLI use and live Slack/Discord smoke checks remain release gates. This draft must not be deployed as if those gates passed.
 

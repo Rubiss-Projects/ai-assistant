@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { retrieveHistory, historyRange } from '../src/application/conversationService.js';
+import { retrieveHistory, historyRange, historyBlock } from '../src/application/conversationService.js';
 import { SlackHistory } from '../src/adapters/slack.js';
 import type { IncomingTurn } from '../src/core/conversation.js';
 import type { HistoryPort, HistoryMessage } from '../src/core/conversation.js';
@@ -26,4 +26,10 @@ test('Slack history binds channel, filters future and unrelated replies, checks 
  let calls=0;const api={call:async()=>{calls++;return {ok:true,messages:[{ts:'1700000002.000000',thread_ts:input.conversation.threadId,user:'friend',text:'eligible'},{ts:'1700000010.000000',thread_ts:input.conversation.threadId,user:'friend',text:'future'},{ts:'1700000003.000000',thread_ts:'other',user:'friend',text:'wrong thread'}]}}};
  const p=new SlackHistory(api,input.conversation,async()=>true);const r=await p.page(input.conversation,input.sourceMessageId!,undefined,new AbortController().signal);assert.equal(r.messages.length,1);
  await assert.rejects(p.page({...input.conversation,channelId:'OTHER'},input.sourceMessageId!,undefined,new AbortController().signal));assert.equal(calls,1);
+});
+
+test('host observations cover fetched records but are excluded from bounded provider context',async()=>{
+ const r=await retrieveHistory(port(),input,input.conversation,{kind:'recent',count:3},new AbortController().signal,{messages:3,characters:8000,pages:10,scanned:1000},true);
+ assert.equal(r.observed?.messages.length,8);assert.equal(r.observed?.complete,true);assert.equal(r.messages.length,3);
+ assert.doesNotMatch(historyBlock(r),/discussion 3/);assert.doesNotMatch(historyBlock(r),/observed/);
 });

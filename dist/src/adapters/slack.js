@@ -110,6 +110,19 @@ export class SlackHistory {
         };
     }
 }
+function fingerprint(message) {
+    return createHash('sha256').update(JSON.stringify([
+        message.authorId,
+        message.text,
+        message.revision ?? 'null'
+    ])).digest('hex');
+}
+function historyScope(resource) {
+    return JSON.stringify([
+        resource.channelId,
+        resource.threadId ?? null
+    ]);
+}
 export class SlackAdapter {
     config;
     api;
@@ -228,6 +241,7 @@ export class SlackAdapter {
                 audience = await this.audience(input);
                 const state = this.load(session);
                 state.represented ??= [];
+                state.scopes ??= {};
                 const resource = input.conversation.threadId === input.sourceMessageId ? {
                     ...input.conversation,
                     kind: 'channel',
@@ -247,15 +261,18 @@ export class SlackAdapter {
                 }, Boolean(resource.threadId));
                 const fingerprints = Object.fromEntries(result.messages.map((m)=>[
                         m.id,
-                        createHash('sha256').update(JSON.stringify(m)).digest('hex')
+                        fingerprint(m)
                     ]));
-                const changed = result.messages.some((m)=>state.seen[m.id] && state.seen[m.id] !== fingerprints[m.id]);
-                const removed = result.coverage.status === 'complete' && Object.entries(state.positions).some(([id, pos])=>result.coverage.first && result.coverage.last && pos >= result.coverage.first && pos <= result.coverage.last && !fingerprints[id]);
+                const observed = result.observed;
+                const observedIds = new Set(observed?.messages.map((m)=>m.id));
+                const changed = observed?.messages.some((m)=>state.seen[m.id] && state.seen[m.id] !== fingerprint(m) || state.represented.includes(m.position) && !state.seen[m.id]);
+                const removed = observed?.complete && Object.entries(state.positions).some(([id, pos])=>state.scopes[id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId) < 0 && !observedIds.has(id));
                 if (state.audience !== audience || changed || removed) {
                     await this.engine.resetSession(session);
                     state.seen = {};
                     state.positions = {};
                     state.represented = [];
+                    state.scopes = {};
                 }
                 const fresh = result.messages.filter((m)=>!state.seen[m.id] && !state.represented.includes(m.position));
                 const next = {
@@ -273,6 +290,13 @@ export class SlackAdapter {
                         ...Object.fromEntries(result.messages.map((m)=>[
                                 m.id,
                                 m.position
+                            ]))
+                    },
+                    scopes: {
+                        ...state.scopes,
+                        ...Object.fromEntries(result.messages.map((m)=>[
+                                m.id,
+                                historyScope(resource)
                             ]))
                     }
                 };
@@ -319,8 +343,9 @@ export class SlackAdapter {
                             AbortSignal.timeout(15_000)
                         ]) : AbortSignal.timeout(15_000));
                         for (const message of result.messages){
-                            prepared.next.seen[message.id] = createHash('sha256').update(JSON.stringify(message)).digest('hex');
+                            prepared.next.seen[message.id] = fingerprint(message);
                             prepared.next.positions[message.id] = message.position;
+                            prepared.next.scopes[message.id] = historyScope(resource);
                         }
                         return historyBlock(result);
                     }
@@ -332,6 +357,13 @@ export class SlackAdapter {
                     input.sourceMessageId
                 ]);
                 prepared.next.positions[id] = input.sourceMessageId;
+                const source = payload.event;
+                prepared.next.seen[id] = fingerprint({
+                    authorId: input.actor.userId,
+                    text: String(source.text),
+                    revision: JSON.stringify(source.edited ?? null)
+                });
+                prepared.next.scopes[id] = historyScope(input.conversation);
                 this.save(session, prepared.next);
                 response.audienceTag = audience;
                 if (prepared.coverage.status === 'partial' || prepared.coverage.status === 'unavailable') response.content += '\n\n[Surrounding discussion context is ' + prepared.coverage.status + ': ' + prepared.coverage.reasons.join('; ') + ']';
@@ -342,6 +374,7 @@ export class SlackAdapter {
                 const text = output.content + (output.attachments.length ? '\n[File delivery is unavailable in Slack.]' : '');
                 const chars = Array.from(text || '(No text response)');
                 const ids = [];
+                const sent = [];
                 for(let offset = 0; offset < chars.length; offset += 3000){
                     const result = await this.api.call('chat.postMessage', {
                         channel: input.conversation.channelId,
@@ -352,13 +385,34 @@ export class SlackAdapter {
                         unfurl_media: 'false',
                         client_msg_id: createHash('sha256').update(deliveryKey + ':' + offset).digest('hex').slice(0, 32).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5')
                     });
-                    if (typeof result.ts === 'string') ids.push(result.ts);
+                    if (typeof result.ts === 'string') {
+                        ids.push(result.ts);
+                        sent.push({
+                            position: result.ts,
+                            text: chars.slice(offset, offset + 3000).join('')
+                        });
+                    }
                 }
                 const state = this.load(key);
                 state.represented = [
                     ...state.represented ?? [],
                     ...ids
                 ];
+                state.scopes ??= {};
+                for (const message of sent){
+                    const id = JSON.stringify([
+                        'slack',
+                        input.conversation.tenantId,
+                        input.conversation.channelId,
+                        message.position
+                    ]);
+                    state.seen[id] = fingerprint({
+                        authorId: this.config.botUserId,
+                        text: message.text
+                    });
+                    state.positions[id] = message.position;
+                    state.scopes[id] = historyScope(input.conversation);
+                }
                 this.save(key, state);
                 return {
                     messageIds: ids
