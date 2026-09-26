@@ -69,7 +69,11 @@ export class SlackHistory implements HistoryPort {
 }
 
 interface SlackConfig { teamId: string; installationId: string; botUserId: string; channels: Set<string>; users: Set<string>; excludedAuthors: Set<string>; stateDirectory: string }
-interface ContextState { represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string> }
+interface ContextState { represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string>; scopes?: Record<string,string> }
+function fingerprint(message: { authorId: string; text: string; revision?: string }): string {
+  return createHash('sha256').update(JSON.stringify([message.authorId, message.text, message.revision ?? 'null'])).digest('hex');
+}
+function historyScope(resource: ConversationRef): string { return JSON.stringify([resource.channelId, resource.threadId ?? null]); }
 /** Transport-independent Slack event normalization; Socket Mode is only an ingress. */
 export class SlackAdapter {
   constructor(private readonly config: SlackConfig, private readonly api: SlackApi, private readonly historyApi: SlackApi,
@@ -124,18 +128,21 @@ export class SlackAdapter {
         audience = await this.audience(input);
         const state = this.load(session);
         state.represented ??= [];
+        state.scopes ??= {};
         const resource = input.conversation.threadId === input.sourceMessageId
           ? { ...input.conversation, kind: 'channel' as const, threadId: undefined } : input.conversation;
         const result = await retrieveHistory(port, input, resource, { kind: 'recent', count: 50 },
           AbortSignal.any([signal, AbortSignal.timeout(15_000)]), { messages: 50, characters: 8_000, pages: 10, scanned: 1000 }, Boolean(resource.threadId));
-        const fingerprints = Object.fromEntries(result.messages.map(m => [m.id, createHash('sha256').update(JSON.stringify(m)).digest('hex')]));
-        const changed = result.messages.some(m => state.seen[m.id] && state.seen[m.id] !== fingerprints[m.id]);
-        const removed = result.coverage.status === 'complete' && Object.entries(state.positions).some(([id,pos]) =>
-          result.coverage.first && result.coverage.last && pos >= result.coverage.first && pos <= result.coverage.last && !fingerprints[id]);
-        if (state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; }
+        const fingerprints = Object.fromEntries(result.messages.map(m => [m.id, fingerprint(m)]));
+        const observed = result.observed;
+        const observedIds = new Set(observed?.messages.map(m => m.id));
+        const changed = observed?.messages.some(m => (state.seen[m.id] && state.seen[m.id] !== fingerprint(m)) || (state.represented.includes(m.position) && !state.seen[m.id]));
+        const removed = observed?.complete && Object.entries(state.positions).some(([id,pos]) =>
+          state.scopes![id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId!) < 0 && !observedIds.has(id));
+        if (state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
         const fresh = result.messages.filter(m => !state.seen[m.id] && !state.represented.includes(m.position));
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
-        const next = { represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) } };
+        const next = { represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
         const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent request:\n' + input.text;
         return { prompt, next, coverage: result.coverage };
       },
@@ -148,8 +155,9 @@ export class SlackAdapter {
             const range = historyRange(args, input, port, resource);
             const result = await retrieveHistory(port, input, resource, range, signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000));
             for (const message of result.messages) {
-              prepared.next.seen[message.id] = createHash('sha256').update(JSON.stringify(message)).digest('hex');
+              prepared.next.seen[message.id] = fingerprint(message);
               prepared.next.positions[message.id] = message.position;
+              prepared.next.scopes[message.id] = historyScope(resource);
             }
             return historyBlock(result);
           },
@@ -157,7 +165,9 @@ export class SlackAdapter {
         // Do not suppress the current turn until it has actually been accepted by the provider.
         const id = JSON.stringify(['slack',input.conversation.tenantId,input.conversation.channelId,input.sourceMessageId]);
         prepared.next.positions[id] = input.sourceMessageId!;
-        // The fetched representation includes mention syntax, so record it on its first later fetch.
+        const source = payload.event as Record<string, unknown>;
+        prepared.next.seen[id] = fingerprint({ authorId: input.actor.userId, text: String(source.text), revision: JSON.stringify(source.edited ?? null) });
+        prepared.next.scopes[id] = historyScope(input.conversation);
         this.save(session, prepared.next);
         response.audienceTag = audience;
         if (prepared.coverage.status === 'partial' || prepared.coverage.status === 'unavailable') response.content += '\n\n[Surrounding discussion context is ' + prepared.coverage.status + ': ' + prepared.coverage.reasons.join('; ') + ']';
@@ -167,13 +177,20 @@ export class SlackAdapter {
         if (!output.audienceTag || output.audienceTag !== await this.audience(input)) throw new Error("Generated output audience changed; delivery denied.");
         const text = output.content + (output.attachments.length ? '\n[File delivery is unavailable in Slack.]' : '');
         const chars = Array.from(text || '(No text response)'); const ids: string[] = [];
+        const sent: Array<{ position: string; text: string }> = [];
         for (let offset = 0; offset < chars.length; offset += 3000) {
           const result = await this.api.call('chat.postMessage', { channel: input.conversation.channelId, thread_ts: input.conversation.threadId!,
             text: chars.slice(offset, offset + 3000).join(''), parse: 'none', unfurl_links: 'false', unfurl_media: 'false',
             client_msg_id: createHash('sha256').update(deliveryKey + ':' + offset).digest('hex').slice(0,32).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5') });
-          if (typeof result.ts === 'string') ids.push(result.ts);
+          if (typeof result.ts === 'string') { ids.push(result.ts); sent.push({ position: result.ts, text: chars.slice(offset, offset + 3000).join('') }); }
         }
-        const state = this.load(key); state.represented = [...(state.represented ?? []), ...ids]; this.save(key, state);
+        const state = this.load(key); state.represented = [...(state.represented ?? []), ...ids]; state.scopes ??= {};
+        for (const message of sent) {
+          const id = JSON.stringify(['slack', input.conversation.tenantId, input.conversation.channelId, message.position]);
+          state.seen[id] = fingerprint({ authorId: this.config.botUserId, text: message.text });
+          state.positions[id] = message.position; state.scopes[id] = historyScope(input.conversation);
+        }
+        this.save(key, state);
         return { messageIds: ids };
       },
     });

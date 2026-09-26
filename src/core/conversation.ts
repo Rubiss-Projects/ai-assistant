@@ -75,6 +75,8 @@ export type HistoryRange = { kind: 'recent'; count: number } | { kind: 'after'; 
   | { kind: 'previous' } | { kind: 'time'; timestamp: number };
 export interface HistoryResult {
   messages: HistoryMessage[];
+  /** Host-only observations before context selection. Never serialize into provider prompts. */
+  observed?: { messages: HistoryMessage[]; complete: boolean };
   coverage: { status: 'complete' | 'partial' | 'empty' | 'unavailable'; requested: HistoryRange;
     scanned: number; included: number; excluded: number; reasons: string[]; first?: string; last?: string; before: string };
 }
