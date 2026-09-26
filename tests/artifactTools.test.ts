@@ -178,7 +178,7 @@ test("real MCP stdio transport lists and calls tools, isolates sessions, and rev
   const client = new Client({ name: "artifact-test", version: "1" });
   await client.connect(new StdioClientTransport({ ...config, stderr: "pipe" }));
   t.after(() => client.close());
-  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["fetch_webpage", "report_lookup", "fetch_artifact", "attach_file", "transcode_video"]);
+  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["fetch_channel_history", "fetch_webpage", "report_lookup", "fetch_artifact", "attach_file", "transcode_video"]);
   let runId: string;
   const response = await captureAgentArtifacts(workspace, (run) => sessions.run("session-a", run, [], undefined, async (runtime) => {
     runId = runtime.id;
@@ -205,7 +205,7 @@ test("provider configuration enables only the host artifact bridge in shared mod
   const codex = codexClientOptions(workspace, config);
   assert.match(codex.configOverrides![0], /^mcp_servers=\{artifact_tools=/);
   assert.deepEqual([...codex.configOverrides![0].matchAll(/"([a-z_]+)"=\{approval_mode="approve"\}/g)].map((match) => match[1]),
-    ["fetch_webpage", "report_lookup", "fetch_artifact", "attach_file", "transcode_video"]);
+    ["fetch_channel_history", "fetch_webpage", "report_lookup", "fetch_artifact", "attach_file", "transcode_video"]);
   assert.doesNotMatch(codex.configOverrides![0], /default_tools_approval_mode/);
   assert.equal(codex.env?.AI_ARTIFACT_BRIDGE_TOKEN, undefined);
   const openCode = JSON.parse(openCodeChildEnvironment({ AI_ASSISTANT_SECURITY_MODE: "shared" }, config).OPENCODE_CONFIG_CONTENT);
