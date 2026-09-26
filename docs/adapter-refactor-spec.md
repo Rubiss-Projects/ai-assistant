@@ -333,7 +333,7 @@ node --experimental-transform-types --loader ./scripts/typescript-loader.mjs --t
 
 All local TypeScript sources were also parsed with Node's `stripTypeScriptTypes` in transform mode. Parsing/emitting JavaScript is not TypeScript type checking. The npm installation attempt was blocked by sandbox network policy for `registry.npmjs.org`; no alternative registry was used to bypass that restriction. Existing SDK-dependent tests and real providers were not exercised.
 
-The focused suite currently passes 36 tests, including resolved Discord thread coordination, changed Slack author exclusions, provider/session identity changes, idle and active CLI SIGTERM cleanup, fake-engine identity persistence, separate adapter persistence, queued Discord reset acknowledgement, command-versus-mention authorization, recovered-output audience checks, long-thread sampling, edited mentions and confirmed deletions. The emitted JavaScript CLI adapter also passed a one-shot fake-provider smoke check. Tracked runtime JavaScript was emitted with Node transform mode; provider type-only imports were checked for runtime elision. A normal TypeScript build remains a release gate.
+The focused suite currently passes 38 tests, including current-speaker attribution, recent retrieval across 2,001 Slack messages, resolved Discord thread coordination, changed Slack author exclusions, provider/session identity changes, idle and active CLI SIGTERM cleanup, fake-engine identity persistence, separate adapter persistence, queued Discord reset acknowledgement, command-versus-mention authorization, recovered-output audience checks, long-thread sampling, edited mentions and confirmed deletions. The emitted JavaScript CLI adapter also passed a one-shot fake-provider smoke check. Tracked runtime JavaScript was emitted with Node transform mode; provider type-only imports were checked for runtime elision. A normal TypeScript build remains a release gate.
 
 ### Operator setup
 
@@ -377,3 +377,5 @@ The CLI principal comes from `AI_ASSISTANT_CLI_USER` or the operating-system acc
 - Full build, the existing Discord/provider suite, real-provider CLI use and live Slack/Discord smoke checks remain release gates. This draft must not be deployed as if those gates passed.
 
 Roll out with Slack opt-in after those checks pass. Stop and drain the adapter before rollback. Preserve provider session stores and journals; do not run old and new consumers against the same event stream. Discord legacy keys remain unchanged.
+
+Slack recent-thread retrieval uses bounded newest-first time-window searches because conversations.replies returns the earliest messages in a range first. It retains the root separately and marks coverage partial when older windows or the requested recent count cannot be fully retrieved; partial windows are never reported as complete deletion observations. API reference: https://docs.slack.dev/reference/methods/conversations.replies/

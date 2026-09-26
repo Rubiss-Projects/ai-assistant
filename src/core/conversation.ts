@@ -69,7 +69,7 @@ export interface HistoryMessage {
 export interface HistoryPage { messages: HistoryMessage[]; cursor?: string; truncated?: boolean }
 export interface HistoryPort {
   /** Must enforce requester and response-audience visibility on every call. */
-  page(resource: ConversationRef, before: string, cursor: string | undefined, signal: AbortSignal): Promise<HistoryPage>;
+  page(resource: ConversationRef, before: string, cursor: string | undefined, signal: AbortSignal, range?: HistoryRange): Promise<HistoryPage>;
   includeAuthor(authorId: string): boolean;
   resolveMessageReference(url: string, resource: ConversationRef): string | undefined;
 }
