@@ -6,7 +6,7 @@ export async function createTextEngine(name, directory) {
         const { defaultProviderWorkingDirectory, workspacePathIsAllowed, configuredSecurityMode } = await import('../common/providerSecurity.js');
         if (configuredSecurityMode() === 'shared' && workspacePathIsAllowed(defaultProviderWorkingDirectory(), directory)) throw new Error('Adapter state must be outside provider-readable workspace paths.');
         const { SessionManager } = await import('../sessionManager.js');
-        return new SessionManager(name);
+        return new SessionManager(name, undefined, join(directory, 'providers'));
     }
     mkdirSync(directory, {
         recursive: true,

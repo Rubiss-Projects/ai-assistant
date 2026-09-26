@@ -214,7 +214,7 @@ export async function startSlack(): Promise<{ stop(): Promise<void> }> {
   const directory = process.env.AI_ASSISTANT_STATE_DIR ?? join(homedir(), '.config', 'ai-assistant', 'adapters');
   const service = new ConversationService(new FileTurnJournal(join(directory, 'slack-turns')));
   let engine: Awaited<ReturnType<typeof createTextEngine>>;
-  try { engine = await createTextEngine(process.env.PROVIDER || 'copilot', join(directory, 'slack-fake')); }
+  try { engine = await createTextEngine(process.env.PROVIDER || 'copilot', join(directory, 'slack-provider-state')); }
   catch (error) { await service.shutdown(); throw error; }
   const adapter = new SlackAdapter({ teamId, installationId: process.env.SLACK_INSTALLATION_ID || 'default', botUserId: auth.user_id,
     channels, users, excludedAuthors: new Set((process.env.SLACK_EXCLUDED_CONTEXT_USERS ?? '').split(',').filter(Boolean)), stateDirectory: join(directory, 'slack-context') }, api, historyApi, engine, service);

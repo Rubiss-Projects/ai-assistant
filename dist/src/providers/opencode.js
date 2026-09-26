@@ -271,6 +271,7 @@ function finalTextFromEvents(events) {
     return texts.at(-1) ?? "";
 }
 export class OpenCodeProvider {
+    store;
     participationProcesses = new ParticipationProcessRunner();
     artifactTools = new ArtifactToolSessions();
     rulesetTools = new RulesetToolSessions();
@@ -278,7 +279,9 @@ export class OpenCodeProvider {
     name = "opencode";
     displayName = "OpenCode";
     sessions = new Map();
-    store = new SessionStore(this.name);
+    constructor(store = new SessionStore('opencode')){
+        this.store = store;
+    }
     histories = new Map();
     workingDirOverrides = new Map();
     modelOverrides = new Map();

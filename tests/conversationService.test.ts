@@ -85,3 +85,17 @@ test('Discord command rechecks preserve admin override without granting mention 
  assert.equal(generated,1);
  }finally{await discordConversations(sessions).shutdown()}
 });
+test('separate adapter provider stores preserve interleaved mappings and provider choices',async()=>{
+ const {SessionStore}=await import('../src/common/sessionStore.js');const {ProviderStore}=await import('../src/common/providerStore.js');
+ const dir=mkdtempSync(join(tmpdir(),'adapter-provider-stores-'));
+ try{
+ const paths=['discord-legacy','cli-provider-state/providers','slack-provider-state/providers'].map(p=>join(dir,p));
+ const stores=paths.map(p=>new SessionStore('codex',join(p,'sessions-codex.json')));
+ const choices=paths.map(p=>new ProviderStore(join(p,'providers.json')));
+ for(let turn=0;turn<3;turn++)for(let adapter=0;adapter<3;adapter++){stores[adapter].set('key-'+turn,'session-'+adapter+'-'+turn);choices[adapter].set('key-'+turn,adapter===0?'codex':'copilot');}
+ for(let adapter=0;adapter<3;adapter++){
+ const reopened=new SessionStore('codex',join(paths[adapter],'sessions-codex.json'));const reopenedChoices=new ProviderStore(join(paths[adapter],'providers.json'));
+ for(let turn=0;turn<3;turn++){assert.equal(reopened.get('key-'+turn),'session-'+adapter+'-'+turn);assert.equal(reopenedChoices.get('key-'+turn),adapter===0?'codex':'copilot');}
+ }
+ }finally{rmSync(dir,{recursive:true,force:true})}
+});
