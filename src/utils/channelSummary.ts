@@ -15,27 +15,33 @@ export function isChannelSummaryRequest(prompt: string): boolean {
 }
 
 function rangeFor(prompt: string, invocation: Invocation): Range | string {
+  const guidance = "Please specify 'since my last message', 'since MESSAGE_LINK', 'the last N messages', or 'the last N hours/minutes/days'. Bare clock times need a date and timezone; a message link is unambiguous.";
+  // Check the entire interval, including constraints left after a supported range.
+  const validate = (range: Range, matched = ""): Range | string => {
+    const remainder = prompt.replace(matched, "").replace(/\bthis\s+(?:channel|chat|conversation)\b/gi, "");
+    if (/\b(?:since|after|before|between|yesterday|today|tomorrow|tonight|last|past|previous|next|during|from|on|over)\b|\b(?:this|recent)\s+\S+|\b(?:january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\b\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?\b|\b\d{1,2}:\d{2}\b/i.test(remainder.replace(/\brecent\s+(?:messages?|conversation|chat)\b/gi, ""))) return "Unsupported range. " + guidance;
+    return range;
+  };
   const channels = [...prompt.matchAll(/<#(\d+)>/g)];
   if (channels.some(match => match[1] !== invocation.channelId)) return "Request the summary in the channel you want summarized.";
-  if (/\bsince my (?:last|previous) message\b/i.test(prompt)) return { kind: "last" };
+  const previous = prompt.match(/\bsince my (?:last|previous) message\b(?:\s+at\s+\d{1,2}:\d{2}(?:\s*[ap]m)?)?/i);
+  if (previous) return validate({ kind: "last" }, previous[0]);
   const link = prompt.match(/\b(?:since|after)\s+(https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+))/i);
   if (link) {
     if (link[2] !== invocation.guildId || link[3] !== invocation.channelId) return "The starting message must belong to this channel.";
     if (BigInt(link[4]) >= BigInt(invocation.id)) return "The starting message must be older than this request.";
-    return { kind: "after", id: link[4] };
+    return validate({ kind: "after", id: link[4] }, link[0]);
   }
-  const duration = prompt.match(/\b(?:last|past)\s+(\d+)\s+(minutes?|hours?|days?)\b/i);
+  const duration = prompt.match(/\b(?:(?:from|over|in|during)\s+)?(?:the\s+)?(?:last|past)\s+(\d+)\s+(minutes?|hours?|days?)\b/i);
   if (duration) {
     const amount = Number(duration[1]);
     if (amount < 1 || amount > CHANNEL_SUMMARY_CAPABILITIES.limits.durationAmount) return `Use a duration between 1 and ${CHANNEL_SUMMARY_CAPABILITIES.limits.durationAmount} minutes, hours, or days.`;
     const unit = duration[2].toLowerCase();
-    return { kind: "time", timestamp: invocation.createdTimestamp - amount * (unit.startsWith("minute") ? 60_000 : unit.startsWith("hour") ? 3_600_000 : 86_400_000) };
+    return validate({ kind: "time", timestamp: invocation.createdTimestamp - amount * (unit.startsWith("minute") ? 60_000 : unit.startsWith("hour") ? 3_600_000 : 86_400_000) }, duration[0]);
   }
-  if (/\b(?:since|after|before|between|yesterday|today)\b|\b\d{1,2}:\d{2}\b/i.test(prompt)) return "Please specify 'since my last message', 'since MESSAGE_LINK', 'the last N messages', or 'the last N hours/minutes/days'. Bare clock times need a date and timezone; a message link is unambiguous.";
-  const count = prompt.match(/\b(?:last|recent)\s+(\d+)\s+messages?\b/i);
+  const count = prompt.match(/\b(?:(?:from|over|in|during)\s+)?(?:the\s+)?(?:last|recent)\s+(\d+)\s+messages?\b/i);
   if (count && (Number(count[1]) < 1 || Number(count[1]) > SCAN_LIMIT)) return `Choose between 1 and ${SCAN_LIMIT} messages.`;
-  if (!count && /\b(?:last|past|previous|from|on|during|this|over)\b|\b\d{4}-\d{1,2}-\d{1,2}\b/i.test(prompt.replace(/\bthis\s+(?:channel|chat|conversation)\b/gi, ""))) return "Unsupported range. Please use 'since my last message', 'since MESSAGE_LINK', 'the last N messages', or 'the last N hours/minutes/days'.";
-  return { kind: "recent", count: count ? Number(count[1]) : CHANNEL_SUMMARY_CAPABILITIES.limits.defaultMessages };
+  return validate({ kind: "recent", count: count ? Number(count[1]) : CHANNEL_SUMMARY_CAPABILITIES.limits.defaultMessages }, count?.[0]);
 }
 
 /** Host-side chronological retrieval; history is data, never a new invocation. */
