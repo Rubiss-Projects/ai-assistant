@@ -193,3 +193,12 @@ test("ordinary summary focus instructions are not temporal constraints", async (
     assert.equal(f.calls.length, 1);
   }
 });
+
+
+test("unsupported age-based intervals never fall back to recent messages", async () => {
+  for (const range of ["older than 2 days", "newer than 2 days", "from 2 days ago", "2 weeks ago"]) {
+    const f = fixture([message(1999)]);
+    assert.match(await summarize(f, "summarize messages " + range), /Unsupported range/);
+    assert.equal(f.calls.length, 0);
+  }
+});

@@ -20,6 +20,7 @@ function rangeFor(prompt: string, invocation: Invocation): Range | string {
   const validate = (range: Range, matched = ""): Range | string => {
     const remainder = prompt.replace(matched, "").replace(/\bthis\s+(?:channel|chat|conversation)\b/gi, "");
     const temporalConstraints = [
+      /\b(?:older|newer|earlier|later)\s+than\b|\b\d+\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b/i,
       /\b(?:last|past|previous|next|recent)\s+\d/i,
       /\b(?:since|after|before|between)\b/i,
       /\b(?:yesterday|today|tomorrow|tonight)\b/i,
@@ -49,7 +50,9 @@ function rangeFor(prompt: string, invocation: Invocation): Range | string {
   }
   const count = prompt.match(/\b(?:(?:from|over|in|during)\s+)?(?:the\s+)?(?:last|recent)\s+(\d+)\s+messages?\b/i);
   if (count && (Number(count[1]) < 1 || Number(count[1]) > SCAN_LIMIT)) return `Choose between 1 and ${SCAN_LIMIT} messages.`;
-  return validate({ kind: "recent", count: count ? Number(count[1]) : CHANNEL_SUMMARY_CAPABILITIES.limits.defaultMessages }, count?.[0]);
+  if (count) return validate({ kind: "recent", count: Number(count[1]) }, count[0]);
+  // A default is safe only when no unsupported interval remains.
+  return validate({ kind: "recent", count: CHANNEL_SUMMARY_CAPABILITIES.limits.defaultMessages });
 }
 
 /** Host-side chronological retrieval; history is data, never a new invocation. */
