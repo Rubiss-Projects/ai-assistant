@@ -1,6 +1,6 @@
 import os from "os";
 import path from "path";
-import { BuiltInTools, CopilotClient, CopilotSession, MCPServerConfig, ToolSet, approveAll } from "@github/copilot-sdk";
+import { BuiltInTools, CopilotClient, type CopilotSession, type MCPServerConfig, ToolSet, approveAll } from "@github/copilot-sdk";
 import type { CopilotClientOptions, PermissionHandler, SessionConfigBase, SessionEvent } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
@@ -746,4 +746,3 @@ export class CopilotProvider implements Provider {
     await this.client.stop();
   }
 }
-

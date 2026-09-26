@@ -71,3 +71,17 @@ test('Discord reset acknowledges before waiting on an active session',async()=>{
  const operation=handleReset(interaction as never,sessions as never);await Promise.resolve();await Promise.resolve();
  assert.equal(deferredReply,true);assert.equal(reset,false);gate.resolve();await Promise.all([pending,operation]);assert.equal(reset,true);assert.equal(edited,true);await service.shutdown();
 });
+test('Discord command rechecks preserve admin override without granting mention or workspace access', async()=>{
+ const {executeDiscordTurn,discordConversations}=await import('../src/adapters/discord/turn.js');
+ const {createAccessPolicy}=await import('../src/common/accessPolicy.js');
+ const access=createAccessPolicy({DISCORD_ALLOWED_USERS:'member',DISCORD_ADMIN_USERS:'admin'});
+ let generated=0;const sessions={sendMessage:async()=>{generated++;return {content:'ok',attachments:[]}}} as any;
+ const options=(userId:string)=>({rulesetContext:{access,requester:{userId}}}) as any;
+ try{
+ await executeDiscordTurn(sessions,{id:'admin-chat',guildId:'guild',channelId:'channel',user:{id:'admin'},commandName:'chat'},'admin-session','hello',undefined,options('admin'),async()=>{});
+ assert.equal(generated,1);
+ await assert.rejects(executeDiscordTurn(sessions,{id:'admin-mention',guildId:'guild',channelId:'channel',author:{id:'admin'}},'mention-session','hello',undefined,options('admin'),async()=>{}),/denied/);
+ await assert.rejects(executeDiscordTurn(sessions,{id:'member-workspace',guildId:'guild',channelId:'channel',user:{id:'member'},commandName:'chat',options:{getString:()=>'/workspace',getSubcommand:()=>null}},'member-session','hello',undefined,options('member'),async()=>{}),/denied/);
+ assert.equal(generated,1);
+ }finally{await discordConversations(sessions).shutdown()}
+});

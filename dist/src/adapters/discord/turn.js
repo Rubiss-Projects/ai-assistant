@@ -4,6 +4,7 @@ import { ConversationService } from '../../application/conversationService.js';
 import { FileTurnJournal } from '../../application/conversationService.js';
 import { TEXT_CAPABILITIES } from '../../core/conversation.js';
 import { discordSubject } from '../../common/discordAccess.js';
+import { canInvokeSlashCommand } from '../../common/accessPolicy.js';
 const services = new WeakMap();
 export function installDiscordConversations(sessions) {
     const existing = services.get(sessions);
@@ -66,7 +67,11 @@ export async function executeDiscordTurn(sessions, source, key, prompt, attachme
             if (!options.rulesetContext) return true;
             const { access, requester } = options.rulesetContext;
             const current = source.client ? await discordSubject(source.client, actor, source.guildId) : requester;
-            return access.canMessage(actor, current);
+            return source.commandName ? canInvokeSlashCommand(access, actor, {
+                commandName: source.commandName,
+                subcommand: source.options?.getSubcommand(false),
+                hasWorkspace: Boolean(source.options?.getString('workspace', false))
+            }, current) : access.canMessage(actor, current);
         },
         prepare: async (_input, session)=>prepare ? prepare(session) : {
                 prompt,

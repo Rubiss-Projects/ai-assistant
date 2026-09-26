@@ -1,6 +1,6 @@
 import os from "os";
 import path from "path";
-import { BuiltInTools, CopilotClient, CopilotSession, MCPServerConfig, ToolSet, approveAll } from "@github/copilot-sdk";
+import { BuiltInTools, CopilotClient, ToolSet, approveAll } from "@github/copilot-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { contextFingerprint, resolveSessionContext, withContextTurn } from "../common/sessionContext.js";

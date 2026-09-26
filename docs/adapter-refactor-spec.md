@@ -333,7 +333,7 @@ node --experimental-transform-types --loader ./scripts/typescript-loader.mjs --t
 
 All local TypeScript sources were also parsed with Node's `stripTypeScriptTypes` in transform mode. Parsing/emitting JavaScript is not TypeScript type checking. The npm installation attempt was blocked by sandbox network policy for `registry.npmjs.org`; no alternative registry was used to bypass that restriction. Existing SDK-dependent tests and real providers were not exercised.
 
-The focused suite currently passes 27 tests, including queued Discord reset acknowledgement, recovered-output audience checks, long-thread sampling, edited mentions and confirmed deletions. The emitted JavaScript CLI adapter also passed a one-shot fake-provider smoke check. Tracked runtime JavaScript was emitted with Node transform mode; a normal TypeScript build remains a release gate.
+The focused suite currently passes 28 tests, including queued Discord reset acknowledgement, command-versus-mention authorization, recovered-output audience checks, long-thread sampling, edited mentions and confirmed deletions. The emitted JavaScript CLI adapter also passed a one-shot fake-provider smoke check. Tracked runtime JavaScript was emitted with Node transform mode; provider type-only imports were checked for runtime elision. A normal TypeScript build remains a release gate.
 
 ### Operator setup
 

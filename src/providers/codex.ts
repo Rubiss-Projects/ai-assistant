@@ -3,7 +3,7 @@ import { ParticipationProcessRunner } from "./participationProcess.js";
 import { createRequire } from "node:module";
 import os from "os";
 import path from "path";
-import { Codex, Thread, type CodexOptions, type ThreadItem, type ThreadOptions, type UserInput } from "@openai/codex-sdk";
+import { Codex, type Thread, type CodexOptions, type ThreadItem, type ThreadOptions, type UserInput } from "@openai/codex-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { McpConfigLoader } from "../common/mcpConfig.js";
 import { providerSystemPrompt } from "../common/systemPrompt.js";
@@ -929,4 +929,3 @@ export class CodexProvider implements Provider {
     this.messageQueues.clear();
   }
 }
-

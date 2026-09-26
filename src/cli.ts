@@ -358,7 +358,10 @@ const cmd = process.argv[2];
 
 switch (cmd) {
   case "cli":
-    try { await (await import("./adapters/cli/run.js")).runCli(); }
+    try {
+      if (existsSync(ENV_FILE)) { dotenv.config({ path: ENV_FILE, quiet: true }); process.chdir(CONFIG_DIR); }
+      await (await import("./adapters/cli/run.js")).runCli();
+    }
     catch { console.error("CLI failed. Check arguments, local state ownership and provider configuration."); process.exitCode = 1; }
     break;
   case "setup":
@@ -385,4 +388,3 @@ switch (cmd) {
     help();
     if (cmd !== undefined) process.exit(1);
 }
-

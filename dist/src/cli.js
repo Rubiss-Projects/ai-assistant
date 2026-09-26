@@ -223,6 +223,13 @@ const cmd = process.argv[2];
 switch(cmd){
     case "cli":
         try {
+            if (existsSync(ENV_FILE)) {
+                dotenv.config({
+                    path: ENV_FILE,
+                    quiet: true
+                });
+                process.chdir(CONFIG_DIR);
+            }
             await (await import("./adapters/cli/run.js")).runCli();
         } catch  {
             console.error("CLI failed. Check arguments, local state ownership and provider configuration.");
