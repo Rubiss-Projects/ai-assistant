@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
+import { CHANNEL_SUMMARY_INSTRUCTIONS, CHANNEL_SUMMARY_CAPABILITIES } from "./channelSummaryContract.js";
 import { configuredSystemPrompt } from "./systemPrompt.js";
 import { ARTIFACT_INSTRUCTIONS } from "./agentResponse.js";
 import { ARTIFACT_TOOLS } from "./artifactToolDefinitions.js";
 import { RULESET_TOOLS } from "./rulesetToolDefinitions.js";
 import { RULESET_INSTRUCTIONS } from "./rulesetToolBridge.js";
 import { githubContributionsEnabled, githubContributionAccess, contributionReviewsEnabled } from "./githubContributionConfig.js";
-import { CODEX_REVIEW_INSTRUCTIONS, GITHUB_CONTRIBUTION_INSTRUCTIONS, githubContributionTools } from "./githubContributionToolDefinitions.js";
+import { codexReviewInstructions, githubContributionInstructions, githubContributionCallLimits, githubContributionTools } from "./githubContributionToolDefinitions.js";
+import { githubContributionLimits } from "./githubContributionLimits.js";
 import { configuredSecurityMode, configuredSitesEnabled, secureSystemPrompt } from "./providerSecurity.js";
 import { activeUserInstructionBlock } from "../utils/userInstructions.js";
 import { userInstructionFeaturesEnabled } from "./userInstructionStore.js";
@@ -32,6 +34,11 @@ export const CONTEXT_CONTRIBUTORS = [
     },
     { id: "operator", profiles: allProfiles, resolve: () => ({ instructions: configuredSystemPrompt() }) },
     {
+        id: "channel-summary",
+        profiles: ["conversation", "one-shot"],
+        resolve: () => ({ instructions: CHANNEL_SUMMARY_INSTRUCTIONS, capabilities: CHANNEL_SUMMARY_CAPABILITIES }),
+    },
+    {
         id: "artifacts",
         profiles: allProfiles,
         resolve: () => ({ instructions: ARTIFACT_INSTRUCTIONS, capabilities: ARTIFACT_TOOLS }),
@@ -50,16 +57,16 @@ export const CONTEXT_CONTRIBUTORS = [
         id: "github-contributions",
         profiles: ["conversation"],
         resolve: () => githubContributionsEnabled() ? {
-            instructions: GITHUB_CONTRIBUTION_INSTRUCTIONS,
-            capabilities: { tools: githubContributionTools(), access: githubContributionAccess() },
+            instructions: githubContributionInstructions(),
+            capabilities: { tools: githubContributionTools(), access: githubContributionAccess(), callLimits: githubContributionCallLimits() },
         } : undefined,
     },
     {
         id: "codex-contribution-reviews",
         profiles: ["conversation"],
         resolve: () => contributionReviewsEnabled() ? {
-            instructions: CODEX_REVIEW_INSTRUCTIONS,
-            capabilities: { version: 1, enabled: true, maxReviewsPerPr: 5, independent: true, staticReadOnly: true },
+            instructions: codexReviewInstructions(),
+            capabilities: { version: 2, enabled: true, maxReviewsPerPr: githubContributionLimits().reviews, independent: true, staticReadOnly: true },
         } : undefined,
     },
     {

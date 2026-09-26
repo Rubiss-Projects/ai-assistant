@@ -37,8 +37,8 @@ function formatEmbeds(embeds) {
  *   When provided, guild channels are permission-checked against this user so
  *   a requester cannot exfiltrate content from channels they cannot see.
  */
-export async function resolveMessageLinks(content, client, requestingUserId, contextAttachments = [], canIncludeAuthor = () => true) {
-    const matches = [...content.matchAll(MESSAGE_URL_RE)];
+export async function resolveMessageLinks(content, client, requestingUserId, contextAttachments = [], canIncludeAuthor = () => true, linkSource = content) {
+    const matches = [...linkSource.matchAll(MESSAGE_URL_RE)];
     if (matches.length === 0)
         return content;
     const contextBlocks = [];

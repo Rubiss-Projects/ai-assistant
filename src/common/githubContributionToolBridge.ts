@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SendMessageOptions } from "../providers/types.js";
 import { githubContributionsEnabled, contributionReviewsEnabled } from "./githubContributionConfig.js";
 import { githubContributionService, validateContributionChanges, type GitHubContributions } from "./githubContributions.js";
-import { GITHUB_CONTRIBUTION_CALL_LIMITS, GITHUB_CONTRIBUTION_TIMEOUT_MS, githubContributionTools } from "./githubContributionToolDefinitions.js";
+import { githubContributionCallLimits, GITHUB_CONTRIBUTION_TIMEOUT_MS, githubContributionTools } from "./githubContributionToolDefinitions.js";
 import { operationSignal } from "./operationSignal.js";
 
 export interface GitHubContributionMcpConfig { command: string; args: string[]; env: Record<string, string> }
@@ -13,7 +13,7 @@ export class GitHubContributionRun {
   readonly id = randomUUID();
   private readonly controller = new AbortController();
   private readonly pending = new Set<Promise<unknown>>();
-  private readonly remaining: Record<keyof typeof GITHUB_CONTRIBUTION_CALL_LIMITS, number> = { ...GITHUB_CONTRIBUTION_CALL_LIMITS };
+  private readonly remaining = githubContributionCallLimits();
   constructor(private readonly session: string, private readonly options: SendMessageOptions | undefined, private readonly service: () => GitHubContributions = githubContributionService, private readonly timeoutMs = GITHUB_CONTRIBUTION_TIMEOUT_MS) {}
   call(name: string, args: Record<string, unknown>): Promise<unknown> {
     // This budget includes queueing, token minting, and all sequential GitHub requests.
@@ -32,7 +32,8 @@ export class GitHubContributionRun {
       }
       if (this.remaining[tool.name] === 0) throw new Error(`${tool.name} limit reached for this response. Stop calling this tool until the next user turn. Other tool budgets are independent. Remaining calls: ${JSON.stringify(this.remaining)}`);
       // Reserve synchronously before queueing work so parallel reads cannot spend publish/status calls.
-      this.remaining[tool.name]--;
+      const remaining = this.remaining[tool.name];
+      if (remaining !== null) this.remaining[tool.name] = remaining - 1;
       const text = (key: string) => args[key] as string;
       const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
       const service = this.service();

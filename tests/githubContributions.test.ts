@@ -10,7 +10,7 @@ import { GitHubContributions, validateContributionChanges, type ContributionCall
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "../src/common/githubContributionApi.js";
 import { githubContributionsEnabled, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "../src/common/githubContributionConfig.js";
 import { GitHubContributionRun, GitHubContributionSessions } from "../src/common/githubContributionToolBridge.js";
-import { GITHUB_CONTRIBUTION_CALL_LIMITS } from "../src/common/githubContributionToolDefinitions.js";
+import { githubContributionCallLimits } from "../src/common/githubContributionToolDefinitions.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, type ReviewThread } from "../src/common/githubContributionReviews.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { providerChildEnvironment, secureSystemPrompt } from "../src/common/providerSecurity.js";
@@ -388,13 +388,16 @@ test("simultaneous revisions cannot overwrite an accepted publish", async t => {
 
 test("parallel reads cannot exhaust publishing or recovery and budgets reset next turn", async t => {
   const { service, api, caller } = fixture(t);
+  const limits = githubContributionCallLimits();
+  assert.equal(limits.github_contribution_publish, 20);
+  assert(limits.github_contribution_publish !== null);
   const options = { rulesetContext: { requester: caller.requester, access: caller.access } };
   const run = new GitHubContributionRun(caller.session, options, () => service);
   t.after(() => run.cancel());
   const started = await service.begin(caller, repository.upstream);
   const args = { run_id: run.id, contribution_id: started.contribution_id };
   assert.deepEqual(await run.call("github_contribution_begin", { run_id: run.id, repository: repository.upstream }), {
-    ...started, remaining_calls: { ...GITHUB_CONTRIBUTION_CALL_LIMITS, github_contribution_begin: 9 },
+    ...started, remaining_calls: { ...limits, github_contribution_begin: 9 },
   });
   const reads = await Promise.allSettled(Array.from({ length: 201 }, () => run.call("github_contribution_read", { ...args, path: "README.md" })));
   assert.equal(reads.filter(result => result.status === "fulfilled").length, 200);
@@ -403,22 +406,42 @@ test("parallel reads cannot exhaust publishing or recovery and budgets reset nex
   await assert.rejects(run.call("github_contribution_read", { ...args, path: "README.md" }), /read limit reached.*Other tool budgets are independent/);
   assert.equal(api.calls.length, calls, "exhausted reads must not reach GitHub");
   await run.call("github_contribution_status", args);
-  for (let index = 0; index < GITHUB_CONTRIBUTION_CALL_LIMITS.github_contribution_publish; index++) {
+  for (let index = 0; index < limits.github_contribution_publish; index++) {
     const current = await service.status(caller, started.contribution_id);
     await run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, title: "docs: update", body: "Tested.", changes: [{ path: "README.md", content: `Revision ${index}` }] });
   }
   assert.equal(api.pulls.length, 1, "publishing and revising still work after exhausting reads");
   const current = await service.status(caller, started.contribution_id);
-  await assert.rejects(run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, title: "docs: update", body: "", changes: [{ path: "README.md", content: "Fourth" }] }), /publish limit reached/);
+  await assert.rejects(run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, title: "docs: update", body: "", changes: [{ path: "README.md", content: "Over budget" }] }), /publish limit reached/);
   assert.deepEqual(await run.call("github_contribution_status", args), {
-    ...current, remaining_calls: { ...GITHUB_CONTRIBUTION_CALL_LIMITS, github_contribution_begin: 9, github_contribution_read: 0, github_contribution_status: 8, github_contribution_publish: 0 },
+    ...current, remaining_calls: { ...limits, github_contribution_begin: 9, github_contribution_read: 0, github_contribution_status: 8, github_contribution_publish: 0 },
   });
   const next = new GitHubContributionRun(caller.session, options, () => service);
   t.after(() => next.cancel());
   assert.deepEqual(await next.call("github_contribution_read", { ...args, run_id: next.id, path: "README.md" }), {
     ...await service.read(caller, started.contribution_id, "README.md"),
-    remaining_calls: { ...GITHUB_CONTRIBUTION_CALL_LIMITS, github_contribution_read: 199 },
+    remaining_calls: { ...limits, github_contribution_read: 199 },
   });
+});
+
+for (const limit of [2, 0]) test(`publish limit ${limit} is host-controlled and reports its remaining budget`, async t => {
+  const previous = process.env.GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT;
+  process.env.GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT = String(limit);
+  t.after(() => { if (previous === undefined) delete process.env.GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT; else process.env.GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT = previous; });
+  const { service, api, caller } = fixture(t);
+  const run = new GitHubContributionRun(caller.session, { rulesetContext: { requester: caller.requester, access: caller.access } }, () => service);
+  t.after(() => run.cancel());
+  const started = await service.begin(caller, repository.upstream);
+  const args = { run_id: run.id, contribution_id: started.contribution_id, title: "docs: update", body: "Tested." };
+  await assert.rejects(run.call("github_contribution_publish", { ...args, expected_head_sha: started.head_sha, changes: [{ path: "README.md", content: "x" }], limit: 0 }), /Invalid contribution tool arguments/);
+  for (let index = 0; index < (limit || 21); index++) {
+    const current = await service.status(caller, started.contribution_id);
+    const result = await run.call("github_contribution_publish", { ...args, expected_head_sha: current.head_sha, changes: [{ path: "README.md", content: `Revision ${index}` }] });
+    // Exercise the JSON contract, including null rather than a non-finite number.
+    assert.equal(JSON.parse(JSON.stringify(result)).remaining_calls.github_contribution_publish, limit ? limit - index - 1 : null);
+  }
+  assert.equal(api.pulls.length, 1);
+  if (limit) await assert.rejects(run.call("github_contribution_publish", { ...args, expected_head_sha: started.head_sha, changes: [{ path: "README.md", content: "x" }] }), /publish limit reached/);
 });
 
 test("failed operations consume only their own bounded budget", async t => {

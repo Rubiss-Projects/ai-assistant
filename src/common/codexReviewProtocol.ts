@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-export const REVIEW_LIMIT = 5;
 export const REVIEW_SOCKET = "/review-control/review.sock";
 export const REVIEW_MAX_BYTES = 16_000_000;
 export const REVIEW_TIMEOUT_MS = 10 * 60_000;

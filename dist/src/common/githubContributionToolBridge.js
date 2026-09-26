@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { githubContributionsEnabled, contributionReviewsEnabled } from "./githubContributionConfig.js";
 import { githubContributionService, validateContributionChanges } from "./githubContributions.js";
-import { GITHUB_CONTRIBUTION_CALL_LIMITS, GITHUB_CONTRIBUTION_TIMEOUT_MS, githubContributionTools } from "./githubContributionToolDefinitions.js";
+import { githubContributionCallLimits, GITHUB_CONTRIBUTION_TIMEOUT_MS, githubContributionTools } from "./githubContributionToolDefinitions.js";
 import { operationSignal } from "./operationSignal.js";
 export class GitHubContributionRun {
     session;
@@ -14,7 +14,7 @@ export class GitHubContributionRun {
     id = randomUUID();
     controller = new AbortController();
     pending = new Set();
-    remaining = { ...GITHUB_CONTRIBUTION_CALL_LIMITS };
+    remaining = githubContributionCallLimits();
     constructor(session, options, service = githubContributionService, timeoutMs = GITHUB_CONTRIBUTION_TIMEOUT_MS) {
         this.session = session;
         this.options = options;
@@ -43,7 +43,9 @@ export class GitHubContributionRun {
             if (this.remaining[tool.name] === 0)
                 throw new Error(`${tool.name} limit reached for this response. Stop calling this tool until the next user turn. Other tool budgets are independent. Remaining calls: ${JSON.stringify(this.remaining)}`);
             // Reserve synchronously before queueing work so parallel reads cannot spend publish/status calls.
-            this.remaining[tool.name]--;
+            const remaining = this.remaining[tool.name];
+            if (remaining !== null)
+                this.remaining[tool.name] = remaining - 1;
             const text = (key) => args[key];
             const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
             const service = this.service();

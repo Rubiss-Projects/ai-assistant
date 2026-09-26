@@ -329,8 +329,12 @@ storage; these are ceilings, not idle allocations. The socket volume is mounted 
 by the assistant and reviewer. Never mount the assistant's data volume or the Docker
 socket into the reviewer, and never expose its socket to agent workspaces.
 
-Five attempts per PR is a persistent hard ceiling in both host and worker, including
-failed/interrupted attempts. Repeated requests for the same head/base reuse a job.
+`CODEX_REVIEW_LIMIT` defaults to 20 attempts per PR in both host and worker, including
+failed/interrupted attempts; `0` removes this quota. Counts persist across turns and
+restarts, including when the configured limit changes. Repeated requests for the
+same head/base reuse a job. Stop once the current head has a completed review with
+no remaining actionable findings: the budget is a ceiling, not a target. No-op
+commits or extra PRs must not be created to trigger more reviews or reset a budget.
 After checking a failure, `github_contribution_review` accepts `retry: true`:
 it reconciles the old receipt first and only spends another attempt if inference
 failed or its receipt is unavailable. An uncertain GitHub write is never reposted.
@@ -728,6 +732,21 @@ protected `GITHUB_CONTRIBUTIONS_CONFIG_FILE`. `GITHUB_CONTRIBUTIONS_ACCESS=grant
 (default) uses explicit `github.contribute` grants or the `contributor` rights
 preset; `chat` admits everyone already allowed to chat. See the linked guide for
 App setup, limits, and recovery. Dependabot's existing merge path is unchanged.
+
+| Variable | Default / accepted values | What it does |
+| --- | --- | --- |
+| `GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT` | `20`; non-negative safe integer | Publish attempts per response, including failed attempts. `0` means unlimited. Other tool budgets are independent and unchanged. |
+| `CODEX_REVIEW_LIMIT` | `20`; non-negative safe integer | Server-side Codex review attempts per PR, including failed/interrupted attempts, retained across turns and restarts. `0` means unlimited. Enforced independently by the assistant and reviewer. |
+
+For both variables, unset or blank uses `20`; invalid values stop enabled-service
+startup. These are operator-only settings, not tool arguments or agent instructions.
+Set them in the Compose `.env` (or launching environment); the supplied Compose file
+passes the same review limit to both services. Recreate the assistant and reviewer
+after changes. Existing shared sessions refresh their limits and instructions on
+their next turn. Unlimited removes only the selected quota, not repository/access
+restrictions, other tool budgets, timeouts, or the 5,000-record review history caps.
+It can consume more of the operator's Codex allowance. A clean current-head review
+ends the review loop even when budget remains.
 
 ### Discord permissions
 

@@ -21,6 +21,16 @@ required. All three providers use the same authenticated local MCP bridge.
 | `GITHUB_CONTRIBUTIONS_ACCESS` | `granted` | `granted` requires an explicit `github.contribute` capability, `contributor` rights preset, or explicit bot-admin grant. `chat` permits the existing chat audience as well. |
 | `GITHUB_CONTRIBUTIONS_CONFIG_FILE` | Required when enabled | Absolute path to the host-owned JSON configuration below. |
 | `GITHUB_CONTRIBUTIONS_STATE_FILE` | `~/.config/ai-assistant/github-contributions.json` | Persistent contribution ownership, branch/commit IDs, and recovery state. |
+| `GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT` | `20` | Publish attempts per response, including failures. Non-negative safe integer; `0` means unlimited. |
+| `CODEX_REVIEW_LIMIT` | `20` | Server-side review attempts per PR, including failures, retained across turns/restarts. Non-negative safe integer; `0` means unlimited. Set identically on the assistant and reviewer. |
+
+Unset or blank limits use `20`; invalid values stop enabled-service startup. These
+settings are operator-controlled and cannot be overridden by a tool request or
+repository instructions. Set them in the Compose `.env` or launching environment
+and recreate both services. Shared sessions pick up updated instructions and
+capabilities on their next turn. Changing a limit does not reset existing attempts.
+Unlimited removes only the selected quota: access restrictions, other tool budgets,
+timeouts, and the 5,000-record review history caps still apply.
 
 The legacy empty admin-list fallback does not grant contribution access in
 `granted` mode. Existing guild/user/role scopes still apply. Restart after changing
@@ -98,11 +108,18 @@ bot host, never in tool responses, provider environments, or local Git config.
   is lost, check status and retry with the returned head; an already-created PR is
   discovered instead of duplicated. Preserve the state file across deployments.
 - Each response allows 200 file reads, 10 begin/resume calls, 10 status checks, and
-  3 publish attempts, plus 20 review reads, 10 review replies, and 10 thread
+  the configured publish attempts (default 20), plus 20 review reads, 20 server-review
+  waits, 10 review replies, and 10 thread
   resolutions, with independent budgets. Exhausting reads cannot block
-  publishing or checking an interrupted write. Results include `remaining_calls`;
+  publishing or checking an interrupted write. Results include `remaining_calls`
+  (`null` means unlimited for that tool);
   stop calling an exhausted tool until the next user turn. Failed operations also
   consume their tool's budget. Reuse downloaded files instead of reading them again.
+- Review budgets are ceilings, not targets. Stop after a completed current-head
+  review has no remaining actionable findings. Repeated review requests for the
+  same head/base reuse the result, even with `retry: true`; a genuine published fix
+  queues a review of its new head. Do not create no-op commits or extra PRs to spend
+  remaining quota or reset a budget.
 - Limits are 30 files and 1 MB per publish, 200 KB per text file,
   5 unfinished published contributions and 10 starts/day per
   user, and 1,000 retained records per installation. An operator can archive old

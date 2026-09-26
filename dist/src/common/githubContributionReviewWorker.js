@@ -2,7 +2,8 @@ import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { GitHubRequestError } from "./githubContributionApi.js";
 import { hostOnlyGitHubPath, contributionReviewsEnabled } from "./githubContributionConfig.js";
-import { REVIEW_LIMIT, REVIEW_TIMEOUT_MS, changedLines, reviewDigest, reviewPath, validateReviewInput, validateReviewResult } from "./codexReviewProtocol.js";
+import { REVIEW_TIMEOUT_MS, changedLines, reviewDigest, reviewPath, validateReviewInput, validateReviewResult } from "./codexReviewProtocol.js";
+import { githubContributionLimits } from "./githubContributionLimits.js";
 import { ReviewSocketClient, writeReviewState } from "./codexReviewWorker.js";
 export { contributionReviewsEnabled } from "./githubContributionConfig.js";
 export class ReviewCapacityError extends Error {
@@ -88,6 +89,7 @@ export class ContributionReviewWorker {
     stateFile;
     host;
     transport;
+    reviewLimit = githubContributionLimits().reviews;
     attempts;
     timer;
     active;
@@ -146,7 +148,7 @@ export class ContributionReviewWorker {
     add(owner, target) {
         if (this.attempts.length >= 5000)
             throw new ReviewCapacityError();
-        if (this.attempts.filter(item => item.repository === target.repository.upstream && item.pull === target.pull).length >= REVIEW_LIMIT)
+        if (this.reviewLimit !== null && this.attempts.filter(item => item.repository === target.repository.upstream && item.pull === target.pull).length >= this.reviewLimit)
             return this.status(owner.contribution);
         this.attempts.push({ ...owner, id: randomUUID(), repository: target.repository.upstream, pull: target.pull, head: target.head, base: target.base,
             state: "queued", createdAt: Date.now(), failures: 0, nextPoll: 0 });
@@ -156,7 +158,7 @@ export class ContributionReviewWorker {
     status(contribution) {
         const attempts = this.attempts.filter(item => item.contribution === contribution);
         const last = attempts.at(-1);
-        return { enabled: true, attempts: attempts.length, limit: REVIEW_LIMIT, budget_exhausted: attempts.length >= REVIEW_LIMIT,
+        return { enabled: true, attempts: attempts.length, limit: this.reviewLimit, budget_exhausted: this.reviewLimit !== null && attempts.length >= this.reviewLimit,
             state: last?.state ?? "not_requested", head_sha: last?.head, base_sha: last?.base, result: last?.result,
             error: last?.error ?? (!last && this.attempts.length >= 5000 ? new ReviewCapacityError().message : undefined), review_url: last?.url };
     }

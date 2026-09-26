@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
-import { REVIEW_LIMIT, REVIEW_MAX_BYTES, REVIEW_SOCKET, reviewDigest, reviewId, validateReviewInput, validateReviewResult } from "./codexReviewProtocol.js";
+import { REVIEW_MAX_BYTES, REVIEW_SOCKET, reviewDigest, reviewId, validateReviewInput, validateReviewResult } from "./codexReviewProtocol.js";
+import { githubContributionLimits } from "./githubContributionLimits.js";
 export function writeReviewState(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const temporary = `${file}.${randomUUID()}.tmp`;
@@ -19,6 +20,7 @@ export class CodexReviewWorker {
     directory;
     run;
     onFatal;
+    reviewLimit = githubContributionLimits().reviews;
     jobs = new Map();
     active;
     abort = new AbortController();
@@ -55,8 +57,8 @@ export class CodexReviewWorker {
             throw new Error("Review worker is busy or stopping.");
         if (this.jobs.size >= 5000)
             throw new Error("Review history capacity reached; operator maintenance required.");
-        if ([...this.jobs.values()].filter(job => job.repository === input.repository && job.pull === input.pull).length >= REVIEW_LIMIT)
-            throw new Error("Five-review limit reached for this PR.");
+        if (this.reviewLimit !== null && [...this.jobs.values()].filter(job => job.repository === input.repository && job.pull === input.pull).length >= this.reviewLimit)
+            throw new Error(`Review limit (${this.reviewLimit}) reached for this PR.`);
         const job = { id: input.id, digest, repository: input.repository, pull: input.pull, head: input.head, base: input.base, state: "queued" };
         this.save(job);
         this.jobs.set(job.id, job);

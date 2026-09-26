@@ -7,8 +7,11 @@ import { reportProviderSecurityConfiguration } from "./common/providerSecurity.j
 import { contributionReviewsEnabled } from "./common/githubContributionReviewWorker.js";
 import { githubContributionService } from "./common/githubContributions.js";
 import { discordSubject } from "./common/discordAccess.js";
+import { githubContributionsEnabled } from "./common/githubContributionConfig.js";
+import { githubContributionLimits } from "./common/githubContributionLimits.js";
 
 reportProviderSecurityConfiguration();
+if (githubContributionsEnabled()) githubContributionLimits();
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {

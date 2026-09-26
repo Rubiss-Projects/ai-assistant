@@ -19,6 +19,7 @@ export class ArtifactTools {
     controller = new AbortController();
     queue = Promise.resolve();
     calls = 0;
+    historyCalls = 0;
     downloadedBytes = 0;
     candidates = new Map();
     downloads = new Map();
@@ -70,6 +71,13 @@ export class ArtifactTools {
             for (const value of Object.values(args))
                 if (typeof value !== "string" || value.length > 8192)
                     throw new Error("Tool arguments must be short strings.");
+            if (name === "fetch_channel_history") {
+                if (!this.options?.resolveChannelHistory || this.options.contextProfile === "scheduled" || this.options.contextProfile === "ephemeral")
+                    throw new Error("Channel history is unavailable for this run.");
+                if (++this.historyCalls > 3)
+                    throw new Error("Channel history call limit reached for this response.");
+                return abortable(this.options.resolveChannelHistory(args, this.controller.signal), this.controller.signal);
+            }
             if (name === "fetch_webpage")
                 return this.webpage(args);
             if (name === "report_lookup")
