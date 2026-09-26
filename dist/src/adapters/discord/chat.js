@@ -66,9 +66,8 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                     autoArchiveDuration: ThreadAutoArchiveDuration.OneDay
                 });
                 return createdThread.id;
-            } : undefined);
-        if (existingThread) await runThreadTurn(key, run);
-        else await run();
+            } : undefined, direct ? undefined : runThreadTurn);
+        await run();
     } catch (err) {
         console.error('[/chat] Error:', err);
         const isPathError = err instanceof Error && (err.message.startsWith('Workspace path') || err.message === 'Invalid workspace path.');

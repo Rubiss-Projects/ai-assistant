@@ -69,7 +69,7 @@ export class SlackHistory implements HistoryPort {
 }
 
 interface SlackConfig { teamId: string; installationId: string; botUserId: string; channels: Set<string>; users: Set<string>; excludedAuthors: Set<string>; stateDirectory: string }
-interface ContextState { contextIdentity?: string; represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string>; scopes?: Record<string,string> }
+interface ContextState { exclusionPolicy?: string; contextIdentity?: string; represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string>; scopes?: Record<string,string> }
 function fingerprint(message: { authorId: string; text: string; revision?: string }): string {
   return createHash('sha256').update(JSON.stringify([message.authorId, message.text, message.revision ?? 'null'])).digest('hex');
 }
@@ -140,11 +140,12 @@ export class SlackAdapter {
         const changed = observed?.messages.some(m => (state.seen[m.id] && state.seen[m.id] !== fingerprint(m)) || (state.represented.includes(m.position) && !state.seen[m.id]));
         const removed = observed?.complete && Object.entries(state.positions).some(([id,pos]) =>
           state.scopes![id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId!) < 0 && !observedIds.has(id));
+        const exclusionPolicy = JSON.stringify([...this.config.excludedAuthors].sort());
         const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
-        if (state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
+        if (state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
         const fresh = result.messages.filter(m => !state.seen[m.id] && !state.represented.includes(m.position));
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
-        const next: ContextState = { represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
+        const next: ContextState = { exclusionPolicy, represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
         const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent request:\n' + input.text;
         return { prompt, next, coverage: result.coverage };
       },

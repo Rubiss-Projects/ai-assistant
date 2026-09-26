@@ -99,3 +99,17 @@ test('separate adapter provider stores preserve interleaved mappings and provide
  }
  }finally{rmSync(dir,{recursive:true,force:true})}
 });
+
+test('Discord coordinates a newly resolved thread through preparation and delivery',async()=>{
+ const {executeDiscordTurn,discordConversations}=await import('../src/adapters/discord/turn.js');
+ let coordinating=false;const order:string[]=[];
+ const sessions={sendMessage:async(key:string)=>{assert.equal(key,'created-thread');assert.ok(coordinating);order.push('generate');return {content:'ok',attachments:[]}}} as any;
+ try{
+ await executeDiscordTurn(sessions,{id:'new-chat',guildId:'guild',channelId:'channel',user:{id:'user'}},'admission-key','hello',undefined,{},
+ async()=>{assert.ok(coordinating);order.push('deliver')},
+ async()=>{assert.ok(coordinating);order.push('prepare');return {prompt:'hello'}},
+ async()=>{order.push('resolve');return 'created-thread'},
+ async(key,run)=>{assert.equal(key,'created-thread');coordinating=true;order.push('enter');try{await run()}finally{coordinating=false;order.push('leave')}});
+ assert.deepEqual(order,['resolve','enter','prepare','generate','deliver','leave']);
+ }finally{await discordConversations(sessions).shutdown()}
+});
