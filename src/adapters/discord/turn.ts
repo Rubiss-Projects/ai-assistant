@@ -6,6 +6,7 @@ import { TEXT_CAPABILITIES } from '../../core/conversation.js';
 import type { AgentResponse, SendAttachment, SendMessageOptions } from '../../providers/types.js';
 import type { SessionManager } from '../../sessionManager.js';
 import { discordSubject } from '../../common/discordAccess.js';
+import { canInvokeSlashCommand } from '../../common/accessPolicy.js';
 import type { Client } from 'discord.js';
 const services = new WeakMap<object, ConversationService>();
 /** Production installs durable ownership before logging in; unit fixtures use isolated memory. */
@@ -20,7 +21,7 @@ export function discordConversations(sessions: SessionManager): ConversationServ
 }
 export async function executeDiscordTurn(
   sessions: SessionManager,
-  source: { id: string; guildId: string | null; channelId: string; client?: Client; author?: { id: string }; user?: { id: string } },
+  source: { id: string; guildId: string | null; channelId: string; client?: Client; author?: { id: string }; user?: { id: string }; commandName?: string; options?: { getString(name: string, required?: boolean): string | null; getSubcommand(required?: boolean): string | null } },
   key: string, prompt: string, attachments: SendAttachment[] | undefined, options: SendMessageOptions,
   deliver: (response: AgentResponse, sessionKey: string) => Promise<void>,
   prepare?: (key: string) => Promise<{ prompt: string; attachments?: SendAttachment[]; cleanup?(): Promise<void> }>,
@@ -42,7 +43,8 @@ export async function executeDiscordTurn(
       if (!options.rulesetContext) return true; // Compatibility for isolated handler callers; bot ingress always supplies policy.
       const { access, requester } = options.rulesetContext;
       const current = source.client ? await discordSubject(source.client, actor, source.guildId) : requester;
-      return access.canMessage(actor, current);
+      return source.commandName ? canInvokeSlashCommand(access, actor, { commandName: source.commandName,
+        subcommand: source.options?.getSubcommand(false), hasWorkspace: Boolean(source.options?.getString('workspace', false)) }, current) : access.canMessage(actor, current);
     },
     prepare: async (_input, session) => prepare ? prepare(session) : ({ prompt, attachments }),
     generate: (prepared, session, _signal, onProgress) => sessions.sendMessage(session, prepared.prompt, prepared.attachments, { ...options, onProgress }),
