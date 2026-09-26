@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { ConversationService, FileTurnJournal, historyBlock, historyRange, retrieveHistory } from '../application/conversationService.js';
 import { TEXT_CAPABILITIES, sessionKey, type IncomingTurn, type TurnHandle, type ConversationRef, type HistoryPort, type HistoryPage } from '../core/conversation.js';
@@ -69,13 +69,14 @@ export class SlackHistory implements HistoryPort {
 }
 
 interface SlackConfig { teamId: string; installationId: string; botUserId: string; channels: Set<string>; users: Set<string>; excludedAuthors: Set<string>; stateDirectory: string }
-interface ContextState { represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string>; scopes?: Record<string,string> }
+interface ContextState { contextIdentity?: string; represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string>; scopes?: Record<string,string> }
 function fingerprint(message: { authorId: string; text: string; revision?: string }): string {
   return createHash('sha256').update(JSON.stringify([message.authorId, message.text, message.revision ?? 'null'])).digest('hex');
 }
 function historyScope(resource: ConversationRef): string { return JSON.stringify([resource.channelId, resource.threadId ?? null]); }
 /** Transport-independent Slack event normalization; Socket Mode is only an ingress. */
 export class SlackAdapter {
+  private readonly fallbackContextIdentity = randomUUID();
   constructor(private readonly config: SlackConfig, private readonly api: SlackApi, private readonly historyApi: SlackApi,
     private readonly engine: TextEngine, private readonly service: ConversationService) {
     mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 });
@@ -139,10 +140,11 @@ export class SlackAdapter {
         const changed = observed?.messages.some(m => (state.seen[m.id] && state.seen[m.id] !== fingerprint(m)) || (state.represented.includes(m.position) && !state.seen[m.id]));
         const removed = observed?.complete && Object.entries(state.positions).some(([id,pos]) =>
           state.scopes![id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId!) < 0 && !observedIds.has(id));
-        if (state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
+        const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
+        if (state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
         const fresh = result.messages.filter(m => !state.seen[m.id] && !state.represented.includes(m.position));
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
-        const next = { represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
+        const next: ContextState = { represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
         const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent request:\n' + input.text;
         return { prompt, next, coverage: result.coverage };
       },
@@ -157,7 +159,7 @@ export class SlackAdapter {
             for (const message of result.messages) {
               prepared.next.seen[message.id] = fingerprint(message);
               prepared.next.positions[message.id] = message.position;
-              prepared.next.scopes[message.id] = historyScope(resource);
+              prepared.next.scopes![message.id] = historyScope(resource);
             }
             return historyBlock(result);
           },
@@ -167,7 +169,8 @@ export class SlackAdapter {
         prepared.next.positions[id] = input.sourceMessageId!;
         const source = payload.event as Record<string, unknown>;
         prepared.next.seen[id] = fingerprint({ authorId: input.actor.userId, text: String(source.text), revision: JSON.stringify(source.edited ?? null) });
-        prepared.next.scopes[id] = historyScope(input.conversation);
+        prepared.next.scopes![id] = historyScope(input.conversation);
+        prepared.next.contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
         this.save(session, prepared.next);
         response.audienceTag = audience;
         if (prepared.coverage.status === 'partial' || prepared.coverage.status === 'unavailable') response.content += '\n\n[Surrounding discussion context is ' + prepared.coverage.status + ': ' + prepared.coverage.reasons.join('; ') + ']';
