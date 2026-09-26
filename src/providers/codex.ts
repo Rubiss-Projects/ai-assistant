@@ -468,7 +468,7 @@ export class CodexProvider implements Provider {
     const previousClient = this.clients.get(key)?.client;
     const rulesets = context.rulesetsEnabled ? await this.rulesetTools.config(key) : undefined;
     const github = context.githubContributionsEnabled ? await this.githubTools.config(key) : undefined;
-    const client = this.clientFor(key, context, await this.artifactTools.config(key), rulesets, github);
+    const client = this.clientFor(key, context, await this.artifactTools.config(key, context.transportContext), rulesets, github);
     const existing = this.sessions.get(key);
     if (!forceNew && existing && sameContext(this.sessionContexts.get(key)?.applied, context.applied)
       && previousClient === client) return existing;
@@ -565,7 +565,7 @@ export class CodexProvider implements Provider {
       }));
       const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
       this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
-      const context = resolveSessionContext({ profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
+      const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
       const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
       const runWithRulesetTools = <T>(action: (rulesetRuntime?: RulesetTools) => Promise<T>) =>
         context.rulesetsEnabled
@@ -574,7 +574,7 @@ export class CodexProvider implements Provider {
       const response = await this.githubTools.run(userId, options, context.githubContributionsEnabled, githubRun => runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
         runtime.providerSourceRoot = () => generatedImageThreadDirectory(this.sessions.get(userId)?.id ?? null);
         const images = staged.filter((attachment) => attachment.kind !== "file");
-        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(resolvedPrompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun);
+        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(resolvedPrompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
         const artifactPrompt = githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun);
         const inputFor = (handoff?: string): string | UserInput[] =>
           images.length > 0
@@ -929,3 +929,4 @@ export class CodexProvider implements Provider {
     this.messageQueues.clear();
   }
 }
+
