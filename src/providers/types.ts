@@ -85,6 +85,8 @@ export interface SendAttachment {
 }
 
 export interface SendMessageOptions {
+  /** Host-selected transport. Omitted preserves the Discord compatibility profile. */
+  transportContext?: { platform: "slack" | "cli"; history: boolean };
   contextProfile?: ContextProfile;
   /** Host-selected cap; never extends the provider timeout. */
   timeoutMs?: number;
@@ -196,3 +198,4 @@ export interface Provider {
 export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "low";
+
