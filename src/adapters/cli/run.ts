@@ -6,7 +6,7 @@ import { ConversationService } from '../../application/conversationService.js';
 import { FileTurnJournal } from '../../application/conversationService.js';
 import { sessionKey, TEXT_CAPABILITIES, type IncomingTurn } from '../../core/conversation.js';
 import { createTextEngine } from '../../composition/textEngine.js';
-export async function runCli(args = process.argv.slice(3)): Promise<void> {
+export async function runCli(args = process.argv.slice(3), makeEngine = createTextEngine): Promise<void> {
   const opts: Record<string,string> = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -22,14 +22,25 @@ export async function runCli(args = process.argv.slice(3)): Promise<void> {
   let engine: Awaited<ReturnType<typeof createTextEngine>> | undefined;
   let cancel: (() => void) | undefined;
   let interrupted = false;
-  const onSignal = () => { interrupted = true; cancel?.(); console.error('Cancellation requested; waiting for the active provider to stop.'); };
+  let terminal: ReturnType<typeof createInterface> | undefined;
+  let signalExitCode = 130;
+  const onSignal = (signal: NodeJS.Signals) => {
+    interrupted = true;
+    signalExitCode = signal === 'SIGTERM' ? 143 : 130;
+    process.exitCode = signalExitCode;
+    terminal?.close();
+    cancel?.();
+    console.error('Cancellation requested; waiting for the active provider to stop.');
+  };
   process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
   const actor = { platform: 'cli', tenantId: 'local', userId: process.env.AI_ASSISTANT_CLI_USER || userInfo().username };
   const input = (text: string): IncomingTurn => ({ eventId: randomUUID(), text, actor, receivedAt: new Date().toISOString(),
     conversation: { platform: 'cli', tenantId: 'local', installationId: 'local', channelId: opts.channel || 'local', threadId: opts.thread || 'default', kind: 'thread' } });
   const print = (data: unknown) => process.stdout.write((opts.json ? JSON.stringify(data) : String(data)) + '\n');
   try {
-    engine = await createTextEngine(opts.provider || process.env.PROVIDER || 'copilot', join(directory, 'cli-provider-state'));
+    engine = await makeEngine(opts.provider || process.env.PROVIDER || 'copilot', join(directory, 'cli-provider-state'));
+    if (interrupted) return;
     const reset = async () => {
       if (process.env.AI_ASSISTANT_CLI_ALLOW_RESET === 'false') throw new Error('Reset is disabled by local policy.');
       await service.serial(sessionKey(input(''), 'individual'), () => engine!.resetSession(sessionKey(input(''), 'individual')));
@@ -45,22 +56,29 @@ export async function runCli(args = process.argv.slice(3)): Promise<void> {
         deliver: async output => { print(opts.json ? { status: 'delivered', content: output.content, unsupportedAttachments: output.attachments.length } : output.content + (output.attachments.length ? '\n[File delivery unavailable in CLI.]' : '')); return { messageIds: [] }; },
       });
       cancel = handle.cancel;
+      if (interrupted) handle.cancel();
       const result = await handle.completion;
       cancel = undefined;
-      if (result.state !== 'delivered') { print(opts.json ? { status: result.state, error: result.error } : result.error); process.exitCode = interrupted ? 130 : 1; }
+      if (result.state !== 'delivered') { print(opts.json ? { status: result.state, error: result.error } : result.error); process.exitCode = interrupted ? signalExitCode : 1; }
     };
     if (opts.reset) await reset();
     if (opts.message) await turn(opts.message);
     else if (!opts.reset) {
-      const terminal = createInterface({ input: process.stdin, output: process.stderr, terminal: process.stdin.isTTY });
+      terminal = createInterface({ input: process.stdin, output: process.stderr, terminal: process.stdin.isTTY });
       console.error('Enter a message, /reset or /quit.');
       try { for await (const line of terminal) { if (line === '/quit' || interrupted) break; if (line === '/reset') await reset(); else if (line.trim()) await turn(line); } }
       finally { terminal.close(); }
     }
   } finally {
-    process.off('SIGINT', onSignal);
-    await service.shutdown();
-    await engine?.shutdown();
-    console.log = originalLog;
+    try { await service.shutdown(); }
+    finally {
+      try { await engine?.shutdown(); }
+      finally {
+        terminal?.close();
+        process.off('SIGINT', onSignal);
+        process.off('SIGTERM', onSignal);
+        console.log = originalLog;
+      }
+    }
   }
 }

@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { ConversationService, FileTurnJournal, historyBlock, historyRange, retrieveHistory } from '../application/conversationService.js';
 import { TEXT_CAPABILITIES, sessionKey } from '../core/conversation.js';
@@ -129,6 +129,7 @@ export class SlackAdapter {
     historyApi;
     engine;
     service;
+    fallbackContextIdentity = randomUUID();
     constructor(config, api, historyApi, engine, service){
         this.config = config;
         this.api = api;
@@ -267,7 +268,8 @@ export class SlackAdapter {
                 const observedIds = new Set(observed?.messages.map((m)=>m.id));
                 const changed = observed?.messages.some((m)=>state.seen[m.id] && state.seen[m.id] !== fingerprint(m) || state.represented.includes(m.position) && !state.seen[m.id]);
                 const removed = observed?.complete && Object.entries(state.positions).some(([id, pos])=>state.scopes[id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId) < 0 && !observedIds.has(id));
-                if (state.audience !== audience || changed || removed) {
+                const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
+                if (state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) {
                     await this.engine.resetSession(session);
                     state.seen = {};
                     state.positions = {};
@@ -364,6 +366,7 @@ export class SlackAdapter {
                     revision: JSON.stringify(source.edited ?? null)
                 });
                 prepared.next.scopes[id] = historyScope(input.conversation);
+                prepared.next.contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
                 this.save(session, prepared.next);
                 response.audienceTag = audience;
                 if (prepared.coverage.status === 'partial' || prepared.coverage.status === 'unavailable') response.content += '\n\n[Surrounding discussion context is ' + prepared.coverage.status + ': ' + prepared.coverage.reasons.join('; ') + ']';
