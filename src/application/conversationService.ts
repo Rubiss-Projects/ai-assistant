@@ -177,7 +177,7 @@ export async function retrieveHistory(port: HistoryPort, input: IncomingTurn, re
   try {
     for (let page = 0; page < limits.pages; page++) {
       signal.throwIfAborted();
-      const result = await port.page(resource, before, cursor, signal);
+      const result = await port.page(resource, before, cursor, signal, range);
       for (const message of result.messages) {
         if (coverage.scanned++ >= limits.scanned) { coverage.reasons.push('scan limit'); break; }
         if (message.position !== before) found.set(message.id, message);

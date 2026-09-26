@@ -50,6 +50,9 @@ export class SlackHistory {
         this.authorize = authorize;
         this.excluded = excluded;
     }
+    hasMore(result) {
+        return Boolean(result.has_more || result.response_metadata?.next_cursor);
+    }
     includeAuthor(id) {
         return !this.excluded.has(id);
     }
@@ -63,7 +66,7 @@ export class SlackHistory {
             return;
         }
     }
-    async page(resource, before, cursor, signal) {
+    async page(resource, before, cursor, signal, range) {
         if (resource.platform !== 'slack' || resource.tenantId !== this.origin.tenantId || resource.installationId !== this.origin.installationId || resource.channelId !== this.origin.channelId || resource.threadId && resource.threadId !== this.origin.threadId || !await this.authorize()) throw new Error('History access denied.');
         const args = {
             channel: resource.channelId,
@@ -75,7 +78,56 @@ export class SlackHistory {
             } : {}
         };
         if (resource.threadId) args.ts = resource.threadId;
-        const result = await this.api.call(resource.threadId ? 'conversations.replies' : 'conversations.history', args, signal);
+        let result = await this.api.call(resource.threadId ? 'conversations.replies' : 'conversations.history', args, signal);
+        if (resource.threadId && !cursor && range?.kind === 'recent' && this.hasMore(result)) {
+            const records = Array.isArray(result.messages) ? result.messages : [];
+            const collected = records.filter((m)=>m.ts === resource.threadId);
+            const micros = (ts)=>BigInt(slackPosition(ts).replace('.', ''));
+            const stamp = (n)=>(n / 1000000n).toString() + '.' + (n % 1000000n).toString().padStart(6, '0');
+            const windows = [
+                [
+                    micros(resource.threadId),
+                    micros(before)
+                ]
+            ];
+            let calls = 1;
+            while(windows.length && calls < 10 && collected.length < range.count){
+                signal.throwIfAborted();
+                if (!await this.authorize()) throw new Error('History access denied.');
+                const [low, high] = windows.pop();
+                const page = await this.api.call('conversations.replies', {
+                    ...args,
+                    oldest: stamp(low),
+                    latest: stamp(high)
+                }, signal);
+                calls++;
+                if (this.hasMore(page)) {
+                    if (high - low <= 1n) {
+                        windows.push([
+                            low,
+                            high
+                        ]);
+                        break;
+                    }
+                    const mid = (low + high) / 2n;
+                    windows.push([
+                        low,
+                        mid + 1n
+                    ], [
+                        mid,
+                        high
+                    ]);
+                } else {
+                    const batch = Array.isArray(page.messages) ? page.messages : [];
+                    collected.push(...batch.filter((m)=>typeof m.ts === 'string' && micros(m.ts) > low && micros(m.ts) < high));
+                }
+            }
+            result = {
+                ok: true,
+                messages: collected,
+                has_more: windows.length > 0
+            };
+        }
         const messages = (Array.isArray(result.messages) ? result.messages : []).flatMap((raw)=>{
             if (typeof raw.ts !== 'string' || typeof raw.text !== 'string' || typeof raw.user !== 'string' || comparePosition(raw.ts, before) >= 0) return [];
             if (raw.subtype && ![
@@ -319,7 +371,7 @@ export class SlackAdapter {
                             ] : []
                         ]
                     }
-                }) + '\n\nCurrent request:\n' + input.text;
+                }) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
                 return {
                     prompt,
                     next,

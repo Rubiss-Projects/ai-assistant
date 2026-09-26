@@ -93,3 +93,9 @@ test('changed author exclusions invalidate earlier channel context outside the t
  assert.equal(f.resets(),resets+1);
  }finally{await f.close()}
 });
+
+test('shared Slack prompt includes verified attribution for the current request',async()=>{
+ const f=setup();try{await (await f.adapter.receive(event('speaker','1700000003.000000','1700000001.000000')))!.completion;
+ assert.match(f.prompts[0],/Current speaker \(host-verified\): {"platform":"slack","tenantId":"T","userId":"U"}/);
+ }finally{await f.close()}
+});

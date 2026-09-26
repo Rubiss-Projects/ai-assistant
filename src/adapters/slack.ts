@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { ConversationService, FileTurnJournal, historyBlock, historyRange, retrieveHistory } from '../application/conversationService.js';
-import { TEXT_CAPABILITIES, sessionKey, type IncomingTurn, type TurnHandle, type ConversationRef, type HistoryPort, type HistoryPage } from '../core/conversation.js';
+import { TEXT_CAPABILITIES, sessionKey, type IncomingTurn, type TurnHandle, type ConversationRef, type HistoryPort, type HistoryPage, type HistoryRange } from '../core/conversation.js';
 import { createTextEngine, type TextEngine } from '../composition/textEngine.js';
 import { configuredSecurityMode } from '../common/providerSecurity.js';
 export interface SlackResponse { ok: boolean; error?: string; [key: string]: unknown }
@@ -35,6 +35,7 @@ export function comparePosition(a: string, b: string): number {
 export class SlackHistory implements HistoryPort {
   constructor(private readonly api: SlackApi, private readonly origin: ConversationRef,
     private readonly authorize: () => Promise<boolean>, private readonly excluded: Set<string> = new Set()) {}
+  private hasMore(result: SlackResponse): boolean { return Boolean(result.has_more || (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor); }
   includeAuthor(id: string): boolean { return !this.excluded.has(id); }
   resolveMessageReference(url: string, resource: ConversationRef): string | undefined {
     try {
@@ -44,13 +45,40 @@ export class SlackHistory implements HistoryPort {
       return m[2] + '.' + m[3];
     } catch { return; }
   }
-  async page(resource: ConversationRef, before: string, cursor: string | undefined, signal: AbortSignal): Promise<HistoryPage> {
+  async page(resource: ConversationRef, before: string, cursor: string | undefined, signal: AbortSignal, range?: HistoryRange): Promise<HistoryPage> {
     if (resource.platform !== 'slack' || resource.tenantId !== this.origin.tenantId || resource.installationId !== this.origin.installationId
       || resource.channelId !== this.origin.channelId || (resource.threadId && resource.threadId !== this.origin.threadId)
       || !await this.authorize()) throw new Error('History access denied.');
     const args: Record<string,string> = { channel: resource.channelId, latest: before, inclusive: 'false', limit: '100', ...(cursor ? { cursor } : {}) };
     if (resource.threadId) args.ts = resource.threadId;
-    const result = await this.api.call(resource.threadId ? 'conversations.replies' : 'conversations.history', args, signal);
+    let result = await this.api.call(resource.threadId ? 'conversations.replies' : 'conversations.history', args, signal);
+    if (resource.threadId && !cursor && range?.kind === 'recent' && this.hasMore(result)) {
+      // Replies are oldest-first. Search newest time intervals first; never present
+      // a truncated oldest page as the recent end. Keep the root separately.
+      const records = (Array.isArray(result.messages) ? result.messages : []) as Record<string,unknown>[];
+      const collected = records.filter(m => m.ts === resource.threadId);
+      const micros = (ts: string) => BigInt(slackPosition(ts).replace('.', ''));
+      const stamp = (n: bigint) => (n / 1000000n).toString() + '.' + (n % 1000000n).toString().padStart(6,'0');
+      const windows: Array<[bigint,bigint]> = [[micros(resource.threadId), micros(before)]];
+      let calls = 1;
+      while (windows.length && calls < 10 && collected.length < range.count) {
+        signal.throwIfAborted();
+        if (!await this.authorize()) throw new Error('History access denied.');
+        const [low,high] = windows.pop()!;
+        const page = await this.api.call('conversations.replies', { ...args, oldest: stamp(low), latest: stamp(high) }, signal);
+        calls++;
+        if (this.hasMore(page)) {
+          if (high - low <= 1n) { windows.push([low,high]); break; }
+          const mid = (low + high) / 2n;
+          // The shared boundary is included by the older half (exclusive API bounds).
+          windows.push([low,mid + 1n], [mid,high]);
+        } else {
+          const batch = (Array.isArray(page.messages) ? page.messages : []) as Record<string,unknown>[];
+          collected.push(...batch.filter(m => typeof m.ts === 'string' && micros(m.ts) > low && micros(m.ts) < high));
+        }
+      }
+      result = { ok: true, messages: collected, has_more: windows.length > 0 };
+    }
     const messages = (Array.isArray(result.messages) ? result.messages : []).flatMap((raw: Record<string,unknown>) => {
       if (typeof raw.ts !== 'string' || typeof raw.text !== 'string' || typeof raw.user !== 'string' || comparePosition(raw.ts, before) >= 0) return [];
       if (raw.subtype && !['thread_broadcast', 'bot_message'].includes(String(raw.subtype))) return [];
@@ -146,7 +174,7 @@ export class SlackAdapter {
         const fresh = result.messages.filter(m => !state.seen[m.id] && !state.represented.includes(m.position));
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
         const next: ContextState = { exclusionPolicy, represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
-        const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent request:\n' + input.text;
+        const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
         return { prompt, next, coverage: result.coverage };
       },
       generate: async (prepared, session, _signal, onProgress) => {
