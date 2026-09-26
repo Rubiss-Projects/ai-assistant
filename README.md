@@ -1,6 +1,6 @@
 # AI Assistant
 
-A Discord bot for **GitHub Copilot**, **OpenAI Codex**, and **OpenCode**. Choose a default provider, then chat through mentions, DMs, or dedicated conversation threads. You can switch providers during a conversation without restarting the bot.
+An assistant with Discord, opt-in [Slack](#slack-adapter), and CLI adapters for **GitHub Copilot**, **OpenAI Codex**, and **OpenCode**. Choose a default provider, then chat through your configured adapter. Discord supports mentions, DMs and dedicated conversation threads, with provider switching during a conversation.
 
 - Persistent conversations, isolated by user/channel or chat thread.
 - Images, video, audio, text/code attachments, and downloadable files created by the agent.
@@ -11,6 +11,7 @@ A Discord bot for **GitHub Copilot**, **OpenAI Codex**, and **OpenCode**. Choose
 ## Contents
 
 - [Getting started](#getting-started)
+- [Slack adapter](#slack-adapter)
 - [Using the bot](#using-the-bot)
 - [Scheduled tasks and named rights](#scheduled-tasks-and-named-rights)
 - [Environment variable reference](#environment-variable-reference)
@@ -20,7 +21,7 @@ A Discord bot for **GitHub Copilot**, **OpenAI Codex**, and **OpenCode**. Choose
 
 ## Getting started
 
-First configure Discord and choose a provider. Then follow **one** installation path: [global npm install](#global-npm-install), [Docker](#docker), or [run from source](#run-from-source).
+For Slack, follow [Slack adapter setup](#slack-adapter). For Discord, first configure Discord and choose a provider. Then follow **one** installation path: [global npm install](#global-npm-install), [Docker](#docker), or [run from source](#run-from-source).
 
 ### 1. Configure Discord
 
@@ -37,6 +38,8 @@ Decide who can use the bot before starting it: when `DISCORD_ALLOWED_USERS` and 
 
 Set `PROVIDER` to one of the following. Authenticate each provider you want to use, under the same operating-system user that runs the bot.
 
+| `AI_ASSISTANT_ADAPTER` | `discord`; accepts `discord`, `slack` | Selects one network adapter per process. Local CLI conversations use `ai-assistant cli` instead. |
+| `AI_ASSISTANT_STATE_DIR` | `~/.config/ai-assistant/adapters` | Persistent adapter journals, Slack context and Slack/CLI provider state. Use an absolute host-owned path outside the provider workspace. One worker per adapter/state directory. Does not relocate Discord's legacy provider stores. |
 | `PROVIDER` | Backend | Authentication | Default model in this repo |
 | --- | --- | --- | --- |
 | `copilot` | GitHub Copilot SDK | `COPILOT_GITHUB_TOKEN` (preferred), `GH_TOKEN`, or a persisted CLI login with Copilot access | `claude-haiku-4.5` |
@@ -124,6 +127,79 @@ Fill in the Discord and provider settings in the repository's `.env`, then regis
 npm run register
 npm start
 ```
+
+## Slack adapter
+
+Slack is opt-in: set `AI_ASSISTANT_ADAPTER=slack` to run one Slack Socket Mode connection instead of Discord. Discord remains the default. Run separate processes to use both platforms; do not run two Slack workers against the same state directory. Slack uses the selected `PROVIDER` and its existing authentication, and requires `AI_ASSISTANT_SECURITY_MODE=shared`.
+
+### Create and install the Slack app
+
+1. Create an app for your workspace at [Slack's app dashboard](https://api.slack.com/apps). Enable [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/); this uses an outbound WebSocket and does not require a public event-request URL.
+2. Generate an app-level token with `connections:write` and save it as `SLACK_APP_TOKEN` (`xapp-…`). It opens the [Socket Mode connection](https://docs.slack.dev/reference/methods/apps.connections.open/); it is not the bot/history token.
+3. Under **OAuth & Permissions**, add the bot scopes below. Under **Event Subscriptions**, enable events and subscribe to the bot event [`app_mention`](https://docs.slack.dev/reference/events/app_mention/). Install the app into the workspace (reinstall after changing scopes) and save its bot token as `SLACK_BOT_TOKEN` (`xoxb-…`).
+4. Invite the bot to each permitted channel. Copy the workspace, channel and member IDs into the environment settings below. Use IDs, not display names or `#channel` names. Both the requester and bot must be current channel members.
+
+| Bot scope | Used for |
+| --- | --- |
+| `app_mentions:read` | Receiving explicit mentions. |
+| `chat:write` | [Posting replies](https://docs.slack.dev/reference/methods/chat.postMessage/) in the originating thread. |
+| `channels:read` | Public-channel metadata and [membership checks](https://docs.slack.dev/reference/methods/conversations.members/). |
+| `channels:history` | Public-channel history and replies, subject to token access. |
+| `groups:read`, `groups:history` | Add these when supporting private channels; invite the bot there too. |
+
+History uses `SLACK_BOT_TOKEN` unless `SLACK_HISTORY_TOKEN` is configured. The history credential must belong to the same workspace and have access to the permitted channels, including the appropriate `channels:history` / `groups:history` scopes. Verify both [channel history](https://docs.slack.dev/reference/methods/conversations.history/) and [thread replies](https://docs.slack.dev/reference/methods/conversations.replies/) for your token type and installation. If your bot token cannot retrieve channel threads, configure an appropriately scoped user OAuth token as `SLACK_HISTORY_TOKEN`. Receiving mentions does not establish history access. Keep all tokens in host configuration outside the provider workspace.
+
+### Configure and start Slack
+
+Use a checkout or installed version containing the adapter; while this feature is in a draft PR, the published `latest` image and default branch may not contain it. Copy the repository's `.env.example` and edit these values along with your provider credentials:
+
+```dotenv
+AI_ASSISTANT_ADAPTER=slack
+AI_ASSISTANT_SECURITY_MODE=shared
+PROVIDER=copilot
+SLACK_APP_TOKEN=xapp-replace-me
+SLACK_BOT_TOKEN=xoxb-replace-me
+SLACK_TEAM_ID=T0123456789
+SLACK_ALLOWED_CHANNELS=C0123456789
+SLACK_ALLOWED_USERS=U0123456789,U9876543210
+SLACK_INSTALLATION_ID=default
+# Optional when a separate authorized history credential is needed:
+# SLACK_HISTORY_TOKEN=xoxp-replace-me
+# Optional: history authors to exclude; no spaces around commas:
+# SLACK_EXCLUDED_CONTEXT_USERS=U1111111111,U2222222222
+# Docker only: skip Discord command registration.
+REGISTER_COMMANDS_ON_START=false
+```
+
+Slack does not require `DISCORD_TOKEN`, `DISCORD_APP_ID` or `DISCORD_GUILD_ID`; leave them unset for a Slack-only process. The Discord setup wizard and `register` command are not Slack setup steps.
+
+- **Source checkout:** place `.env` in the repository, install dependencies with `npm ci`, then run `npm start`. Do not run `npm run register`.
+- **Installed CLI:** manually create `~/.ai-assistant/.env` with the Slack/provider settings, then run `ai-assistant start`. Set `AI_ASSISTANT_CONFIG_DIR` in the launching environment to use a different configuration directory.
+- **Docker Compose:** edit the `.env` beside `compose.yaml`, including `REGISTER_COMMANDS_ON_START=false`, and use an image containing the adapter. To build from the checked-out adapter revision, run `docker compose up -d --build`; view startup errors with `docker compose logs -f assistant`. Apply later environment changes with `docker compose up -d`.
+
+Set `AI_ASSISTANT_WORKSPACE_ROOT` to the directory providers may access. The default adapter state directory is `~/.config/ai-assistant/adapters`; an `AI_ASSISTANT_STATE_DIR` override must be an absolute, persistent host-owned path outside that workspace. For example, Docker can use `/data/adapter-state` beside its `/data/workspaces` workspace. Native installs should use separate sibling directories for workspace and state. Shared mode rejects provider state placed inside its allowed workspace.
+
+### Slack conversations and history
+
+Mention the app in an allowed channel to start a turn. A top-level mention creates the reply thread; mentioning the app in an existing thread continues that thread's shared session. Replies stay in the originating thread. Sessions are isolated by platform, workspace, installation, channel and thread.
+
+Plain messages and unmentioned follow-ups do not trigger replies, but authorized history retrieval can include them on a later mention. `SLACK_ALLOWED_USERS` controls who may trigger turns; it does **not** exclude other channel members' messages from context. Use `SLACK_EXCLUDED_CONTEXT_USERS` to exclude history authors. This does not block their explicit requests if they remain in the allowed-user list.
+
+Automatic context is bounded to 50 messages and 8,000 serialized characters. Explicit summary/history requests support the last N messages, the last N minutes/hours/days, after a same-channel Slack message link, or since the requester's actual previous message. Specify channel or thread scope in the request; summaries remain bounded and disclose partial/unavailable coverage. Recent long-thread retrieval preserves the root separately and searches recent windows. History failures and rate limits do not imply an empty conversation.
+
+For a smoke check, mention the app, add an unmentioned detail in its reply thread, then mention it again asking about that detail. Also request a thread summary and verify source links and coverage. Confirm an unallowed user or channel does not start a turn. These checks exercise real Slack/provider access; the automated suite uses fixtures.
+
+DMs, group DMs, externally shared and organization-shared channels are rejected. Slack currently has text replies and history; file transfer, progress UI, persistent memory, scheduling, proactive participation and Discord slash-command parity are not implemented. Discord participation and rights settings do not configure Slack; use the Slack allowlists.
+
+### Slack operations and troubleshooting
+
+- **No replies:** check Socket Mode, `app_mention` subscription, token/workspace match, both allowlists, channel membership and host logs. Private channels need the corresponding scopes and invitations. Shared/external channels are unsupported.
+- **History unavailable:** check the history credential's access and scopes for both history APIs. Slack rate limits vary by app distribution; this adapter bounds retrieval and reports failure rather than guaranteeing a complete transcript.
+- **State ownership error:** only one process may own `slack-turns/owner.lock`. After a crash, confirm the recorded process has stopped before removing only its stale lock. Never remove a live worker's lock.
+- Persist `slack-turns`, `slack-context` and `slack-provider-state` under `AI_ASSISTANT_STATE_DIR` across restarts. Keep `SLACK_INSTALLATION_ID` stable. SIGINT/SIGTERM drain the adapter, but an active provider may take until completion or its timeout to stop.
+- Membership, provider/session identity and excluded-author policy changes invalidate retained context. Edit/deletion detection is limited to fetched history windows. Interrupted or uncertain deliveries need operator reconciliation; they are not automatically regenerated.
+
+See the [adapter specification and validation status](docs/adapter-refactor-spec.md) for recovery details and outstanding full-build/live-platform release checks.
 
 ## Using the bot
 
@@ -604,6 +680,21 @@ Ruleset commands and tools manage rules in their current server. Global rules al
 | `DISCORD_SEARCH_CANDIDATE_LIMIT` | `200`; integer ≥ `25` | Maximum unique indexed search candidates gathered across generated queries. Invalid or smaller values use the default. |
 | `DISCORD_SEARCH_CONTEXT_LIMIT` | `50`; integer ≥ `10` | Maximum ranked search messages supplied to the answering agent. Invalid or smaller values use the default. |
 | `DISCORD_MEMORY_RECALL_LIMIT` | `5`; integer ≥ `1` | Maximum relevant durable memories included in a response. Invalid or smaller values use the default. |
+
+### Slack
+
+See [Slack adapter setup](#slack-adapter) for app scopes, token access, startup and limitations. Restart after changes.
+
+| Variable | Default / accepted values | What it does |
+| --- | --- | --- |
+| `SLACK_APP_TOKEN` | Required for Slack | App-level Socket Mode credential (`xapp-…`). |
+| `SLACK_BOT_TOKEN` | Required for Slack | Installed bot OAuth credential (`xoxb-…`); identity, membership and posting. Also used for history unless overridden. |
+| `SLACK_TEAM_ID` | Required for Slack | Expected workspace ID. Both bot and history credentials must authenticate to this workspace. |
+| `SLACK_ALLOWED_CHANNELS` | Required, nonempty | Comma-separated channel IDs where mentions are accepted. |
+| `SLACK_ALLOWED_USERS` | Required, nonempty | Comma-separated user IDs allowed to start turns; does not filter history authors. |
+| `SLACK_INSTALLATION_ID` | `default` | Stable logical installation namespace for sessions. Changing it creates separate session identities. |
+| `SLACK_HISTORY_TOKEN` | `SLACK_BOT_TOKEN` | Optional separate OAuth credential with access to channel and thread history in the same workspace. |
+| `SLACK_EXCLUDED_CONTEXT_USERS` | Empty | Comma-separated IDs excluded from fetched history. Do not include spaces around commas. Policy changes rebuild retained context. |
 
 ### Run timing and output files
 
