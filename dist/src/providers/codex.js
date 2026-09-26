@@ -26,6 +26,7 @@ const MAX_CODEX_INLINE_ATTACHMENT_BYTES = 1_000_000;
 // Codex app policy keys are catalog connector IDs, not tool namespace/display names.
 export const CODEX_SITES_CONNECTOR_ID = "connector_20205bf7d4e99a89d7154bb849718324";
 export const CODEX_SITES_GIT_HOST = "git.chatgpt-team.site";
+export const CODEX_PACKAGE_HOST = "registry.npmjs.org";
 export const CODEX_GITHUB_READ_ONLY_TOOLS = [
     "get_repo",
     "fetch",
@@ -33,8 +34,17 @@ export const CODEX_GITHUB_READ_ONLY_TOOLS = [
     "search_repositories",
 ];
 const CODEX_PERMISSION_PROFILE = "discord-bot";
+const CODEX_DEVELOPMENT_INSTRUCTIONS = [
+    "Keep edited source in the assigned workspace. For builds and tests, copy current source and dependency manifests into a fresh directory under the session TMPDIR.",
+    "This private scratch supports npm's hidden files and executable dependencies without relaxing workspace credential restrictions.",
+    "Use npm ci --include=dev --no-audit --no-fund --fetch-retries=0 followed by npm run check when available. Only registry.npmjs.org is allowed for package downloads.",
+    "For other local test commands, use NO_PROXY=localhost,127.0.0.1,::1 so test servers stay inside the Linux sandbox's loopback namespace. Use temporary test state and never production credentials.",
+    "Report actual build and test results; parsing or stripping TypeScript is not type checking. Copy deliverables back into the workspace before cleanup; session scratch is removed on reset or shutdown.",
+].join(" ");
 export function createCodexSessionTemporaryDirectory() {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ai-assistant-codex-"));
+    const root = process.env.AI_ASSISTANT_CODEX_TMPDIR?.trim() || os.tmpdir();
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    const directory = fs.mkdtempSync(path.join(root, "ai-assistant-codex-"));
     fs.chmodSync(directory, 0o700);
     return directory;
 }
@@ -68,20 +78,30 @@ export function codexFilesystemPermissionOverride(sitesEnabled = false) {
     ].join(",");
     return `permissions.${CODEX_PERMISSION_PROFILE}.filesystem={":root"="deny",":minimal"="read",":tmpdir"="write",glob_scan_max_depth=8,":workspace_roots"={"."="write",${sensitiveRules}}}`;
 }
+export function codexNetworkPermissionOverride(sitesEnabled = false) {
+    const hosts = [CODEX_PACKAGE_HOST, ...(sitesEnabled ? [CODEX_SITES_GIT_HOST] : [])];
+    const domains = hosts.map(host => `${JSON.stringify(host)}="allow"`).join(",");
+    // On Linux, Unix sockets stay confined by the filesystem and isolated network namespace.
+    // Codex otherwise blocks even sockets created by tests inside private scratch.
+    return `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,mode="${sitesEnabled ? "full" : "limited"}",allow_local_binding=false,allow_upstream_proxy=false,dangerously_allow_all_unix_sockets=${process.platform === "linux"},domains={${domains}}}`;
+}
 export function codexThreadSecurityOptions(source = process.env) {
     return configuredSecurityMode(source) === "unrestricted"
         ? { sandboxMode: "danger-full-access", networkAccessEnabled: true }
         : {};
 }
-function shellEnvironment(workingDirectory, childEnvironment) {
+export function codexShellEnvironment(workingDirectory, childEnvironment) {
     const allowedNames = new Set([
         "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR",
         "LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR", "NODE_EXTRA_CA_CERTS",
-        "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "NPM_CONFIG_NODEDIR",
     ]);
     const result = Object.fromEntries(Object.entries(childEnvironment).filter(([name]) => allowedNames.has(name.toUpperCase())));
     result.HOME = workingDirectory;
     result.USERPROFILE = workingDirectory;
+    // Keep npm state out of denied dotfiles and never read an operator's npm login.
+    result.NPM_CONFIG_CACHE = path.join(childEnvironment.TMPDIR, "npm-cache");
+    result.NPM_CONFIG_USERCONFIG = os.devNull;
     return result;
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
@@ -116,12 +136,12 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
         ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
         env: childEnvironment,
         config: {
-            developer_instructions: systemPrompt,
+            developer_instructions: `${systemPrompt}\n\n${CODEX_DEVELOPMENT_INSTRUCTIONS}`,
             ...(!process.env.OPENAI_API_KEY ? { forced_login_method: "chatgpt" } : {}),
             default_permissions: CODEX_PERMISSION_PROFILE,
             features: {
                 apps: true,
-                network_proxy: sitesEnabled,
+                network_proxy: true,
                 hooks: false,
                 plugins: sitesEnabled,
                 remote_plugin: false,
@@ -137,7 +157,7 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
                 inherit: "none",
                 ignore_default_excludes: false,
                 experimental_use_profile: false,
-                set: shellEnvironment(workingDirectory, childEnvironment),
+                set: codexShellEnvironment(workingDirectory, childEnvironment),
             },
             apps: {
                 _default: { enabled: false, destructive_enabled: false, open_world_enabled: false },
@@ -164,9 +184,7 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
         configOverrides: [
             codexHostMcpOverride(artifacts, rulesets, github),
             codexFilesystemPermissionOverride(sitesEnabled),
-            sitesEnabled
-                ? `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,domains={"${CODEX_SITES_GIT_HOST}"="allow"}}`
-                : `permissions.${CODEX_PERMISSION_PROFILE}.network={enabled=false}`,
+            codexNetworkPermissionOverride(sitesEnabled),
         ],
     };
 }

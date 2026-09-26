@@ -16,7 +16,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=2 tests/*.test.ts",
+    "check": "node scripts/check.mjs",
     "register": "tsx scripts/register-commands.ts",
     "postinstall": "node patch-deps.cjs"
   },
@@ -26,7 +27,7 @@
   "dependencies": {
     "@github/copilot-sdk": "^1.0.14",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@openai/codex-sdk": "^0.155.1",
+    "@openai/codex-sdk": "^0.157.1",
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.1",
     "discord.js": "^14.26.4",

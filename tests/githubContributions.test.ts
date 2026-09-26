@@ -512,7 +512,9 @@ test("provider policies expose only the contribution bridge and refresh its capa
   assert.match(secureSystemPrompt(), /host-owned github_contributions/);
   const codex = codexClientOptions(directory, undefined, undefined, context.systemPrompt, bridge);
   assert.match(JSON.stringify(codex.configOverrides), /github_contributions/);
-  assert.match(JSON.stringify(codex.configOverrides), /network=\{enabled=false\}/);
+  const network = codex.configOverrides?.find(value => value.startsWith("permissions.discord-bot.network="));
+  assert.match(network ?? "", /registry\.npmjs\.org/);
+  assert.doesNotMatch(network ?? "", /api\.github\.com|"github\.com"/);
   const openCode = openCodeChildEnvironment(process.env, undefined, undefined, context.systemPrompt, undefined, bridge);
   assert.match(openCode.OPENCODE_CONFIG_CONTENT, /github_contributions/);
   assert.equal(JSON.parse(openCode.OPENCODE_CONFIG_CONTENT).permission.bash, "deny");
