@@ -196,7 +196,14 @@ export class ConversationService {
             const destination = stored?.sessionKey ?? (host.resolveSession ? await host.resolveSession(input) : key);
             record.sessionKey = destination;
             this.save(record);
-            return this.serial(destination, ()=>execute(destination));
+            const run = ()=>this.serial(destination, ()=>execute(destination));
+            if (!host.coordinate) return run();
+            let result;
+            await host.coordinate(destination, async ()=>{
+                result = await run();
+            });
+            if (!result) throw new Error('Turn coordinator did not execute the turn.');
+            return result;
         }).catch((error)=>{
             try {
                 host.onError?.(error);

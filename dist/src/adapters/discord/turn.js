@@ -22,7 +22,7 @@ export function discordConversations(sessions) {
     }
     return service;
 }
-export async function executeDiscordTurn(sessions, source, key, prompt, attachments, options, deliver, prepare, resolveSession) {
+export async function executeDiscordTurn(sessions, source, key, prompt, attachments, options, deliver, prepare, resolveSession, coordinate) {
     const actor = source.author?.id ?? source.user.id;
     const tenantId = source.guildId ?? 'direct';
     const service = discordConversations(sessions);
@@ -49,6 +49,7 @@ export async function executeDiscordTurn(sessions, source, key, prompt, attachme
             originalError = error;
         },
         resolveSession,
+        coordinate,
         platform: 'discord',
         tenantId,
         installationId: 'default',
