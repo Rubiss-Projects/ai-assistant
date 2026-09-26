@@ -33,3 +33,14 @@ test('host observations cover fetched records but are excluded from bounded prov
  assert.equal(r.observed?.messages.length,8);assert.equal(r.observed?.complete,true);assert.equal(r.messages.length,3);
  assert.doesNotMatch(historyBlock(r),/discussion 3/);assert.doesNotMatch(historyBlock(r),/observed/);
 });
+
+test('recent Slack retrieval reaches the newest end beyond the scan limit and preserves root',async()=>{
+ const root='1700000001.000000';const before='1700003000.000000';
+ const all=Array.from({length:2001},(_,i)=>({ts:String(1700000001+i)+'.000000',thread_ts:root,user:'friend',text:'reply '+i}));
+ let calls=0;
+ const api={call:async(_method:string,args:Record<string,string>={})=>{calls++;const candidates=all.filter(m=>(!args.oldest||Number(m.ts)>Number(args.oldest))&&Number(m.ts)<Number(args.latest));return {ok:true,messages:candidates.slice(0,100),has_more:candidates.length>100,response_metadata:{next_cursor:candidates.length>100?'more':''}}}};
+ const p=new SlackHistory(api,input.conversation,async()=>true);
+ const r=await retrieveHistory(p,{...input,sourceMessageId:before},input.conversation,{kind:'recent',count:50},new AbortController().signal,{messages:50,characters:60000,pages:10,scanned:1000},true);
+ assert.equal(r.messages[0].position,root);assert.equal(r.messages.at(-1)?.text,'reply 2000');
+ assert.equal(r.messages.length,50);assert.ok(calls<=10);assert.equal(r.observed?.complete,false);assert.equal(r.coverage.status,'partial');
+});
