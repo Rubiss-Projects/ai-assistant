@@ -4,7 +4,6 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 
 # npm ci invokes node-gyp for better-sqlite3 even with bundled prebuilds.
-# Keep its build tools out of the runtime image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
@@ -36,7 +35,7 @@ LABEL org.opencontainers.image.title="AI Assistant" \
 
 # These are useful agent tools. Additional tools can be added in a derived image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep ffmpeg chromium \
+    && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep ffmpeg chromium python3 make g++ \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global "opencode-ai@${OPENCODE_VERSION}" \
     && npm cache clean --force \
@@ -53,8 +52,10 @@ COPY scripts/container-entrypoint.sh ./container-entrypoint.sh
 RUN chmod 0555 /app/container-entrypoint.sh
 
 ENV NODE_ENV=production \
+    NPM_CONFIG_NODEDIR=/usr/local \
     HOME=/data \
     AI_ASSISTANT_CONFIG_DIR=/data \
+    AI_ASSISTANT_CODEX_TMPDIR=/data/codex-tmp \
     PATH=/usr/local/lib/codex/bin:/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin \
     CODEX_EXECUTABLE_PATH=/usr/local/lib/codex/bin/codex
 

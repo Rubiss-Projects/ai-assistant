@@ -90,6 +90,7 @@ const COMMON_ENVIRONMENT_KEYS = [
   "NODE_EXTRA_CA_CERTS",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
+  "NPM_CONFIG_NODEDIR",
 ] as const;
 
 const PROVIDER_ENVIRONMENT_KEYS: Record<ProviderName, readonly string[]> = {

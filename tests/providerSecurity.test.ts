@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { devNull, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   configuredSecurityMode,
@@ -25,6 +25,7 @@ import {
   CODEX_GITHUB_READ_ONLY_TOOLS,
   CODEX_SITES_CONNECTOR_ID,
   CODEX_SITES_GIT_HOST,
+  CODEX_PACKAGE_HOST,
   codexClientOptions,
   codexFilesystemPermissionOverride,
   codexThreadSecurityOptions,
@@ -76,6 +77,8 @@ test("shared provider child environments never inherit Discord or MCP secrets", 
     MCP_INPUT_GITHUB_TOKEN: "mcp-secret",
     OPENAI_API_KEY: "openai-key",
     ANTHROPIC_API_KEY: "anthropic-key",
+    NPM_CONFIG_NODEDIR: "/usr/local",
+    NPM_TOKEN: "npm-secret",
   };
 
   const codex = providerChildEnvironment("codex", source);
@@ -84,6 +87,8 @@ test("shared provider child environments never inherit Discord or MCP secrets", 
   assert.equal(codex.DISCORD_TOKEN, undefined);
   assert.equal(codex.OPENAI_API_KEY, undefined);
   assert.equal(codex.MCP_INPUT_GITHUB_TOKEN, undefined);
+  assert.equal(codex.NPM_CONFIG_NODEDIR, "/usr/local");
+  assert.equal(codex.NPM_TOKEN, undefined);
 
   const opencode = providerChildEnvironment("opencode", source);
   assert.equal(opencode.OPENAI_API_KEY, "openai-key");
@@ -211,7 +216,7 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
 
   assert.equal((config.features as Record<string, boolean>).plugins, false);
   assert.equal((config.features as Record<string, boolean>).hooks, false);
-  assert.equal((config.features as Record<string, boolean>).network_proxy, false);
+  assert.equal((config.features as Record<string, boolean>).network_proxy, true);
   assert.equal(apps._default.enabled, false);
   assert.equal(apps[CODEX_SITES_CONNECTOR_ID], undefined);
   assert.equal(apps.github.enabled, true);
@@ -220,10 +225,12 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
   assert.deepEqual(Object.keys(apps.github.tools).sort(), [...CODEX_GITHUB_READ_ONLY_TOOLS].sort());
   assert.ok(options.configOverrides?.includes("mcp_servers={}"));
   assert.ok(
-    options.configOverrides?.includes("permissions.discord-bot.network={enabled=false}"),
+    options.configOverrides?.includes(`permissions.discord-bot.network={enabled=true,mode="limited",allow_local_binding=false,allow_upstream_proxy=false,dangerously_allow_all_unix_sockets=${process.platform === "linux"},domains={"${CODEX_PACKAGE_HOST}"="allow"}}`),
   );
   assert.equal(options.env?.DISCORD_TOKEN, undefined);
   assert.equal(options.env?.TMPDIR, isolatedTemp);
+  assert.equal(config.shell_environment_policy.set.NPM_CONFIG_CACHE, join(isolatedTemp, "npm-cache"));
+  assert.equal(config.shell_environment_policy.set.NPM_CONFIG_USERCONFIG, devNull);
   assert.equal(options.baseUrl, "https://gateway.example/v1");
   const filesystemOverride = codexFilesystemPermissionOverride();
   assert.equal(filesystemOverride.includes('":slash_tmp"="write"'), false);
@@ -237,16 +244,23 @@ test("Codex shared mode enables only known GitHub read tools and clears personal
 
 test("Codex shared sessions receive distinct private temporary directories", () => {
   const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
+  const previousTemporaryRoot = process.env.AI_ASSISTANT_CODEX_TMPDIR;
+  const root = mkdtempSync(join(tmpdir(), "codex-private-scratch-"));
   process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
+  process.env.AI_ASSISTANT_CODEX_TMPDIR = join(root, "scratch");
   const first = createCodexSessionTemporaryDirectory();
   const second = createCodexSessionTemporaryDirectory();
   try {
     assert.notEqual(first, second);
+    assert.equal(dirname(first), join(root, "scratch"));
     assert.equal(codexClientOptions(first).env?.TMPDIR, first);
     assert.equal(codexClientOptions(second).env?.TMPDIR, second);
   } finally {
     if (previousMode === undefined) delete process.env.AI_ASSISTANT_SECURITY_MODE;
     else process.env.AI_ASSISTANT_SECURITY_MODE = previousMode;
+    if (previousTemporaryRoot === undefined) delete process.env.AI_ASSISTANT_CODEX_TMPDIR;
+    else process.env.AI_ASSISTANT_CODEX_TMPDIR = previousTemporaryRoot;
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -307,7 +321,7 @@ test("Codex can explicitly enable Sites without enabling other connected apps", 
   assert.equal(apps.github.destructive_enabled, false);
   assert.equal(config.features.network_proxy, true);
   assert.ok(options.configOverrides?.includes(
-    `permissions.discord-bot.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,domains={"${CODEX_SITES_GIT_HOST}"="allow"}}`,
+    `permissions.discord-bot.network={enabled=true,mode="full",allow_local_binding=false,allow_upstream_proxy=false,dangerously_allow_all_unix_sockets=${process.platform === "linux"},domains={"${CODEX_PACKAGE_HOST}"="allow","${CODEX_SITES_GIT_HOST}"="allow"}}`,
   ));
   const filesystem = codexFilesystemPermissionOverride(true);
   assert.ok(filesystem.includes('".openai/**"="write"'));

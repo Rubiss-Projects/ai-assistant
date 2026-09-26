@@ -775,7 +775,7 @@ The template and setup wizard select `shared`. If the variable is absent, the bo
 In shared mode, provider processes receive an explicit environment allowlist that excludes Discord credentials and MCP input secrets. Each adapter enforces additional restrictions:
 
 - **Copilot** uses its `empty` mode with scoped file/search/web tools, read-only external MCP calls, and the host-owned artifact tools. Arbitrary shell, external mutating MCP calls, repository-defined MCP processes, and file access through workspace symlinks are blocked.
-- **Codex** retains local shell, build, and test support inside its filesystem permissions. Local commands have no network access unless Sites is enabled, which allows source pushes only to `git.chatgpt-team.site` through a proxy. Its shell gets a separate environment without provider credentials and a private temporary directory. Hosted web search and allowed connectors use separate controls. Connected apps default off except known read-only GitHub repository tools; mutating and newly introduced connector tools remain disabled.
+- **Codex** retains local shell, build, and test support inside its filesystem permissions. A restricted proxy permits package downloads from `registry.npmjs.org`; Sites additionally allows source pushes to `git.chatgpt-team.site`. Other destinations and broad private-network access remain blocked. Its shell gets a separate environment without provider credentials and a private temporary directory. npm uses that private directory for its cache and does not load the operator's npm configuration. Development runs use a source copy there so npm's hidden files work without relaxing workspace credential and Git restrictions. Hosted web search and allowed connectors use separate controls. Connected apps default off except known read-only GitHub repository tools; mutating and newly introduced connector tools remain disabled.
 - **OpenCode** uses a permission policy that denies tools unless explicitly allowed. Plugins, shell execution, content-wide grep, sensitive paths, and access outside the workspace are blocked.
 
 `AI_ASSISTANT_ENABLE_SITES=true` adds a Codex-only exception to shared mode: Discord users can create, update, and publish Sites as the logged-in ChatGPT account. It permits workspace-root `.openai` metadata and stages current site files in a fresh temporary Git repository; existing `.git` directories and history remain blocked. Other apps remain restricted and destructive connector actions remain blocked. In unrestricted mode, Sites follows the operator's normal Codex configuration.
@@ -851,6 +851,26 @@ For Docker, `docker compose down` removes the containers while retaining the dat
 For production releases, use the [AI Assistant deployment skill](.agents/skills/deploy-ai-assistant/SKILL.md). It covers PR review, release publication, Docker repository promotion, and runtime verification.
 
 After [installing from source](#run-from-source), use `npm run build` to compile TypeScript and `npm test` to run the test suite.
+
+### Developing from the bot's sandbox
+
+Keep edited source in the assigned workspace. From that checkout, stage the current files in the session's private scratch directory, where npm's hidden files and executable dependencies can work across shell calls:
+
+```sh
+build_dir=$(mktemp -d "$TMPDIR/ai-assistant-check-XXXXXX")
+cp -R src scripts tests package.json package-lock.json patch-deps.cjs tsconfig.json "$build_dir/"
+(cd "$build_dir" && npm ci --include=dev --no-audit --no-fund --fetch-retries=0 && npm run check)
+# Copy any needed build artifacts back to the workspace, then remove this staging copy.
+rm -rf "$build_dir"
+```
+
+`check` runs the TypeScript build and the complete test suite with a temporary home directory for test state. It bypasses the outbound proxy only for localhost test fixtures; on Linux these stay inside the sandbox's network namespace. Tests run two files at a time to stay within the container's process limit. Linux Unix sockets are enabled inside the filesystem sandbox for local fixtures; host filesystem sockets and host loopback remain inaccessible. Keep install scripts enabled: native dependencies and the Copilot SDK patch need them.
+
+The container includes Python, Make, a C++ compiler and Node headers; `NPM_CONFIG_NODEDIR=/usr/local` uses those headers without another download host. `AI_ASSISTANT_CODEX_TMPDIR=/data/codex-tmp` places private session directories on executable storage, while `/tmp` remains `noexec`. Each session gets its own directory, removed on reset/shutdown. Abrupt container termination can leave scratch directories on the data volume. On native installations, provide equivalent tools and headers; this setting defaults to the operating-system temporary directory. Do not replace a failed build with TypeScript stripping and report it as type-checked.
+
+Use temporary state and fake providers for local application checks. Live Discord/Slack or model-provider checks require separate test credentials and explicit authorization; production credentials are not exposed to the shell. Docker image builds stay in CI, without a Docker socket in the bot container. Packages with additional download hosts remain blocked until the host policy is reviewed.
+
+The container CI also runs `scripts/smoke-codex-development.ts`: it copies a clean checkout, installs dependencies, builds and runs all tests through the production Codex sandbox in separate shell invocations. It requires no model calls or bot login, and checks that credential files and unapproved destinations remain inaccessible.
 
 ### Project structure
 
