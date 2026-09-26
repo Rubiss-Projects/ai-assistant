@@ -28,7 +28,7 @@ test("summary policy, behavior revisions, limits, and removal refresh fingerprin
   assert.notEqual(policy.applied.instructions, before.applied.instructions);
   assert.equal(policy.applied.capabilities, before.applied.capabilities);
   for (const capabilities of [
-    { ...CHANNEL_SUMMARY_CAPABILITIES, behaviorRevision: 2 },
+    { ...CHANNEL_SUMMARY_CAPABILITIES, behaviorRevision: CHANNEL_SUMMARY_CAPABILITIES.behaviorRevision + 1 },
     { ...CHANNEL_SUMMARY_CAPABILITIES, limits: { ...CHANNEL_SUMMARY_CAPABILITIES.limits, scannedMessages: 500 } },
   ]) {
     const revised = changed({ instructions: CHANNEL_SUMMARY_INSTRUCTIONS, capabilities });

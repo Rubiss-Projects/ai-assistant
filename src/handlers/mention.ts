@@ -4,7 +4,7 @@ import { resolveMessageLinks } from "../utils/resolveMessageLinks.js";
 import { resolveDiscordContext } from "../utils/resolveDiscordContext.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "../utils/downloadAttachments.js";
 import { artifactMessageResolver } from "../utils/artifactMessage.js";
-import { enrichWithDiscordKnowledge } from "../utils/discordKnowledge.js";
+import { enrichDiscordRequest } from "../utils/discordKnowledge.js";
 import { progressMessage } from "../common/progressMessage.js";
 import { deliverDiscordAttachments, discordTextOptions } from "../common/discordResponse.js";
 import { userVisibleErrorMessage } from "../common/userVisibleError.js";
@@ -108,15 +108,15 @@ export async function handleMention(
     const basePrompt = prompt || (message.reference?.messageId
       ? "Respond using the replied-to conversation context."
       : "See the attached file(s).");
-    const knowledgePrompt = await enrichWithDiscordKnowledge(
+    const knowledge = await enrichDiscordRequest(
       message,
       basePrompt,
       client,
       canIncludeContextAuthor,
       (internalPrompt) => sessions.runEphemeral(key, internalPrompt),
     );
-    const linkedPrompt = await resolveMessageLinks(knowledgePrompt, client, message.author.id, contextAttachments, canIncludeContextAuthor, basePrompt);
-    let enrichedPrompt = await resolveDiscordContext(
+    const linkedPrompt = knowledge.isChannelSummary ? knowledge.prompt : await resolveMessageLinks(knowledge.prompt, client, message.author.id, contextAttachments, canIncludeContextAuthor, basePrompt);
+    let enrichedPrompt = knowledge.isChannelSummary ? linkedPrompt : await resolveDiscordContext(
       message,
       linkedPrompt,
       message.mentions.has(client.user!.id),
@@ -125,11 +125,11 @@ export async function handleMention(
     );
     // Add ambient conversation only after host-side intent/link processing so
     // background text cannot trigger memory writes, searches or link downloads.
-    if (mentionOptions.participation) enrichedPrompt = `${mentionOptions.participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
+    if (!knowledge.isChannelSummary && mentionOptions.participation) enrichedPrompt = `${mentionOptions.participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
     const result = await downloadFileAttachments([
-      ...(mentionOptions.participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
+      ...(knowledge.isChannelSummary ? [message] : mentionOptions.participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
       ...contextAttachments,
-      ...(mentionOptions.participation?.attachments ?? []),
+      ...(knowledge.isChannelSummary ? [] : mentionOptions.participation?.attachments ?? []),
     ]);
     cleanup = result.cleanup;
     const prepared = await prepareDownloadedAttachments(result.attachments);

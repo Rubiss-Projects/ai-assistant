@@ -1,6 +1,6 @@
 /** Static host capability metadata. Never add retrieved records or invocation data here. */
 export const CHANNEL_SUMMARY_CAPABILITIES = {
-  behaviorRevision: 1,
+  behaviorRevision: 2,
   delivery: "host-side Discord prompt enrichment",
   scope: "invoking guild channel only",
   ranges: ["since requester's previous message", "after same-channel message link", "recent message count", "relative minutes/hours/days"],
