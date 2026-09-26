@@ -141,6 +141,9 @@ export class ConversationService {
 }
 
 export function historyRange(args: Record<string, unknown>, input: IncomingTurn, port: HistoryPort, resource: ConversationRef): HistoryRange {
+  const fields: Record<string, string[]> = { recent: ['count'], previous_message: [], after_message: ['message_url'], relative_time: ['amount','unit'] };
+  const selected = String(args.range ?? 'recent');
+  if (!fields[selected] || Object.keys(args).some(k => !['run_id','range','scope',...fields[selected]].includes(k))) throw new Error('Incompatible history constraints; ask for clarification.');
   const integer = (v: unknown, max: number) => { const n = Number(v); if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new Error('Invalid history range; ask for clarification.'); return n; };
   switch (args.range ?? 'recent') {
     case 'recent': return { kind: 'recent', count: integer(args.count ?? 100, 1000) };

@@ -159,10 +159,12 @@ export class SlackAdapter {
         prepared.next.positions[id] = input.sourceMessageId!;
         // The fetched representation includes mention syntax, so record it on its first later fetch.
         this.save(session, prepared.next);
+        response.audienceTag = audience;
         if (prepared.coverage.status === 'partial' || prepared.coverage.status === 'unavailable') response.content += '\n\n[Surrounding discussion context is ' + prepared.coverage.status + ': ' + prepared.coverage.reasons.join('; ') + ']';
         return response;
       },
       deliver: async (output, deliveryKey) => {
+        if (!output.audienceTag || output.audienceTag !== await this.audience(input)) throw new Error("Generated output audience changed; delivery denied.");
         const text = output.content + (output.attachments.length ? '\n[File delivery is unavailable in Slack.]' : '');
         const chars = Array.from(text || '(No text response)'); const ids: string[] = [];
         for (let offset = 0; offset < chars.length; offset += 3000) {

@@ -1,0 +1,36 @@
+import { installDiscordConversations } from "../adapters/discord/turn.js";
+import { config } from "dotenv";
+config();
+import { SessionManager } from "../sessionManager.js";
+import { createBot } from "../bot.js";
+import { reportProviderSecurityConfiguration } from "../common/providerSecurity.js";
+import { contributionReviewsEnabled } from "../common/githubContributionReviewWorker.js";
+import { githubContributionService } from "../common/githubContributions.js";
+import { discordSubject } from "../common/discordAccess.js";
+reportProviderSecurityConfiguration();
+const token = process.env.DISCORD_TOKEN;
+if (!token) {
+    console.error("❌ DISCORD_TOKEN is not set in .env");
+    process.exit(1);
+}
+const sessions = new SessionManager();
+const conversations = installDiscordConversations(sessions);
+const client = createBot(sessions);
+async function shutdown(signal) {
+    console.log(`\n${signal} received — shutting down...`);
+    try {
+        await client.stopScheduler();
+        if (contributionReviewsEnabled()) await githubContributionService().stopReviews();
+        client.destroy();
+        await conversations.shutdown();
+        await sessions.shutdown();
+        console.log("✅ Shutdown complete.");
+    } catch (err) {
+        console.error("Error during shutdown:", err);
+    }
+    process.exit(0);
+}
+process.on("SIGINT", ()=>shutdown("SIGINT"));
+process.on("SIGTERM", ()=>shutdown("SIGTERM"));
+await client.login(token);
+if (contributionReviewsEnabled()) githubContributionService().startReviews((user, guild)=>discordSubject(client, user, guild));
