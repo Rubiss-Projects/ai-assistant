@@ -1,7 +1,7 @@
 import type { Attachment, Client } from "discord.js";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "./downloadAttachments.js";
 import { resolveMessageLinks } from "./resolveMessageLinks.js";
-import { enrichWithDiscordKnowledge } from "./discordKnowledge.js";
+import { enrichDiscordRequest } from "./discordKnowledge.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import type { ConversationMessage } from "../common/chatParticipation.js";
 import type { SendAttachment } from "../providers/types.js";
@@ -17,6 +17,7 @@ export async function prepareSlashAttachments(
   contextAttachments: NonNullable<ConversationMessage["attachments"]> = [],
 ): Promise<{
   prompt: string;
+  isChannelSummary: boolean;
   attachments: SendAttachment[];
   cleanup: () => Promise<void>;
 }> {
@@ -26,11 +27,11 @@ export async function prepareSlashAttachments(
     name: string;
     size?: number;
   }> = [];
-  const knowledgePrompt = interaction
-    ? await enrichWithDiscordKnowledge(interaction, prompt, client, canIncludeContextAuthor, infer)
-    : prompt;
-  const enrichedPrompt = await resolveMessageLinks(
-    knowledgePrompt,
+  const knowledge = interaction
+    ? await enrichDiscordRequest(interaction, prompt, client, canIncludeContextAuthor, infer)
+    : { prompt, isChannelSummary: false };
+  const enrichedPrompt = knowledge.isChannelSummary ? knowledge.prompt : await resolveMessageLinks(
+    knowledge.prompt,
     client,
     requestingUserId,
     linkedAttachments,
@@ -40,12 +41,13 @@ export async function prepareSlashAttachments(
   const result = await downloadFileAttachments([
     ...(directAttachment ? [directAttachment] : []),
     ...linkedAttachments,
-    ...contextAttachments,
+    ...(knowledge.isChannelSummary ? [] : contextAttachments),
   ]);
 
   try {
     const prepared = await prepareDownloadedAttachments(result.attachments);
     return {
+      isChannelSummary: knowledge.isChannelSummary,
       prompt: [enrichedPrompt, prepared.textContext, ...result.warnings.map((warning) => `[Input attachment unavailable: ${warning}]`)].filter(Boolean).join("\n\n"),
       attachments: prepared.fileAttachments,
       cleanup: result.cleanup,

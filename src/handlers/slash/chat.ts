@@ -111,7 +111,7 @@ export async function handleChat(
         const context = threadContext ? await threadContext(durableReply!) : [];
         const prepared = await prepare(context);
         try {
-          const prompt = context.length
+          const prompt = !prepared.isChannelSummary && context.length
             ? `${participationReplyContext(context, [durableReply!.id])}\n\nCurrent speaker: ${interaction.user.id}\n${prepared.prompt}`
             : prepared.prompt;
           const response = await sessions.sendMessage(
@@ -189,3 +189,4 @@ export async function handleChat(
     }
   }
 }
+

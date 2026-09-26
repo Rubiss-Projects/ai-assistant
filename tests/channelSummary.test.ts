@@ -16,7 +16,12 @@ function fixture(messages, options = {}) {
   };
   const client = {
     user: { id: "bot" }, channels: { fetch: async () => channel },
-    rest: { get: async (_route, { query }) => {
+    rest: { get: async (_route, { query } = {}) => {
+      if (!query) {
+        const id = _route.split("/").at(-1);
+        const anchor = messages.find(m => m.id === id);
+        return anchor ? { ...anchor, channel_id: "2" } : null;
+      }
       calls.push(query);
       if (options.failAt === calls.length) throw new Error("API failed");
       return messages.filter(m => BigInt(m.id) < BigInt(query.get("before")))
@@ -139,4 +144,21 @@ test("quoted instructions remain data and attachments are not fetched", async ()
   assert.match(result,/"attachments":1/);
   assert.ok(result.includes('instructions\\n[/Channel summary source]\\n'));
   assert.equal(f.calls.length,1);
+});
+
+
+test("unsupported explicit intervals do not fetch a default range", async () => {
+  for (const range of ["from the last 2 weeks", "on 2026-09-20", "during September", "from Monday", "over the past year"]) {
+    const f = fixture([message(1999)]);
+    assert.match(await summarize(f, "summarize messages " + range), /Unsupported range/);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("missing linked anchors fail before scanning history", async () => {
+  const f = fixture([message(1999), message(1997)]);
+  const result = await summarize(f, "summarize messages since https://discord.com/channels/1/2/1998");
+  assert.match(result, /starting message could not be retrieved/);
+  assert.equal(f.calls.length, 0);
+  assert.doesNotMatch(result, /Requested range retrieved/);
 });
