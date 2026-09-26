@@ -345,10 +345,10 @@ async function runCodexCapturingEvents(thread, input, signal, onStarted) {
 export class CodexProvider {
     makeClient;
     store;
+    githubTools;
     participationProcesses = new ParticipationProcessRunner();
     artifactTools = new ArtifactToolSessions();
     rulesetTools = new RulesetToolSessions();
-    githubTools = new GitHubContributionSessions();
     name = "codex";
     displayName = "OpenAI Codex";
     clients = new Map();
@@ -358,9 +358,10 @@ export class CodexProvider {
     messageQueues = new Map();
     sessionContexts = new Map();
     handoffs = new Map();
-    constructor(makeClient = options => new Codex(options), store = new SessionStore("codex")) {
+    constructor(makeClient = options => new Codex(options), store = new SessionStore("codex"), githubTools = new GitHubContributionSessions()) {
         this.makeClient = makeClient;
         this.store = store;
+        this.githubTools = githubTools;
     }
     histories = new Map();
     workingDirOverrides = new Map();

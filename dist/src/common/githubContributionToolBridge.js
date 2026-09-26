@@ -21,14 +21,24 @@ export class GitHubContributionRun {
         this.service = service;
         this.timeoutMs = timeoutMs;
     }
+    caller(signal) {
+        const context = this.options?.rulesetContext;
+        if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
+            || !context.access.can(context.requester, "github.contribute"))
+            return undefined;
+        return { session: this.session, requester: context.requester, access: context.access, signal };
+    }
+    activeContributions() {
+        const caller = this.caller(this.controller.signal);
+        return caller ? this.service().activeContributions(caller) : [];
+    }
     call(name, args) {
         // This budget includes queueing, token minting, and all sequential GitHub requests.
         const operation = operationSignal(this.controller.signal, this.timeoutMs, "GitHub contribution timed out. Check its status before retrying.");
         const action = Promise.resolve().then(async () => {
             operation.signal.throwIfAborted();
-            const context = this.options?.rulesetContext;
-            if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
-                || !context.access.can(context.requester, "github.contribute"))
+            const caller = this.caller(operation.signal);
+            if (!caller)
                 throw new Error("GitHub contribution access is unavailable for this requester or run.");
             if (args.run_id !== this.id)
                 throw new Error("GitHub contribution run has expired or belongs to another session.");
@@ -47,7 +57,6 @@ export class GitHubContributionRun {
             if (remaining !== null)
                 this.remaining[tool.name] = remaining - 1;
             const text = (key) => args[key];
-            const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
             const service = this.service();
             const result = await (() => {
                 switch (tool.name) {
@@ -172,5 +181,5 @@ export class GitHubContributionSessions {
     async shutdown() { await Promise.all([...this.connections.keys()].map(key => this.reset(key))); }
 }
 export function githubContributionPrompt(prompt, run) {
-    return run ? `${prompt}\n\n<github-contributions>Current run_id: ${JSON.stringify(run.id)}</github-contributions>` : prompt;
+    return run ? `${prompt}\n\n<github-contributions>Current run_id: ${JSON.stringify(run.id)}\nHost-recorded open contributions owned by this requester in this Discord conversation: ${JSON.stringify(run.activeContributions())}</github-contributions>` : prompt;
 }

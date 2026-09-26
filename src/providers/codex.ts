@@ -429,7 +429,6 @@ export class CodexProvider implements Provider {
   private readonly participationProcesses = new ParticipationProcessRunner();
   private artifactTools = new ArtifactToolSessions();
   private rulesetTools = new RulesetToolSessions();
-  private githubTools = new GitHubContributionSessions();
   readonly name = "codex" as const;
   readonly displayName = "OpenAI Codex";
 
@@ -444,6 +443,7 @@ export class CodexProvider implements Provider {
   constructor(
     private readonly makeClient: (options: CodexOptions) => Pick<Codex, "startThread" | "resumeThread"> = options => new Codex(options),
     private readonly store = new SessionStore("codex"),
+    private readonly githubTools = new GitHubContributionSessions(),
   ) {}
   private histories: Map<string, HistoryEvent[]> = new Map();
   private workingDirOverrides: Map<string, string> = new Map();
