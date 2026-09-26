@@ -268,8 +268,11 @@ export class SlackAdapter {
                 const observedIds = new Set(observed?.messages.map((m)=>m.id));
                 const changed = observed?.messages.some((m)=>state.seen[m.id] && state.seen[m.id] !== fingerprint(m) || state.represented.includes(m.position) && !state.seen[m.id]);
                 const removed = observed?.complete && Object.entries(state.positions).some(([id, pos])=>state.scopes[id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId) < 0 && !observedIds.has(id));
+                const exclusionPolicy = JSON.stringify([
+                    ...this.config.excludedAuthors
+                ].sort());
                 const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
-                if (state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) {
+                if (state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) {
                     await this.engine.resetSession(session);
                     state.seen = {};
                     state.positions = {};
@@ -278,6 +281,7 @@ export class SlackAdapter {
                 }
                 const fresh = result.messages.filter((m)=>!state.seen[m.id] && !state.represented.includes(m.position));
                 const next = {
+                    exclusionPolicy,
                     represented: [
                         ...state.represented,
                         input.sourceMessageId

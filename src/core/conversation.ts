@@ -33,6 +33,8 @@ export interface TrustedAdapterContext<P extends PreparedTurn = PreparedTurn> {
   legacySessionKey?: string;
   /** Optional destination creation after durable admission, before execution. */
   resolveSession?(input: IncomingTurn): Promise<string>;
+  /** Coordinate the resolved destination around queueing, preparation and delivery. */
+  coordinate?(key: string, run: () => Promise<void>): Promise<void>;
   authorize(input: IncomingTurn, stage: "ingress" | "execution" | "delivery"): Promise<boolean>;
   prepare(input: IncomingTurn, key: string, signal: AbortSignal): Promise<P>;
   generate(prepared: P, key: string, signal: AbortSignal, progress: (p: ProgressUpdate) => Promise<void>): Promise<TurnOutput>;

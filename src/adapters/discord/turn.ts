@@ -26,6 +26,7 @@ export async function executeDiscordTurn(
   deliver: (response: AgentResponse, sessionKey: string) => Promise<void>,
   prepare?: (key: string) => Promise<{ prompt: string; attachments?: SendAttachment[]; cleanup?(): Promise<void> }>,
   resolveSession?: () => Promise<string>,
+  coordinate?: (key: string, run: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
   const actor = source.author?.id ?? source.user!.id;
   const tenantId = source.guildId ?? 'direct';
@@ -36,7 +37,7 @@ export async function executeDiscordTurn(
     conversation: { platform: 'discord', tenantId, installationId: 'default', channelId: source.channelId, kind: source.guildId ? 'channel' : 'direct' },
   }, {
     onError: error => { originalError = error; },
-    resolveSession,
+    resolveSession, coordinate,
     platform: 'discord', tenantId, installationId: 'default', audience: 'individual', legacySessionKey: key,
     capabilities: { ...TEXT_CAPABILITIES, attachments: true, history: true, messageLinks: true, memory: true, schedules: true, directMessages: true },
     authorize: async () => {

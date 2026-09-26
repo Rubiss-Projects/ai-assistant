@@ -16,8 +16,9 @@ function setup(){
   throw Error(method);
  }};
  const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
- const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors:new Set(),stateDirectory:dir},api,api,engine,service);
- return {adapter,prompts,posts,journal,changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
+ const excludedAuthors=new Set<string>();
+ const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service);
+ return {adapter,prompts,posts,journal,exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 test('Slack explicit thread mention includes unmentioned discussion and replies in thread',async()=>{
  const f=setup();try{const h=await f.adapter.receive(event('e','1700000003.000000','1700000001.000000'));assert.ok(h);assert.equal((await h.completion).state,'delivered');assert.match(f.prompts[0],/unmentioned clarification/);assert.equal(f.posts[0].thread_ts,'1700000001.000000');assert.ok(f.reads()>0);}finally{await f.close()}
@@ -76,5 +77,19 @@ for(const identity of ['provider-b/session-1','provider-a/session-2'])test('Slac
  const resets=f.resets();f.setHistory([...history,{ts:'1700000004.000000',thread_ts:root,user:'U',text:'<@BOT> question'}]);f.changeIdentity(identity);
  await (await f.adapter.receive(event('identity-changed','1700000005.000000',root)))!.completion;
  assert.equal(f.resets(),resets+1);assert.match(f.prompts[2],/unmentioned clarification/);
+ }finally{await f.close()}
+});
+
+test('changed author exclusions invalidate earlier channel context outside the thread window',async()=>{
+ const f=setup();try{
+ f.setHistory([{ts:'1700000000.000000',user:'FRIEND',text:'old channel secret'}]);
+ await (await f.adapter.receive(event('policy-first','1700000001.000000')))!.completion;
+ assert.match(f.prompts[0],/old channel secret/);const resets=f.resets();
+ f.exclude('FRIEND');f.setHistory([{ts:'1700000001.000000',thread_ts:'1700000001.000000',user:'U',text:'<@BOT> question'}]);
+ await (await f.adapter.receive(event('policy-changed','1700000003.000000','1700000001.000000')))!.completion;
+ assert.equal(f.resets(),resets+1);assert.doesNotMatch(f.prompts[1],/old channel secret/);
+ f.setHistory(['1700000001.000000','1700000003.000000'].map(ts=>({ts,thread_ts:'1700000001.000000',user:'U',text:'<@BOT> question'})));
+ await (await f.adapter.receive(event('policy-stable','1700000004.000000','1700000001.000000')))!.completion;
+ assert.equal(f.resets(),resets+1);
  }finally{await f.close()}
 });
