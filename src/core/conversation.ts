@@ -16,7 +16,7 @@ export const TEXT_CAPABILITIES: Capabilities = {
   threads: true, progress: true, attachments: false, history: false,
   messageLinks: false, memory: false, schedules: false, directMessages: false,
 };
-export interface TurnOutput { content: string; attachments: Array<{ data: Buffer; displayName: string }> }
+export interface TurnOutput { audienceTag?: string; content: string; attachments: Array<{ data: Buffer; displayName: string }> }
 export interface ProgressUpdate { elapsedMs: number; message: string }
 export interface DeliveryReceipt { messageIds: string[] }
 export type TurnState = 'accepted' | 'running' | 'generated' | 'delivering' | 'delivered' | 'failed' | 'cancelled' | 'interrupted';

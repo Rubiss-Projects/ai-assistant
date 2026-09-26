@@ -128,7 +128,7 @@ export function openCodeChildEnvironment(
       const name = agentName ?? openCodeAgentName(systemPrompt);
       config.agent = {
         ...(typeof config.agent === "object" && config.agent !== null ? config.agent : {}),
-        [name]: { mode: "primary", prompt: secureSystemPrompt(systemPrompt, source) },
+        [name]: { mode: "primary", prompt: secureSystemPrompt(systemPrompt, { ...source, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: github ? "true" : "false" }) },
       };
     }
     config.mcp = { ...(config.mcp ?? {}) };
