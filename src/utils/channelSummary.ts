@@ -19,7 +19,15 @@ function rangeFor(prompt: string, invocation: Invocation): Range | string {
   // Check the entire interval, including constraints left after a supported range.
   const validate = (range: Range, matched = ""): Range | string => {
     const remainder = prompt.replace(matched, "").replace(/\bthis\s+(?:channel|chat|conversation)\b/gi, "");
-    if (/\b(?:since|after|before|between|yesterday|today|tomorrow|tonight|last|past|previous|next|during|from|on|over)\b|\b(?:this|recent)\s+\S+|\b(?:january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\b\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?\b|\b\d{1,2}:\d{2}\b/i.test(remainder.replace(/\brecent\s+(?:messages?|conversation|chat)\b/gi, ""))) return "Unsupported range. " + guidance;
+    const temporalConstraints = [
+      /\b(?:last|past|previous|next|recent)\s+\d/i,
+      /\b(?:since|after|before|between)\b/i,
+      /\b(?:yesterday|today|tomorrow|tonight)\b/i,
+      /\b(?:last|past|previous|next|this|recent)\s+(?:(?:\d+(?:\.\d+)?|a|an|one|two|few|several)\s+)?(?:messages?|seconds?|minutes?|hours?|days?|weeks?|months?|years?|morning|afternoon|evening|night|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+      /\b(?:on|in|from|during|over|until|through|at)\s+(?:(?:the|early|late)\s+)?(?:\d{1,4}\b|january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|night|weekend)\b/i,
+      /\b\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?\b|\b\d{1,2}:\d{2}\b/i,
+    ];
+    if (temporalConstraints.some(pattern => pattern.test(remainder.replace(/\brecent\s+(?:messages?|conversation|chat)\b/gi, "")))) return "Unsupported range. " + guidance;
     return range;
   };
   const channels = [...prompt.matchAll(/<#(\d+)>/g)];
