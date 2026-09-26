@@ -178,3 +178,18 @@ test("supported ranges reject additional unsupported or conflicting constraints"
     assert.equal(f.calls.length, 0);
   }
 });
+
+
+test("ordinary summary focus instructions are not temporal constraints", async () => {
+  for (const prompt of [
+    "summarize the last 50 messages and focus on decisions",
+    "summarize messages from the last 2 hours and include next steps",
+    "summarize this channel and highlight decisions that may be important",
+    "summarize recent conversation and focus on the game",
+  ]) {
+    const f = fixture([message(1999)]);
+    const result = await summarize(f, prompt);
+    assert.match(result, /Requested range retrieved/);
+    assert.equal(f.calls.length, 1);
+  }
+});
