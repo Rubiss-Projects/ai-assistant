@@ -1,3 +1,4 @@
+import { discordConversations } from "../../adapters/discord/turn.js";
 import { ChatInputCommandInteraction } from "discord.js";
 import { SessionManager } from "../../sessionManager.js";
 import { interactionSessionKey, interactionSessionLabel } from "../../common/discordSessionKey.js";
@@ -9,7 +10,7 @@ export async function handleReset(
   try {
     const sessionKey = interactionSessionKey(interaction);
     const scope = `${interactionSessionLabel(interaction)} (${sessions.activeProviderDisplayName(sessionKey)})`;
-    await sessions.resetSession(sessionKey);
+    await discordConversations(sessions).serial(sessionKey, () => sessions.resetSession(sessionKey));
     await interaction.reply({
       content: `✅ ${scope} has been reset.`,
       ephemeral: true,
@@ -22,3 +23,4 @@ export async function handleReset(
     });
   }
 }
+
