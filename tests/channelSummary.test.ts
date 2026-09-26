@@ -213,3 +213,62 @@ test("DM summaries bypass guild-history retrieval", async () => {
     assert.equal(await channelSummaryContext(source as never, "summarize this conversation", client as never, () => true), null);
   }
 });
+
+test("agent-selected ranges bypass wording and preserve the exclusive anchor", async () => {
+  const { channelHistoryResolver } = await import("../src/utils/channelSummary.js");
+  const f = fixture([message(1999), message(1998), message(1997)]);
+  const read = channelHistoryResolver(invocation as never, f.client as never);
+  const result = await read({ range: "after_message", message_url: "https://discord.com/channels/1/2/1998" });
+  assert.match(result, /"included":1/);
+  assert.match(result, /message-1999/);
+  assert.doesNotMatch(result, /message-1998|message-1997/);
+});
+
+test("history tool validates ranges before any Discord read", async () => {
+  const { channelHistoryResolver } = await import("../src/utils/channelSummary.js");
+  const client = { channels: { fetch: async () => { throw new Error("unexpected read"); } } };
+  const read = channelHistoryResolver(invocation as never, client as never);
+  for (const args of [
+    { range: "recent", count: "0" }, { range: "recent", count: "1001" },
+    { range: "recent", count: "2.5" }, { range: "recent", count: 10 },
+    { range: "recent", message_url: "https://discord.com/channels/1/2/1998" },
+    { range: "previous_message", requester: "someone-else" },
+    { range: "relative_time", amount: "1", unit: "weeks" },
+    { range: "relative_time", unit: "hours" }, { range: "__proto__" },
+    { range: "after_message", message_url: "https://discord.com/channels/1/3/1998" },
+    { range: "after_message", message_url: "https://discord.com/channels/9/2/1998" },
+    { range: "after_message", message_url: "https://discord.com/channels/1/2/2001" },
+  ]) await assert.rejects(read(args));
+  await assert.rejects(channelHistoryResolver({ ...invocation, guildId: null } as never, client as never)({ range: "recent" }), /DMs/);
+});
+
+test("history tool enforces permissions, membership, filtering and missing anchors", async () => {
+  const { channelHistoryResolver } = await import("../src/utils/channelSummary.js");
+  for (const denied of ["requester", "bot"]) {
+    const f = fixture([message(1999)], { denied });
+    assert.match(await channelHistoryResolver(invocation as never, f.client as never)({ range: "recent" }), /permissions/);
+    assert.equal(f.calls.length, 0);
+  }
+  const privateChannel = fixture([], { privateThread: true, member: "bot" });
+  assert.match(await channelHistoryResolver(invocation as never, privateChannel.client as never)({ range: "recent" }), /membership/);
+  const f = fixture([message(1999), message(1998, "blocked"), message(1997, "requester")]);
+  const read = channelHistoryResolver(invocation as never, f.client as never, id => id !== "blocked");
+  assert.match(await read({ range: "previous_message" }), /"included":1/);
+  assert.match(await read({ range: "after_message", message_url: "https://discord.com/channels/1/2/1996" }), /could not be retrieved/);
+});
+
+test("history tool snapshots cutoff and uses invocation time, defaults and cancellation", async () => {
+  const { channelHistoryResolver } = await import("../src/utils/channelSummary.js");
+  const source = { ...invocation };
+  const f = fixture([message(2001), message(1999), message(1998, "friend", { timestamp: "2026-09-23T14:59:00Z" })]);
+  const read = channelHistoryResolver(source as never, f.client as never);
+  source.id = "3000";
+  source.createdTimestamp += 86_400_000;
+  assert.match(await read({ range: "recent" }), /"count":100/);
+  const result = await read({ range: "relative_time", amount: "1", unit: "hours" });
+  assert.match(result, /"included":1/);
+  assert.doesNotMatch(result, /message-2001|message-1998/);
+  const count = f.calls.length;
+  await read({ range: "recent" }, AbortSignal.abort());
+  assert.equal(f.calls.length, count);
+});

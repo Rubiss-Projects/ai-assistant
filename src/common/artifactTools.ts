@@ -18,6 +18,7 @@ export class ArtifactTools {
   readonly controller = new AbortController();
   private queue: Promise<unknown> = Promise.resolve();
   private calls = 0;
+  private historyCalls = 0;
   private downloadedBytes = 0;
   private candidates = new Map<string, ArtifactCandidate>();
   private downloads = new Map<string, unknown>();
@@ -61,6 +62,11 @@ export class ArtifactTools {
       if (!schema || Object.keys(args).some((key) => !Object.hasOwn(schema.properties, key))) throw new Error("Invalid artifact tool arguments.");
       for (const key of schema.required) if (typeof args[key] !== "string" || !(args[key] as string).trim()) throw new Error(`Missing ${key}.`);
       for (const value of Object.values(args)) if (typeof value !== "string" || value.length > 8192) throw new Error("Tool arguments must be short strings.");
+      if (name === "fetch_channel_history") {
+        if (!this.options?.resolveChannelHistory || this.options.contextProfile === "scheduled" || this.options.contextProfile === "ephemeral") throw new Error("Channel history is unavailable for this run.");
+        if (++this.historyCalls > 3) throw new Error("Channel history call limit reached for this response.");
+        return abortable(this.options.resolveChannelHistory(args, this.controller.signal), this.controller.signal);
+      }
       if (name === "fetch_webpage") return this.webpage(args);
       if (name === "report_lookup") return this.reportLookup(args);
       if (name === "fetch_artifact") return this.fetch(args);

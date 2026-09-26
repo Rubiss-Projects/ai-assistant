@@ -1,4 +1,4 @@
-import { channelSummaryContext } from "./channelSummary.js";
+import { isChannelSummaryRequest } from "./channelSummary.js";
 import { randomUUID } from "crypto";
 import {
   ChannelType,
@@ -375,8 +375,9 @@ async function enrichOtherDiscordKnowledge(invocation: Invocation, prompt: strin
 
 /** Explicit intent metadata keeps summary history out of ambient enrichment. */
 export async function enrichDiscordRequest(invocation: Invocation, prompt: string, client: Client, canIncludeAuthor: (authorId: string) => boolean = () => true, infer?: AgentInference): Promise<{ prompt: string; isChannelSummary: boolean }> {
-  const summary = await channelSummaryContext(invocation, prompt, client, canIncludeAuthor);
-  if (summary !== null) return { prompt: summary, isChannelSummary: true };
+  // This legacy hint only suppresses ambient enrichment. The agent selects the
+  // history tool and structured range; regexes never gate retrieval or pick a range.
+  if (invocation.guildId && isChannelSummaryRequest(prompt)) return { prompt, isChannelSummary: true };
   return { prompt: await enrichOtherDiscordKnowledge(invocation, prompt, client, canIncludeAuthor, infer), isChannelSummary: false };
 }
 

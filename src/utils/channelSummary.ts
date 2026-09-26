@@ -62,8 +62,14 @@ export async function channelSummaryContext(invocation: Invocation, prompt: stri
   const notice = (text: string) => `[Channel summary unavailable: ${text} Explain this limitation; do not invent a summary from other context.]\n\n${prompt}`;
   const range = rangeFor(prompt, invocation);
   if (typeof range === "string") return notice(range);
+  return retrieveChannelSummary(invocation, prompt, range, client, canIncludeAuthor);
+}
+
+async function retrieveChannelSummary(invocation: Invocation, prompt: string, range: Range, client: Client, canIncludeAuthor: (id: string) => boolean, signal?: AbortSignal): Promise<string> {
+  const notice = (text: string) => `[Channel summary unavailable: ${text} Explain this limitation; do not invent a summary from other context.]\n\n${prompt}`;
   const requester = "user" in invocation ? invocation.user.id : invocation.author.id;
   try {
+    signal?.throwIfAborted();
     const channel = await client.channels.fetch(invocation.channelId);
     if (!channel || channel.isDMBased() || !("guildId" in channel) || channel.guildId !== invocation.guildId || !("messages" in channel)) return notice("This channel has no readable message history.");
     for (const id of [requester, client.user?.id]) {
@@ -83,6 +89,7 @@ export async function channelSummaryContext(invocation: Invocation, prompt: stri
     let anchor: string | undefined;
     const selected: APIMessage[] = [];
     while (scanned < SCAN_LIMIT && !done) {
+      signal?.throwIfAborted();
       const limit = Math.min(CHANNEL_SUMMARY_CAPABILITIES.limits.pageMessages, SCAN_LIMIT - scanned, range.kind === "recent" ? range.count - scanned : SCAN_LIMIT);
       const page = await client.rest.get(Routes.channelMessages(channel.id), { query: new URLSearchParams({ before, limit: String(limit) }) }) as APIMessage[];
       if (page.length === 0) { done = true; break; }
@@ -117,9 +124,44 @@ export async function channelSummaryContext(invocation: Invocation, prompt: stri
       if (size + record.length + 1 > TEXT_LIMIT) { clipped = true; break; }
       records.push(record); size += record.length + 1;
     }
+    signal?.throwIfAborted();
     const partial = !done || clipped;
     return `[Channel summary source]\n${CHANNEL_SUMMARY_SOURCE_INSTRUCTIONS}\n${JSON.stringify({ channelId: channel.id, range, anchor, scanned, included: records.length, partial, coverage: partial ? "PARTIAL: retrieval or text limit reached; older messages omitted" : "Requested range retrieved", exclusions: "Bot messages and authors excluded by access policy are omitted. Attachments are counted, not read.", empty: records.length === 0 })}\n${records.reverse().join("\n")}\n[/Channel summary source]\n\n${prompt}`;
   } catch {
     return notice("Discord history could not be retrieved. Please try again; no complete summary is available.");
   }
+}
+
+/** Bind identity, channel and cutoff to the current host invocation, never tool arguments. */
+export function channelHistoryResolver(invocation: Invocation, client: Client, canIncludeAuthor: (id: string) => boolean = () => true) {
+  // Snapshot the boundary before a queued response begins.
+  const source = {
+    id: invocation.id, guildId: invocation.guildId, channelId: invocation.channelId,
+    createdTimestamp: invocation.createdTimestamp,
+    author: { id: "user" in invocation ? invocation.user.id : invocation.author.id },
+  } as Invocation;
+  return async (args: Record<string, unknown>, signal?: AbortSignal): Promise<string> => {
+    if (!source.guildId) throw new Error("Channel history is unavailable in DMs. Use the existing conversation context.");
+    const fields: Record<string, string[]> = { previous_message: [], recent: ["count"], after_message: ["message_url"], relative_time: ["amount", "unit"] };
+    const kind = typeof args.range === "string" ? args.range : "";
+    if (!Object.hasOwn(fields, kind) || Object.keys(args).some(key => !["run_id", "range", ...fields[kind]].includes(key))) throw new Error("Choose one supported range without additional constraints.");
+    const integer = (value: unknown, limit: number): number => {
+      if (typeof value !== "string" || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1 || Number(value) > limit) throw new Error(`Use an integer between 1 and ${limit}.`);
+      return Number(value);
+    };
+    let range: Range;
+    if (kind === "previous_message") range = { kind: "last" };
+    else if (kind === "recent") range = { kind: "recent", count: args.count === undefined ? CHANNEL_SUMMARY_CAPABILITIES.limits.defaultMessages : integer(args.count, SCAN_LIMIT) };
+    else if (kind === "relative_time") {
+      const units: Record<string, number> = { minutes: 60_000, hours: 3_600_000, days: 86_400_000 };
+      if (typeof args.unit !== "string" || !Object.hasOwn(units, args.unit)) throw new Error("Choose minutes, hours, or days.");
+      range = { kind: "time", timestamp: source.createdTimestamp - integer(args.amount, CHANNEL_SUMMARY_CAPABILITIES.limits.durationAmount) * units[args.unit] };
+    } else {
+      const link = typeof args.message_url === "string" ? args.message_url.match(/^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+)$/i) : null;
+      if (!link || link[1] !== source.guildId || link[2] !== source.channelId) throw new Error("Provide a message link from the invoking channel.");
+      if (BigInt(link[3]) >= BigInt(source.id)) throw new Error("The starting message must be older than this request.");
+      range = { kind: "after", id: link[3] };
+    }
+    return retrieveChannelSummary(source, "", range, client, canIncludeAuthor, signal);
+  };
 }
