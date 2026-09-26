@@ -9,12 +9,14 @@ import { createAccessPolicy } from "../src/common/accessPolicy.js";
 import { GitHubContributions, validateContributionChanges, type ContributionCaller } from "../src/common/githubContributions.js";
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "../src/common/githubContributionApi.js";
 import { githubContributionsEnabled, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "../src/common/githubContributionConfig.js";
-import { GitHubContributionRun, GitHubContributionSessions } from "../src/common/githubContributionToolBridge.js";
+import { GitHubContributionRun, GitHubContributionSessions, githubContributionPrompt } from "../src/common/githubContributionToolBridge.js";
 import { githubContributionCallLimits } from "../src/common/githubContributionToolDefinitions.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, type ReviewThread } from "../src/common/githubContributionReviews.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { providerChildEnvironment, secureSystemPrompt } from "../src/common/providerSecurity.js";
-import { codexClientOptions } from "../src/providers/codex.js";
+import { CodexProvider, codexClientOptions } from "../src/providers/codex.js";
+import type { Codex, Thread } from "@openai/codex-sdk";
+import { SessionStore } from "../src/common/sessionStore.js";
 import { openCodeChildEnvironment } from "../src/providers/opencode.js";
 import { createCopilotPermissionHandler } from "../src/providers/copilot.js";
 import { writeReviewState, type ReviewTransport } from "../src/common/codexReviewWorker.js";
@@ -258,6 +260,117 @@ test("a contribution keeps identity, unchanged files, and session ownership thro
   await assert.rejects(service.read({ ...caller, session: "thread:two" }, started.contribution_id, "src/main.ts"), /another Discord/);
   await assert.rejects(service.status({ ...caller, requester: { ...caller.requester, userId: "456" } }, started.contribution_id), /another Discord/);
   await assert.rejects(service.status({ ...caller, requester: { ...caller.requester, guildId: "different" } }, started.contribution_id), /another Discord/);
+});
+
+test("turn context restores only the current owner's open contributions without changing state or tool budgets", async t => {
+  const { service, api, caller, config } = fixture(t);
+  const options = { rulesetContext: { requester: caller.requester, access: caller.access } };
+  const fingerprint = resolveSessionContext().fingerprint;
+  const started = await service.begin(caller, repository.upstream);
+  const published = await service.publish(caller, started.contribution_id, started.head_sha, "docs: update", "", [{ path: "README.md", content: "Updated" }]);
+  const run = new GitHubContributionRun(caller.session, options, () => service);
+  t.after(() => run.cancel());
+  const state = readFileSync(config.stateFile, "utf8"), requests = api.calls.length;
+  const prompt = githubContributionPrompt("Continue the requested fix.", run);
+  assert.match(prompt, new RegExp(published.contribution_id));
+  assert.ok(prompt.includes(published.pull_request_url!));
+  assert.equal(api.calls.length, requests);
+  assert.equal(readFileSync(config.stateFile, "utf8"), state);
+  assert.equal(resolveSessionContext().fingerprint, fingerprint);
+  assert.deepEqual((await run.call("github_contribution_status", { run_id: run.id, contribution_id: published.contribution_id }) as { remaining_calls: unknown }).remaining_calls,
+    { ...githubContributionCallLimits(), github_contribution_status: 9 });
+
+  for (const other of [
+    { ...caller, session: "another-conversation" },
+    { ...caller, requester: { ...caller.requester, userId: "456" } },
+    { ...caller, requester: { ...caller.requester, guildId: "another-server" } },
+  ]) {
+    const isolated = new GitHubContributionRun(other.session, { rulesetContext: { requester: other.requester, access: other.access } }, () => service);
+    t.after(() => isolated.cancel());
+    assert.deepEqual(isolated.activeContributions(), []);
+    assert.ok(!githubContributionPrompt("Continue", isolated).includes(published.contribution_id));
+    await assert.rejects(isolated.call("github_contribution_status", { run_id: isolated.id, contribution_id: published.contribution_id }), /another Discord/);
+  }
+  for (const restrictedOptions of [undefined, { ...options, contextProfile: "one-shot" as const },
+    { rulesetContext: { requester: caller.requester, access: createAccessPolicy({ GITHUB_CONTRIBUTIONS_ACCESS: "granted" }) } }]) {
+    const restricted = new GitHubContributionRun(caller.session, restrictedOptions, () => { throw new Error("Must not read contribution state"); });
+    assert.deepEqual(restricted.activeContributions(), []);
+  }
+  api.pulls[0].state = "closed";
+  await service.status(caller, published.contribution_id);
+  assert.deepEqual(run.activeContributions(), []);
+  await run.cancel();
+  assert.throws(() => run.activeContributions(), /abort/i);
+});
+
+test("Codex context refresh and restart can revise the same PR even when its handoff omits contribution references", async t => {
+  const { service: initialService, api, caller, config, directory } = fixture(t);
+  const previous = process.env.AI_ASSISTANT_SYSTEM_PROMPT;
+  t.after(() => { if (previous === undefined) delete process.env.AI_ASSISTANT_SYSTEM_PROMPT; else process.env.AI_ASSISTANT_SYSTEM_PROMPT = previous; });
+  const started = await initialService.begin(caller, repository.upstream);
+  const published = await initialService.publish(caller, started.contribution_id, started.head_sha, "docs: initial change", "", [{ path: "README.md", content: "Initial change" }]);
+  const sessionFile = join(directory, "sessions.json");
+  const store = new SessionStore("test", sessionFile);
+  store.set(caller.session, "original-provider-thread", resolveSessionContext().applied);
+  process.env.AI_ASSISTANT_SYSTEM_PROMPT = "Refreshed operator instructions.";
+  let service = initialService;
+  let github = new GitHubContributionSessions(() => service);
+  let summaries = 0, replacements = 0, revisions = 0;
+  const runIds = new Set<string>();
+  const thread = () => ({ id: "replacement-provider-thread", runStreamed: async (input: unknown) => ({
+    events: (async function* () {
+      const prompt = String(input);
+      assert.ok(prompt.includes(published.contribution_id), "the host must restore the contribution omitted by the summary");
+      assert.ok(prompt.includes(published.pull_request_url!));
+      const runId = prompt.match(/<github-contributions>Current run_id: "([^"]+)"/)?.[1];
+      assert.ok(runId);
+      assert.ok(!runIds.has(runId)); runIds.add(runId);
+      yield { type: "thread.started", thread_id: "replacement-provider-thread" };
+      const bridge = await github.config(caller.session);
+      const call = async (name: string, args: Record<string, unknown>) => {
+        const response = await fetch(bridge.env.AI_GITHUB_BRIDGE_URL, { method: "POST", headers: { authorization: `Bearer ${bridge.env.AI_GITHUB_BRIDGE_TOKEN}` },
+          body: JSON.stringify({ name, arguments: { run_id: runId, contribution_id: published.contribution_id, ...args } }) });
+        const result = await response.json() as { isError?: boolean; content: { text: string }[] };
+        assert.equal(result.isError, undefined, result.content[0].text);
+        return JSON.parse(result.content[0].text) as { head_sha: string; pull_request_url: string };
+      };
+      const status = await call("github_contribution_status", {});
+      const revised = await call("github_contribution_publish", { expected_head_sha: status.head_sha, title: "docs: requested follow-up", body: "Tested.",
+        changes: [{ path: "README.md", content: `Revision ${++revisions}` }] });
+      assert.equal(revised.pull_request_url, published.pull_request_url);
+      yield { type: "item.completed", item: { id: "answer", type: "agent_message", text: "Revised the original PR." } };
+      yield { type: "turn.completed", usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 } };
+    })(),
+  }) }) as unknown as Thread;
+  const client: Pick<Codex, "startThread" | "resumeThread"> = {
+    resumeThread: id => {
+      if (id === "original-provider-thread") return { run: async () => {
+        summaries++;
+        return { finalResponse: JSON.stringify({ summary: "The user requested a README follow-up." }), items: [], usage: null };
+      } } as unknown as Thread;
+      assert.equal(id, "replacement-provider-thread");
+      return thread();
+    },
+    startThread: () => { replacements++; return thread(); },
+  };
+  let provider = new CodexProvider(() => client, store, github);
+  t.after(() => provider.shutdown());
+  provider.setSessionWorkingDir(caller.session, process.env.AI_ASSISTANT_WORKSPACE_ROOT!);
+  const options = { rulesetContext: { requester: caller.requester, access: caller.access } };
+  await provider.sendMessage(caller.session, "Continue the requested fix.", undefined, options);
+  assert.equal(store.get(caller.session), "replacement-provider-thread");
+  await provider.shutdown();
+  service = new GitHubContributions(config, api);
+  github = new GitHubContributionSessions(() => service);
+  provider = new CodexProvider(() => client, new SessionStore("test", sessionFile), github);
+  provider.setSessionWorkingDir(caller.session, process.env.AI_ASSISTANT_WORKSPACE_ROOT!);
+  await provider.sendMessage(caller.session, "Finish the requested fix.", undefined, options);
+  assert.equal(summaries, 1);
+  assert.equal(replacements, 1);
+  assert.equal(revisions, 2);
+  assert.equal(api.pulls.length, 1);
+  assert.equal((await service.begin(caller, repository.upstream)).contribution_id, published.contribution_id);
+  assert.equal((await service.read(caller, published.contribution_id, "README.md")).content, "Revision 2");
 });
 
 test("publishing fails closed for invalid changes, identity changes, stale heads, and closed PRs", async t => {

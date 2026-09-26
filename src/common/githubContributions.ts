@@ -9,6 +9,7 @@ import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type G
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "./githubContributionConfig.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion, type ReviewThread } from "./githubContributionReviews.js";
 
+/** session is the stable Discord conversation key, never a provider thread ID or turn run ID. */
 export interface ContributionCaller { session: string; requester: AccessSubject; access: AccessPolicy; signal: AbortSignal }
 interface Contribution {
   id: string; session: string; user: string; guild: string | null; repository: string;
@@ -151,9 +152,12 @@ export class GitHubContributions {
     finally { fs.rmSync(temporary, { force: true }); }
     this.records = records;
   }
+  private isOwner(caller: ContributionCaller, record: Contribution): boolean {
+    return record.session === caller.session && record.user === caller.requester.userId && record.guild === (caller.requester.guildId ?? null);
+  }
   private owned(caller: ContributionCaller, id: string): Contribution {
     const record = this.records.find(item => item.id === id);
-    if (!record || record.session !== caller.session || record.user !== caller.requester.userId || record.guild !== (caller.requester.guildId ?? null)) {
+    if (!record || !this.isOwner(caller, record)) {
       throw new Error("Contribution belongs to another Discord requester or session, or no longer exists.");
     }
     return { ...record };
@@ -225,6 +229,16 @@ export class GitHubContributions {
       pull_request_url: record.pull ? `https://github.com/${record.repository}/pull/${record.pull}` : undefined, closed: record.closed };
   }
 
+  /** Restore durable contribution references after a handoff without remote requests or writes. */
+  activeContributions(caller: ContributionCaller) {
+    this.authorize(caller);
+    return this.records.filter(record => !record.closed && this.isOwner(caller, record)).map(record => ({
+      contribution_id: record.id,
+      repository: record.repository,
+      pull_request_url: record.pull ? `https://github.com/${record.repository}/pull/${record.pull}` : undefined,
+    }));
+  }
+
   /** Reconcile an already-authorized publish before advertising a head for the next edit. */
   private async refresh(caller: ContributionCaller, record: Contribution): Promise<PullRequest | undefined> {
     const pull = record.published || record.pendingSha ? await this.currentPull(caller, record) : undefined;
@@ -256,7 +270,7 @@ export class GitHubContributions {
     return this.serial(caller, async () => {
       const repository = this.repository(repositoryName);
       const upstream = await this.verify(caller, repository);
-      let record = this.records.find(item => item.session === caller.session && item.user === caller.requester.userId && item.guild === (caller.requester.guildId ?? null) && item.repository === repositoryName && !item.closed);
+      let record = this.records.find(item => this.isOwner(caller, item) && item.repository === repositoryName && !item.closed);
       if (record) {
         record = { ...record };
         await this.refresh(caller, record);

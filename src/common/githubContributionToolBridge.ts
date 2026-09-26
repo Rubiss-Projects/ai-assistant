@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SendMessageOptions } from "../providers/types.js";
 import { githubContributionsEnabled, contributionReviewsEnabled } from "./githubContributionConfig.js";
-import { githubContributionService, validateContributionChanges, type GitHubContributions } from "./githubContributions.js";
+import { githubContributionService, validateContributionChanges, type ContributionCaller, type GitHubContributions } from "./githubContributions.js";
 import { githubContributionCallLimits, GITHUB_CONTRIBUTION_TIMEOUT_MS, githubContributionTools } from "./githubContributionToolDefinitions.js";
 import { operationSignal } from "./operationSignal.js";
 
@@ -15,14 +15,23 @@ export class GitHubContributionRun {
   private readonly pending = new Set<Promise<unknown>>();
   private readonly remaining = githubContributionCallLimits();
   constructor(private readonly session: string, private readonly options: SendMessageOptions | undefined, private readonly service: () => GitHubContributions = githubContributionService, private readonly timeoutMs = GITHUB_CONTRIBUTION_TIMEOUT_MS) {}
+  private caller(signal: AbortSignal): ContributionCaller | undefined {
+    const context = this.options?.rulesetContext;
+    if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
+      || !context.access.can(context.requester, "github.contribute")) return undefined;
+    return { session: this.session, requester: context.requester, access: context.access, signal };
+  }
+  activeContributions() {
+    const caller = this.caller(this.controller.signal);
+    return caller ? this.service().activeContributions(caller) : [];
+  }
   call(name: string, args: Record<string, unknown>): Promise<unknown> {
     // This budget includes queueing, token minting, and all sequential GitHub requests.
     const operation = operationSignal(this.controller.signal, this.timeoutMs, "GitHub contribution timed out. Check its status before retrying.");
     const action = Promise.resolve().then(async () => {
       operation.signal.throwIfAborted();
-      const context = this.options?.rulesetContext;
-      if (!githubContributionsEnabled() || (this.options?.contextProfile ?? "conversation") !== "conversation" || !context?.requester || !context.access
-        || !context.access.can(context.requester, "github.contribute")) throw new Error("GitHub contribution access is unavailable for this requester or run.");
+      const caller = this.caller(operation.signal);
+      if (!caller) throw new Error("GitHub contribution access is unavailable for this requester or run.");
       if (args.run_id !== this.id) throw new Error("GitHub contribution run has expired or belongs to another session.");
       const tool = githubContributionTools().find(tool => tool.name === name);
       if (!tool || Object.keys(args).some(key => !Object.hasOwn(tool.inputSchema.properties, key))) throw new Error("Invalid contribution tool arguments.");
@@ -35,7 +44,6 @@ export class GitHubContributionRun {
       const remaining = this.remaining[tool.name];
       if (remaining !== null) this.remaining[tool.name] = remaining - 1;
       const text = (key: string) => args[key] as string;
-      const caller = { session: this.session, requester: context.requester, access: context.access, signal: operation.signal };
       const service = this.service();
       const result = await (() => {
         switch (tool.name) {
@@ -136,5 +144,5 @@ export class GitHubContributionSessions {
 }
 
 export function githubContributionPrompt(prompt: string, run?: GitHubContributionRun): string {
-  return run ? `${prompt}\n\n<github-contributions>Current run_id: ${JSON.stringify(run.id)}</github-contributions>` : prompt;
+  return run ? `${prompt}\n\n<github-contributions>Current run_id: ${JSON.stringify(run.id)}\nHost-recorded open contributions owned by this requester in this Discord conversation: ${JSON.stringify(run.activeContributions())}</github-contributions>` : prompt;
 }
