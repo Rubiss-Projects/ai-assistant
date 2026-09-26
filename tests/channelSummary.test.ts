@@ -162,3 +162,19 @@ test("missing linked anchors fail before scanning history", async () => {
   assert.equal(f.calls.length, 0);
   assert.doesNotMatch(result, /Requested range retrieved/);
 });
+
+
+test("supported ranges reject additional unsupported or conflicting constraints", async () => {
+  for (const prompt of [
+    "summarize the last 50 messages on 2026-09-20",
+    "summarize messages from the last 2 hours before 1:37",
+    "summarize the last 50 messages from the last 2 weeks",
+    "summarize messages in September",
+    "summarize messages since https://discord.com/channels/1/2/1998 before yesterday",
+    "summarize messages since my last message before yesterday",
+  ]) {
+    const f = fixture([message(1999), message(1998)]);
+    assert.match(await summarize(f, prompt), /Unsupported range/);
+    assert.equal(f.calls.length, 0);
+  }
+});
