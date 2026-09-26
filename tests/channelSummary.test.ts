@@ -202,3 +202,14 @@ test("unsupported age-based intervals never fall back to recent messages", async
     assert.equal(f.calls.length, 0);
   }
 });
+
+
+test("DM summaries bypass guild-history retrieval", async () => {
+  const client = { channels: { fetch: async () => { throw new Error("must not fetch DM history"); } } };
+  for (const source of [
+    { ...invocation, guildId: null },
+    { ...invocation, guildId: null, user: { id: "requester" } },
+  ]) {
+    assert.equal(await channelSummaryContext(source as never, "summarize this conversation", client as never, () => true), null);
+  }
+});
