@@ -164,6 +164,7 @@ async function sendUntilIdle(session, message, options) {
     });
 }
 export class CopilotProvider {
+    store;
     artifactTools = new ArtifactToolSessions();
     rulesetTools = new RulesetToolSessions();
     githubTools = new GitHubContributionSessions();
@@ -174,14 +175,14 @@ export class CopilotProvider {
     pending = new Map();
     sessionOperationQueues = new Map();
     messageQueues = new Map();
-    store = new SessionStore(this.name);
     workingDirOverrides = new Map();
     sessionWorkingDirectories = new Map();
     sessionConnectionFingerprints = new Map();
     sessionContexts = new Map();
     mcpToolOverrides = new Map();
     reasoningEffortOverrides = new Map();
-    constructor(){
+    constructor(store = new SessionStore('copilot')){
+        this.store = store;
         this.client = new CopilotClient(copilotClientOptions());
     }
     async getOrCreateSession(key, requestedContext) {

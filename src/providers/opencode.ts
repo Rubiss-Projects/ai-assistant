@@ -304,7 +304,7 @@ export class OpenCodeProvider implements Provider {
   readonly displayName = "OpenCode";
 
   private sessions: Map<string, string> = new Map(); // key -> opencode session id (live)
-  private store: SessionStore = new SessionStore(this.name);
+  constructor(private readonly store: SessionStore = new SessionStore('opencode')) {}
   private histories: Map<string, HistoryEvent[]> = new Map();
   private workingDirOverrides: Map<string, string> = new Map();
   private modelOverrides: Map<string, string> = new Map();
@@ -621,4 +621,3 @@ export class OpenCodeProvider implements Provider {
     this.messageQueues.clear();
   }
 }
-

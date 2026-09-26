@@ -443,7 +443,7 @@ export async function startSlack() {
     const service = new ConversationService(new FileTurnJournal(join(directory, 'slack-turns')));
     let engine;
     try {
-        engine = await createTextEngine(process.env.PROVIDER || 'copilot', join(directory, 'slack-fake'));
+        engine = await createTextEngine(process.env.PROVIDER || 'copilot', join(directory, 'slack-provider-state'));
     } catch (error) {
         await service.shutdown();
         throw error;

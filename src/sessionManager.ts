@@ -1,5 +1,7 @@
 import { chunkForDiscord } from "./common/chunkForDiscord.js";
 import { ProviderStore } from "./common/providerStore.js";
+import { SessionStore } from "./common/sessionStore.js";
+import { join } from "node:path";
 import { createProvider, isValidProviderName } from "./providers/index.js";
 import { PROVIDERS, normalizeProviderName, isUnsupported, RunTimeoutError, UnsupportedError, type Provider } from "./providers/types.js";
 import type {
@@ -64,12 +66,12 @@ export class SessionManager {
   private overrides: Map<string, string> = new Map(); // session key -> provider name
   private store: ProviderStore;
 
-  constructor(defaultName?: string, store?: ProviderStore) {
+  constructor(defaultName?: string, store?: ProviderStore, private readonly storeDirectory?: string) {
     const name = normalizeProviderName(defaultName ?? process.env.PROVIDER);
     if (!isValidProviderName(name)) {
       throw new Error(`Unknown PROVIDER "${name}". Choose one of: ${PROVIDERS.join(", ")}.`);
     }
-    this.store = store ?? new ProviderStore();
+    this.store = store ?? new ProviderStore(storeDirectory ? join(storeDirectory, 'providers.json') : undefined);
     this.name = name;
     this.displayName = this.getProvider(name).displayName;
     // Hydrate persisted per-key overrides.
@@ -84,7 +86,7 @@ export class SessionManager {
     this.assertAcceptingWork();
     let provider = this.providers.get(name);
     if (!provider) {
-      provider = createProvider(name);
+      provider = createProvider(name, this.storeDirectory ? new SessionStore(name, join(this.storeDirectory, `sessions-${name}.json`)) : undefined);
       this.providers.set(name, provider);
     }
     return provider;

@@ -57,7 +57,7 @@ export async function runCli(args = process.argv.slice(3)) {
         });
     const print = (data)=>process.stdout.write((opts.json ? JSON.stringify(data) : String(data)) + '\n');
     try {
-        engine = await createTextEngine(opts.provider || process.env.PROVIDER || 'copilot', join(directory, 'fake'));
+        engine = await createTextEngine(opts.provider || process.env.PROVIDER || 'copilot', join(directory, 'cli-provider-state'));
         const reset = async ()=>{
             if (process.env.AI_ASSISTANT_CLI_ALLOW_RESET === 'false') throw new Error('Reset is disabled by local policy.');
             await service.serial(sessionKey(input(''), 'individual'), ()=>engine.resetSession(sessionKey(input(''), 'individual')));

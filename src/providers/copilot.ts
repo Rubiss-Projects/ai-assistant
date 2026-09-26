@@ -225,7 +225,6 @@ export class CopilotProvider implements Provider {
   // Serializes concurrent sendMessage calls per session to prevent state corruption
   private messageQueues: Map<string, Promise<unknown>> = new Map();
   // Persists Discord key → Copilot session ID across restarts
-  private store: SessionStore = new SessionStore(this.name);
   // Per-session working directory override (affects MCP loading and agent file ops)
   private workingDirOverrides: Map<string, string> = new Map();
   // Directory actually bound into each live SDK session.
@@ -238,7 +237,7 @@ export class CopilotProvider implements Provider {
   // Per-session reasoning-effort override (host tracks the effective value)
   private reasoningEffortOverrides: Map<string, ReasoningEffort> = new Map();
 
-  constructor() {
+  constructor(private readonly store: SessionStore = new SessionStore('copilot')) {
     this.client = new CopilotClient(copilotClientOptions());
   }
 
