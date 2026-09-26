@@ -1,3 +1,4 @@
+import { channelHistoryResolver } from "../utils/channelSummary.js";
 import { Message, Client } from "discord.js";
 import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../sessionManager.js";
 import { resolveMessageLinks } from "../utils/resolveMessageLinks.js";
@@ -153,6 +154,7 @@ export async function handleMention(
       {
         rulesetContext: mentionOptions.rulesetContext,
         userInstructionContext: { guildId: message.guildId, userId: message.author.id, userDisplayName: message.author.displayName ?? message.author.username },
+        resolveChannelHistory: channelHistoryResolver(message, client, canIncludeContextAuthor),
         resolveArtifactMessage: artifactMessageResolver(client, message.author.id, canIncludeContextAuthor),
         onProgress: ({ elapsedMs }) => {
           progressUpdates = progressUpdates.catch(() => {}).then(async () => {

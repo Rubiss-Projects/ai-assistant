@@ -875,6 +875,10 @@ ai-assistant.service    # systemd unit template (%%PLACEHOLDER%% vars, patched b
 
 ### Channel summaries
 
+The agent interprets natural-language catch-up requests and invokes `fetch_channel_history` through the shared host-tool bridge. Exact wording and link placement are not required: “can you give a summary of everything since this message?” followed by a message link, or “here is the link; catch me up from there”, can select the same range. The tool is available in server mentions, `/chat`, and permitted `/ask` across providers. It uses the current artifact run ID, allows at most three calls per response, and binds the requester, channel, and cutoff to the host invocation. It is unavailable for DM, scheduled, and internal ephemeral history retrieval.
+
+Tool arguments select one range: `previous_message`, `after_message` with `message_url`, `recent` with optional `count`, or `relative_time` with `amount` and `unit` (`minutes`, `hours`, or `days`). Numeric arguments are decimal strings. The host validates bounds, links, permissions, and author filtering. The agent asks for clarification instead of dropping unsupported or conflicting constraints. A legacy wording hint still suppresses ambient context for recognized summary phrases; it no longer retrieves history or selects the interval. History returned by the tool contains attachment counts only.
+
 Mention the bot in the channel to catch up on its conversation, or use the same request with `/chat` (and `/ask` where permitted):
 
 - `@Rook summarize everything since my last message`

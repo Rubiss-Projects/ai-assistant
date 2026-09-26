@@ -1,3 +1,4 @@
+import { handleAsk } from "../src/handlers/slash/ask.js";
 import { enrichDiscordRequest } from "../src/utils/discordKnowledge.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -15,7 +16,9 @@ function fixture() {
   };
   const client = { user: { id: "bot" }, channels: { fetch: async () => channel }, rest: { get: async () => [] } };
   const sent: string[] = [];
-  const sessions = { sendMessage: async (_key, prompt, attachments) => {
+  const sessions = { sendMessage: async (_key, prompt, attachments, options) => {
+    assert.equal(typeof options.resolveChannelHistory, "function");
+    assert.match(await options.resolveChannelHistory({ range: "recent", count: "2" }), /"included":0/);
     assert.equal(attachments, undefined);
     sent.push(prompt);
     return { content: "No messages", attachments: [] };
@@ -34,7 +37,7 @@ for (const prompt of ["summarize the last 50 messages", "summarize messages on 2
       participation: { context: "AMBIENT HISTORY", requests: [{ attachments: new Map([["file", attachment]]) } as never], attachments: [attachment] },
     });
     assert.equal(f.sent.length, 1);
-    assert.match(f.sent[0], /Channel summary/);
+    assert.equal(f.sent[0], prompt);
     assert.doesNotMatch(f.sent[0], /AMBIENT HISTORY|history.txt/);
     assert.equal(f.ambientReads(), 0);
   });
@@ -75,4 +78,31 @@ test("DM summary enrichment preserves the prompt and ordinary conversation metad
     const result = await enrichDiscordRequest(source as never, prompt, {} as never);
     assert.deepEqual(result, { prompt, isChannelSummary: false });
   }
+});
+
+for (const prompt of [
+  "can you give a summary of everything since this message? https://discord.com/channels/1/2/1998",
+  "https://discord.com/channels/1/2/1998 — catch me up from there",
+  "What have I missed since I last spoke?",
+]) {
+  test(`natural wording reaches the agent with history tools: ${prompt}`, async () => {
+    const f = fixture();
+    const message = { id: "2000", guildId: "1", channelId: "2", channel: f.channel,
+      content: `<@bot> ${prompt}`, author: { id: "user", username: "user" },
+      createdTimestamp: Date.now(), attachments: new Map(), mentions: { has: () => true }, reply: async () => ({}) };
+    await handleMention(message as never, f.client as never, f.sessions as never);
+    assert.equal(f.sent.length, 1);
+    assert.ok(f.sent[0].includes(prompt));
+  });
+}
+
+test("ask exposes a history reader bound to the original guild invocation", async () => {
+  const f = fixture();
+  const durable = { edit: async () => ({}), reply: async () => ({}) };
+  const interaction = { id: "2000", guildId: "1", channelId: "2", client: f.client,
+    user: { id: "user", username: "user", send: async () => durable }, createdTimestamp: Date.now(),
+    options: { getString: name => name === "prompt" ? "catch me up" : null, getAttachment: () => null },
+    deferReply: async () => {}, editReply: async () => {} };
+  await handleAsk(interaction as never, { ...f.sessions, resetSession: async () => {} } as never);
+  assert.equal(f.sent.length, 1);
 });

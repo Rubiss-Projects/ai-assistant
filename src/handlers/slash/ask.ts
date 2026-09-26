@@ -1,3 +1,4 @@
+import { channelHistoryResolver } from "../../utils/channelSummary.js";
 import { artifactMessageResolver } from "../../utils/artifactMessage.js";
 import { ChatInputCommandInteraction, Message } from "discord.js";
 import { SessionManager, chunkForDiscord, runTimeoutMessage } from "../../sessionManager.js";
@@ -51,6 +52,7 @@ export async function handleAsk(
             contextProfile: "one-shot",
             rulesetContext,
             userInstructionContext: { guildId: interaction.guildId, userId: interaction.user.id, userDisplayName: interaction.user.displayName ?? interaction.user.username },
+            resolveChannelHistory: channelHistoryResolver(interaction, interaction.client, canIncludeContextAuthor),
             resolveArtifactMessage: artifactMessageResolver(interaction.client, interaction.user.id, canIncludeContextAuthor),
             onProgress: ({ elapsedMs }) => durableReply!.edit(progressMessage(elapsedMs)).then(() => {}),
           },

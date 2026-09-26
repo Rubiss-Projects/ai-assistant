@@ -90,6 +90,8 @@ export interface SendMessageOptions {
   timeoutMs?: number;
   onProgress?: (update: { elapsedMs: number; message: string }) => void | Promise<void>;
   /** Host-owned, permission-checked Discord lookup; credentials never reach providers. */
+  /** Host-bound current-channel reader. Never supplied by the model or persisted across turns. */
+  resolveChannelHistory?: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>;
   resolveArtifactMessage?: (url: string) => Promise<ArtifactMessage>;
   /** Host-observed webpage results and source-backed summaries for scheduled lookups. */
   onLookup?: (record: LookupRecord) => void;
