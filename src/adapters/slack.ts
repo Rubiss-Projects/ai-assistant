@@ -177,9 +177,9 @@ export class SlackAdapter {
         const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
         return { prompt, next, coverage: result.coverage };
       },
-      generate: async (prepared, session, _signal, onProgress) => {
+      generate: async (prepared, session, signal, onProgress) => {
         const response = await this.engine.sendMessage(session, prepared.prompt, undefined, {
-          transportContext: { platform: 'slack', history: true }, onProgress,
+          transportContext: { platform: 'slack', history: true }, signal, onProgress,
           resolveChannelHistory: async (args, signal) => {
             if (args.scope && !['channel','thread'].includes(String(args.scope))) throw new Error('Unsupported history scope.');
             const resource = args.scope === 'channel' ? { ...input.conversation, kind: 'channel' as const, threadId: undefined } : input.conversation;
