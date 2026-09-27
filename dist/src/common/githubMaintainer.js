@@ -277,7 +277,11 @@ export class GitHubMaintainer {
         let url = `https://github.com/${card.repository}/actions/runs/${release.run}`;
         if (state === "success") {
             const published = await api.request("GET", `/repos/${card.repository}/releases/tags/${release.tag}`);
-            const tag = await api.request("GET", `/repos/${card.repository}/git/ref/tags/${release.tag}`);
+            let tag = await api.request("GET", `/repos/${card.repository}/git/ref/tags/${release.tag}`);
+            // Annotated tags point to tag objects, which may themselves wrap another tag.
+            for (let depth = 0; tag.object.type === "tag" && depth < 10; depth++) {
+                tag = await api.request("GET", `/repos/${card.repository}/git/tags/${commit(tag.object.sha)}`);
+            }
             if (published.draft || published.tag_name !== release.tag || tag.object.type !== "commit" || tag.object.sha !== release.sha)
                 throw new GitHubActionError("Publication completed but the release commit could not be verified.");
             url = `https://github.com/${card.repository}/releases/tag/${release.tag}`;
