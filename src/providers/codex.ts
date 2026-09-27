@@ -577,6 +577,7 @@ export class CodexProvider implements Provider {
   ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
+      options?.signal?.throwIfAborted();
       const files = imagePaths?.filter((attachment) => attachment.kind === "file" && !attachment.binary) ?? [];
       const fileContext = await Promise.all(files.map(async (attachment) => {
         const text = await readCodexTextAttachment(attachment);
@@ -612,6 +613,19 @@ export class CodexProvider implements Provider {
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
         let result;
+        let cancelHost = () => {};
+        let hostAbortGrace: ReturnType<typeof setTimeout> | undefined;
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          cancelHost = () => {
+            controller.abort(options?.signal?.reason);
+            hostAbortGrace = setTimeout(() => {
+              this.abandonTimedOutSession(userId, !userTurnStarted || this.handoffs.has(userId));
+              reject(options?.signal?.reason ?? new Error('Generation cancelled.'));
+            }, cancellationGraceMs);
+          };
+        });
+        options?.signal?.addEventListener('abort', cancelHost, { once: true });
+        if (options?.signal?.aborted) cancelHost();
         try {
           const run = this.enqueueSessionOperation(userId, async () => {
             const thread = await this.getOrCreateSession(userId, context, controller.signal);
@@ -634,7 +648,8 @@ export class CodexProvider implements Provider {
               }, cancellationGraceMs);
             }, timeoutMs);
           });
-          result = await Promise.race([run, deadline]);
+          result = await Promise.race([run, deadline, cancelled]);
+          options?.signal?.throwIfAborted();
           if (timedOut) {
             this.abandonTimedOutSession(userId, !userTurnStarted || this.handoffs.has(userId));
             throw new RunTimeoutError(this.displayName, timeoutMs, true);
@@ -646,6 +661,8 @@ export class CodexProvider implements Provider {
           }
           throw error;
         } finally {
+          options?.signal?.removeEventListener("abort", cancelHost);
+          clearTimeout(hostAbortGrace);
           clearTimeout(timeout);
           clearTimeout(abortGrace);
           stopProgress();

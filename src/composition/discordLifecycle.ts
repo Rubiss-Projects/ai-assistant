@@ -47,11 +47,15 @@ export class DiscordRuntime<S extends Sessions, C extends DiscordClient> {
       const attempt = async (action: () => unknown) => {
         try { await action(); } catch (error) { errors.push(error); }
       };
-      await attempt(() => this.client?.stopScheduler());
-      await attempt(() => this.dependencies.stopReviews());
-      await attempt(() => this.client?.destroy());
-      await attempt(() => this.conversations?.shutdown());
-      await attempt(() => this.sessions?.shutdown());
+      // Start every stop operation before awaiting drains: active scheduler and
+      // conversation callbacks need provider cancellation in order to settle.
+      await Promise.all([
+        attempt(() => this.client?.stopScheduler()),
+        attempt(() => this.dependencies.stopReviews()),
+        attempt(() => this.client?.destroy()),
+        attempt(() => this.conversations?.shutdown()),
+        attempt(() => this.sessions?.shutdown()),
+      ]);
       if (errors.length) throw new AggregateError(errors, 'Discord cleanup failed.');
     });
   }

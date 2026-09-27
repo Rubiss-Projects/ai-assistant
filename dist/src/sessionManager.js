@@ -47,6 +47,7 @@ export class SessionManager {
     displayName;
     providers = new Map();
     stopping = false;
+    shutdownController = new AbortController();
     overrides = new Map(); // session key -> provider name
     store;
     constructor(defaultName, store, storeDirectory) {
@@ -119,6 +120,7 @@ export class SessionManager {
     }
     async shutdown() {
         this.stopping = true;
+        this.shutdownController.abort(new Error("Session manager is shutting down."));
         const all = Array.from(this.providers.values());
         this.providers.clear();
         await Promise.all(all.map((p) => p.shutdown()));
@@ -129,7 +131,10 @@ export class SessionManager {
     }
     // ── Chat & session operations (delegated to the active provider for key) ────
     sendMessage(userId, prompt, imagePaths, options) {
-        return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
+        const provider = this.providerFor(userId);
+        const signal = options?.signal ? AbortSignal.any([options.signal, this.shutdownController.signal]) : this.shutdownController.signal;
+        signal.throwIfAborted();
+        return provider.sendMessage(userId, prompt, imagePaths, { ...options, signal });
     }
     async evaluateParticipation(key, prompt) {
         this.assertAcceptingWork();
@@ -151,7 +156,7 @@ export class SessionManager {
         const provider = this.providerFor(key);
         const temporaryKey = `internal_${randomUUID()}`;
         try {
-            return (await provider.sendMessage(temporaryKey, prompt, undefined, { contextProfile: "ephemeral" })).content;
+            return (await provider.sendMessage(temporaryKey, prompt, undefined, { contextProfile: "ephemeral", signal: this.shutdownController.signal })).content;
         }
         finally {
             await provider.resetSession(temporaryKey).catch((error) => {

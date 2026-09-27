@@ -201,12 +201,14 @@ export function selectOpenCodeParticipationModel(models: string[], current?: str
  */
 function runOpenCode(
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig; github?: GitHubContributionMcpConfig; systemPrompt?: string; agentName?: string }
+  opts: { signal?: AbortSignal; cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig; github?: GitHubContributionMcpConfig; systemPrompt?: string; agentName?: string }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
     const child = spawn(openCodeBin(), args, {
       cwd: opts.cwd,
+      signal: opts.signal,
+      killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "pipe"],
       env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets, opts.systemPrompt, opts.agentName, opts.github),
     });
@@ -327,6 +329,7 @@ export class OpenCodeProvider implements Provider {
   ): Promise<AgentResponse> {
     const tail = this.messageQueues.get(userId) ?? Promise.resolve();
     const next = tail.then(async () => {
+      options?.signal?.throwIfAborted();
       const args = openCodeBaseRunArguments();
       const sessionId = this.sessions.get(userId) ?? this.store.get(userId);
       if (sessionId) args.push("--session", sessionId);
@@ -350,6 +353,7 @@ export class OpenCodeProvider implements Provider {
         const stopProgress = startProgressUpdates(options);
         const { stdout, stderr, code } = await runOpenCode(args, {
           cwd: workingDirectory,
+          signal: options?.signal,
           timeoutMs,
           providerName: this.displayName,
           artifacts: await this.artifactTools.config(userId, options?.transportContext),

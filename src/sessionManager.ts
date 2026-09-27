@@ -63,6 +63,7 @@ export class SessionManager {
 
   private providers: Map<string, Provider> = new Map();
   private stopping = false;
+  private readonly shutdownController = new AbortController();
   private overrides: Map<string, string> = new Map(); // session key -> provider name
   private store: ProviderStore;
 
@@ -140,6 +141,7 @@ export class SessionManager {
 
   async shutdown(): Promise<void> {
     this.stopping = true;
+    this.shutdownController.abort(new Error("Session manager is shutting down."));
     const all = Array.from(this.providers.values());
     this.providers.clear();
     await Promise.all(all.map((p) => p.shutdown()));
@@ -152,7 +154,10 @@ export class SessionManager {
   // ── Chat & session operations (delegated to the active provider for key) ────
 
   sendMessage(userId: string, prompt: string, imagePaths?: SendAttachment[], options?: SendMessageOptions): Promise<AgentResponse> {
-    return this.providerFor(userId).sendMessage(userId, prompt, imagePaths, options);
+    const provider = this.providerFor(userId);
+    const signal = options?.signal ? AbortSignal.any([options.signal, this.shutdownController.signal]) : this.shutdownController.signal;
+    signal.throwIfAborted();
+    return provider.sendMessage(userId, prompt, imagePaths, { ...options, signal });
   }
 
   async evaluateParticipation(key: string, prompt: string): Promise<string> {
@@ -174,7 +179,7 @@ export class SessionManager {
     const provider = this.providerFor(key);
     const temporaryKey = `internal_${randomUUID()}`;
     try {
-      return (await provider.sendMessage(temporaryKey, prompt, undefined, { contextProfile: "ephemeral" })).content;
+      return (await provider.sendMessage(temporaryKey, prompt, undefined, { contextProfile: "ephemeral", signal: this.shutdownController.signal })).content;
     } finally {
       await provider.resetSession(temporaryKey).catch((error) => {
         console.warn("[SessionManager] Could not clean up internal session:", error);

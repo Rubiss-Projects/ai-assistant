@@ -102,6 +102,7 @@ function toHistoryEvent(event) {
     }
 }
 async function sendUntilIdle(session, message, options) {
+    options?.signal?.throwIfAborted();
     const hardTimeoutMs = providerTimeout("COPILOT_TIMEOUT_MS", options);
     const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
     let lastAssistantMessage;
@@ -110,12 +111,14 @@ async function sendUntilIdle(session, message, options) {
     const stopProgress = startProgressUpdates(options);
     return new Promise((resolve, reject) => {
         let unsubscribe = () => { };
+        let cancelHost = () => { };
         const finish = (operation) => {
             if (settled)
                 return;
             settled = true;
             stopProgress();
             clearTimeout(hardTimer);
+            options?.signal?.removeEventListener("abort", cancelHost);
             unsubscribe();
             operation();
         };
@@ -130,11 +133,13 @@ async function sendUntilIdle(session, message, options) {
                 finish(() => reject(new Error(event.data.message)));
             }
         });
-        hardTimer = setTimeout(() => {
+        const cancel = (timedOut) => {
             if (settled)
                 return;
             settled = true;
             stopProgress();
+            clearTimeout(hardTimer);
+            options?.signal?.removeEventListener("abort", cancelHost);
             unsubscribe();
             const abortAcknowledged = Promise.resolve().then(() => session.abort()).then(() => true, (error) => {
                 console.warn("[CopilotProvider] Failed to abort timed-out session:", error);
@@ -146,9 +151,16 @@ async function sendUntilIdle(session, message, options) {
             });
             Promise.race([abortAcknowledged, abortDeadline]).then((cancelled) => {
                 clearTimeout(abortDeadlineTimer);
-                reject(new RunTimeoutError("GitHub Copilot", hardTimeoutMs, cancelled));
+                reject(timedOut ? new RunTimeoutError("GitHub Copilot", hardTimeoutMs, cancelled) : options?.signal?.reason ?? new Error("Generation cancelled."));
             });
-        }, hardTimeoutMs);
+        };
+        cancelHost = () => cancel(false);
+        hardTimer = setTimeout(() => cancel(true), hardTimeoutMs);
+        options?.signal?.addEventListener('abort', cancelHost, { once: true });
+        if (options?.signal?.aborted) {
+            cancelHost();
+            return;
+        }
         session.send(message).catch((error) => finish(() => reject(error)));
     });
 }
@@ -332,6 +344,7 @@ export class CopilotProvider {
     async sendMessage(userId, prompt, imagePaths, options) {
         const tail = this.messageQueues.get(userId) ?? Promise.resolve();
         const next = tail.then(async () => {
+            options?.signal?.throwIfAborted();
             const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
             return this.withLiveSession(userId, async (session) => {
                 try {
@@ -351,7 +364,7 @@ export class CopilotProvider {
                     }))));
                 }
                 catch (error) {
-                    if (error instanceof RunTimeoutError && !error.cancellationConfirmed) {
+                    if (options?.signal?.aborted || (error instanceof RunTimeoutError && !error.cancellationConfirmed)) {
                         this.abandonTimedOutSession(userId, session);
                     }
                     throw error;

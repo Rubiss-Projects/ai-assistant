@@ -126,7 +126,7 @@ export function ensureProviderWorkingDirectory(source = process.env) {
         fs.mkdirSync(workingDirectory, { recursive: true });
     return fs.realpathSync.native(workingDirectory);
 }
-function canonicalizeForPolicy(candidate) {
+export function canonicalizeForPolicy(candidate) {
     let cursor = path.resolve(candidate);
     const missingSegments = [];
     while (!fs.existsSync(cursor)) {

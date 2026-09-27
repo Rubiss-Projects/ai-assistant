@@ -5,6 +5,67 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DiscordRuntime } from '../src/composition/discordLifecycle.js';
 import { ConversationService, FileTurnJournal } from '../src/application/conversationService.js';
+import { TEXT_CAPABILITIES } from '../src/core/conversation.js';
+
+test('provider shutdown unblocks conversation and scheduler drains before ownership is released', { timeout: 2000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'discord-drain-'));
+  let finish!: () => void;
+  let began!: () => void;
+  const generating = new Promise<void>(resolve => { began = resolve; });
+  const providerWork = new Promise<void>(resolve => { finish = resolve; });
+  const service = new ConversationService(new FileTurnJournal(dir));
+  const runtime = new DiscordRuntime({
+    createSessions: () => ({ shutdown: async () => {
+      assert.equal(existsSync(join(dir, 'owner.lock')), true);
+      finish();
+    } }),
+    installConversations: () => service,
+    createClient: () => ({ login: async () => {}, stopScheduler: () => providerWork, destroy: () => {} }),
+    startReviews: () => {}, stopReviews: async () => {},
+  });
+  try {
+    await runtime.start('fake');
+    const turn = await service.submit({ eventId: 'e', sourceMessageId: 'e', text: 'work', receivedAt: new Date().toISOString(),
+      actor: { platform: 'discord', tenantId: 'g', userId: 'u' },
+      conversation: { platform: 'discord', tenantId: 'g', installationId: 'i', channelId: 'c', kind: 'channel' },
+    }, { platform: 'discord', tenantId: 'g', installationId: 'i', audience: 'individual', capabilities: TEXT_CAPABILITIES,
+      authorize: async () => true, prepare: async () => ({ prompt: 'work' }),
+      generate: async () => { began(); await providerWork; return { content: 'late', attachments: [] }; },
+      deliver: async () => { throw new Error('Cancelled generation must not deliver'); },
+    });
+    await generating;
+    await runtime.stop();
+    assert.equal((await turn.completion).state, 'cancelled');
+    assert.equal(existsSync(join(dir, 'owner.lock')), false);
+  } finally { finish(); await service.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('shared Discord journal rejects workspace paths and aliases before writing state', async t => {
+  const { mkdirSync, symlinkSync } = await import('node:fs');
+  const { installDiscordConversations } = await import('../src/adapters/discord/turn.js');
+  const dir = mkdtempSync(join(tmpdir(), 'discord-private-state-'));
+  const workspace = join(dir, 'workspace');
+  mkdirSync(workspace);
+  const previous = { ...process.env };
+  t.after(() => {
+    for (const key of ['AI_ASSISTANT_SECURITY_MODE', 'AI_ASSISTANT_WORKSPACE_ROOT', 'AI_ASSISTANT_STATE_DIR']) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.AI_ASSISTANT_SECURITY_MODE = 'shared';
+  process.env.AI_ASSISTANT_WORKSPACE_ROOT = workspace;
+  const alias = join(dir, 'alias');
+  symlinkSync(workspace, alias, 'dir');
+  for (const state of [join(workspace, 'state'), join(alias, 'state')]) {
+    process.env.AI_ASSISTANT_STATE_DIR = state;
+    assert.throws(() => installDiscordConversations({} as never), /outside provider-readable/);
+    assert.equal(existsSync(join(workspace, 'state')), false);
+  }
+  process.env.AI_ASSISTANT_STATE_DIR = join(dir, 'private-state');
+  const service = installDiscordConversations({} as never);
+  await service.shutdown();
+});
 
 for (const failure of ['client', 'login', 'reviews']) {
   test(`Discord ${failure} startup failure releases the journal for a successful restart`, async () => {
