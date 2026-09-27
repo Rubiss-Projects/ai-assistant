@@ -3,9 +3,9 @@ import test, { type TestContext } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { GitHubUserAuth, GitHubActionError, type UserGitHubClient } from "../src/common/githubUserAuth.js";
+import { GitHubUserAuth, GitHubActionError, githubActionsEnabled, type UserGitHubClient } from "../src/common/githubUserAuth.js";
 import { GitHubMaintainer, nextReleaseTag, type ActionTarget, type PullSnapshot, type ActionContext } from "../src/common/githubMaintainer.js";
-import { createAccessPolicy } from "../src/common/accessPolicy.js";
+import { canInvokeSlashCommand, canUseGitHubActions, createAccessPolicy } from "../src/common/accessPolicy.js";
 
 function directory(t: TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-actions-"));
@@ -114,12 +114,12 @@ function fixture(t: TestContext) {
     branch: "ai-assistant/contribution", baseBranch: "main", head, publisher: "publisher[bot]",
     review: { enabled: true, attempts: 1, limit: 20, budget_exhausted: false, state: "completed", head_sha: head, base_sha: base, result: { summary: "Clean", findings: [] }, error: undefined, review_url: "https://github.com/review" } };
   const pull: PullSnapshot = { id: "PR_42", title: "Change", state: "OPEN", isDraft: false, headRefOid: head, baseRefOid: base, baseRefName: "main",
-    author: { login: "publisher[bot]" }, headRefName: target.branch, headRepository: { databaseId: 2 }, mergeCommit: null,
+    author: { __typename: "Bot", login: "publisher" }, headRefName: target.branch, headRepository: { databaseId: 2 }, mergeCommit: null,
     mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: null,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } };
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
-  let lost = false, denial = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged;
+  let lost = false, denial = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged;
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
       await authorize(); calls.push({ user, method, endpoint, body: raw });
@@ -140,7 +140,7 @@ function fixture(t: TestContext) {
       else if (endpoint.includes("/compare/")) result = { status: "ahead", total_commits: 2, commits: [{ commit: { message: "Other person's change" } }, { commit: { message: "This change" } }] };
       else if (endpoint.endsWith("/branches/main")) result = { commit: { sha: main } };
       else if (endpoint.includes("/ci.yml/runs")) result = { workflow_runs: [{ path: ".github/workflows/ci.yml", head_sha: merged, status: "completed", conclusion: ci }] };
-      else if (endpoint.endsWith("/dispatches")) { if (lost) throw new Error("connection lost"); result = { workflow_run_id: 123 }; }
+      else if (endpoint.endsWith("/dispatches")) { if (lost) throw new Error("connection lost"); result = emptyReceipt ? undefined : { workflow_run_id: 123 }; }
       else if (endpoint.includes("/release.yml/runs")) result = { workflow_runs: [{ id: 123, display_title: `Release v1.9.1 @${merged}`, actor: { id: 1 }, head_sha: merged, created_at: new Date().toISOString() }] };
       else if (endpoint.endsWith("/actions/runs/123")) result = { path: ".github/workflows/release.yml", status: "completed", conclusion: "success", head_sha: runHead };
       else if (endpoint.includes("/releases/tags/")) result = { draft: false, tag_name: "v1.9.1" };
@@ -155,7 +155,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; } };
+  return { service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -190,6 +190,8 @@ test("stale, foreign, unreviewed, incomplete, and failing PRs cannot be approved
   await assert.rejects(f.service.act(f.card.id, "approve", f.context()), /review limit/);
   f.pull.reviews.pageInfo.hasPreviousPage = false; f.pull.commits.nodes[0].commit.statusCheckRollup!.state = "PENDING";
   await assert.rejects(f.service.act(f.card.id, "approve", f.context()), /checks/);
+  f.pull.author = { __typename: "User", login: "publisher" };
+  await assert.rejects(f.service.act(f.card.id, "approve", f.context()), /author/);
   assert.ok(!f.calls.some(call => call.endpoint.endsWith("/reviews")));
 });
 
@@ -265,6 +267,38 @@ test("merge and release rights do not inherit open chat or legacy admin access",
   assert.equal(admin.can(user, "github.merge"), true);
   assert.equal(admin.can(user, "github.release"), true);
   assert.equal(admin.can({ userId: "111" }, "github.release"), false);
+});
+
+test("an accepted dispatch without a receipt reports pending publication and never resends", async t => {
+  const f = fixture(t); f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged };
+  await f.service.refresh(f.card.id, f.context()); f.setEmptyReceipt();
+  assert.match(await f.service.act(f.card.id, "release", f.context()), /requested as @ben.*receipt is pending/);
+  const restored = f.make();
+  await assert.rejects(restored.act(f.card.id, "release", f.context()), /already sent/);
+  assert.equal((await restored.refresh(f.card.id, f.context())).card.release?.state, "success");
+  assert.equal(f.calls.filter(call => call.endpoint.endsWith("/dispatches")).length, 1);
+});
+
+test("merge-only and release-only grants admit linking without granting approval or contribution", t => {
+  const root = directory(t), rights = path.join(root, "rights.json");
+  for (const capability of ["github.merge", "github.release"]) {
+    fs.writeFileSync(rights, JSON.stringify({ grants: [{ guildId: "123", roleId: "456", capabilities: [capability] }] }));
+    const access = createAccessPolicy({ DISCORD_RIGHTS_FILE: rights, GITHUB_CONTRIBUTIONS_ACCESS: "granted", DISCORD_ADMIN_USERS: "999" });
+    const subject = { userId: "111", guildId: "123", roleIds: ["456"] };
+    assert.equal(canUseGitHubActions(access, subject), true);
+    assert.equal(access.can(subject, "github.contribute"), false);
+    assert.equal(canInvokeSlashCommand(access, subject.userId, { commandName: "github", subcommand: "link" }, subject), true);
+    assert.equal(canUseGitHubActions(access, { ...subject, roleIds: [] }), false);
+    assert.equal(canUseGitHubActions(access, { ...subject, guildId: "789" }), false);
+  }
+});
+
+test("enabled GitHub actions require enabled contributions and server reviews at startup", () => {
+  const env = { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_GITHUB_ACTIONS: "true", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true" };
+  assert.throws(() => githubActionsEnabled(env), /server-side Codex reviews/);
+  assert.throws(() => githubActionsEnabled({ ...env, AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "false" }), /server-side Codex reviews/);
+  assert.equal(githubActionsEnabled({ ...env, AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true" }), true);
+  assert.equal(githubActionsEnabled({ AI_ASSISTANT_ENABLE_GITHUB_ACTIONS: "false" }), false);
 });
 
 test("version selection orders numbers and excludes prereleases", () => {

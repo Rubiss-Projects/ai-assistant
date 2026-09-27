@@ -5,7 +5,7 @@ import { GitHubActionError, writeGitHubState } from "./githubUserAuth.js";
 import { hostOnlyGitHubPath } from "./githubContributionConfig.js";
 const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) {
   repository(owner:$owner,name:$name) { databaseId nameWithOwner defaultBranchRef { name } pullRequest(number:$number) {
-    id title state isDraft headRefOid baseRefOid baseRefName headRefName author { login } headRepository { databaseId }
+    id title state isDraft headRefOid baseRefOid baseRefName headRefName author { __typename login } headRepository { databaseId }
     mergeCommit { oid } mergeable mergeStateStatus reviewDecision
     commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
     reviews(last:100) { nodes { author { login } state commit { oid } } pageInfo { hasPreviousPage } }
@@ -97,7 +97,7 @@ export class GitHubMaintainer {
         const repo = result.repository, pull = repo?.pullRequest;
         if (!repo || repo.databaseId !== target.repository.upstreamId || repo.nameWithOwner !== card.repository || repo.defaultBranchRef?.name !== "main" || !pull
             || pull.baseRefName !== "main" || pull.headRefName !== target.branch || pull.headRepository?.databaseId !== target.repository.forkId
-            || pull.author?.login !== target.publisher)
+            || pull.author?.__typename !== "Bot" || `${pull.author.login}[bot]` !== target.publisher)
             throw new GitHubActionError("The PR's repository, author, or branch changed. Refusing this action.");
         if (pull.headRefOid !== card.head || target.head !== card.head)
             throw new GitHubActionError("The PR changed. Use /github status for a new card, then review that revision.");
@@ -287,11 +287,15 @@ export class GitHubMaintainer {
         if (!run || run.path !== ".github/workflows/ci.yml" || run.head_sha !== release.sha || run.status !== "completed" || run.conclusion !== "success")
             throw new GitHubActionError("The merged commit's CI must pass before releasing. Refresh after it completes.");
         const attempt = this.attempt(card, "release", api.user.id, discordUser);
+        // API version 2026-03-10 returns run details by default. Reconcile an empty successful response too.
         const result = await this.send(card, attempt, () => api.request("POST", `/repos/${card.repository}/actions/workflows/release.yml/dispatches`, {
             ref: "main", inputs: { tag: release.tag, expected_sha: release.sha },
         }));
-        if (!Number.isSafeInteger(result?.workflow_run_id))
-            throw new GitHubActionError("The release request was sent but its receipt is unavailable. Check GitHub Actions before any retry.");
+        if (!result || !Number.isSafeInteger(result.workflow_run_id)) {
+            release.state = "awaiting receipt";
+            this.save();
+            return `Release ${release.tag} requested as @${api.user.login}. Its run receipt is pending; Refresh will reconcile publication without sending another request.`;
+        }
         release.run = result.workflow_run_id;
         release.state = "queued";
         release.url = `https://github.com/${card.repository}/actions/runs/${release.run}`;

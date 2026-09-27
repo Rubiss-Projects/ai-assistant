@@ -21,7 +21,7 @@ export interface ContributionCard {
 interface Review { author: { login: string } | null; state: string; commit: { oid: string } | null }
 export interface PullSnapshot {
   id: string; title: string; state: "OPEN" | "CLOSED" | "MERGED"; isDraft: boolean; headRefOid: string; baseRefOid: string; baseRefName: string;
-  author: { login: string } | null; headRefName: string; headRepository: { databaseId: number } | null;
+  author: { __typename: string; login: string } | null; headRefName: string; headRepository: { databaseId: number } | null;
   mergeCommit: { oid: string } | null; mergeable: string; mergeStateStatus: string; reviewDecision: string | null;
   commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] };
   reviews: { nodes: Review[]; pageInfo: { hasPreviousPage: boolean } };
@@ -29,7 +29,7 @@ export interface PullSnapshot {
 }
 const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) {
   repository(owner:$owner,name:$name) { databaseId nameWithOwner defaultBranchRef { name } pullRequest(number:$number) {
-    id title state isDraft headRefOid baseRefOid baseRefName headRefName author { login } headRepository { databaseId }
+    id title state isDraft headRefOid baseRefOid baseRefName headRefName author { __typename login } headRepository { databaseId }
     mergeCommit { oid } mergeable mergeStateStatus reviewDecision
     commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
     reviews(last:100) { nodes { author { login } state commit { oid } } pageInfo { hasPreviousPage } }
@@ -109,7 +109,7 @@ export class GitHubMaintainer {
     const repo = result.repository, pull = repo?.pullRequest;
     if (!repo || repo.databaseId !== target.repository.upstreamId || repo.nameWithOwner !== card.repository || repo.defaultBranchRef?.name !== "main" || !pull
       || pull.baseRefName !== "main" || pull.headRefName !== target.branch || pull.headRepository?.databaseId !== target.repository.forkId
-      || pull.author?.login !== target.publisher) throw new GitHubActionError("The PR's repository, author, or branch changed. Refusing this action.");
+      || pull.author?.__typename !== "Bot" || `${pull.author.login}[bot]` !== target.publisher) throw new GitHubActionError("The PR's repository, author, or branch changed. Refusing this action.");
     if (pull.headRefOid !== card.head || target.head !== card.head) throw new GitHubActionError("The PR changed. Use /github status for a new card, then review that revision.");
     commit(pull.headRefOid); commit(pull.baseRefOid);
     return pull;
@@ -251,10 +251,14 @@ export class GitHubMaintainer {
     const run = ci.workflow_runs[0];
     if (!run || run.path !== ".github/workflows/ci.yml" || run.head_sha !== release.sha || run.status !== "completed" || run.conclusion !== "success") throw new GitHubActionError("The merged commit's CI must pass before releasing. Refresh after it completes.");
     const attempt = this.attempt(card, "release", api.user.id, discordUser);
-    const result = await this.send(card, attempt, () => api.request<{ workflow_run_id: number }>("POST", `/repos/${card.repository}/actions/workflows/release.yml/dispatches`, {
+    // API version 2026-03-10 returns run details by default. Reconcile an empty successful response too.
+    const result = await this.send(card, attempt, () => api.request<{ workflow_run_id: number } | undefined>("POST", `/repos/${card.repository}/actions/workflows/release.yml/dispatches`, {
       ref: "main", inputs: { tag: release.tag, expected_sha: release.sha },
     }));
-    if (!Number.isSafeInteger(result?.workflow_run_id)) throw new GitHubActionError("The release request was sent but its receipt is unavailable. Check GitHub Actions before any retry.");
+    if (!result || !Number.isSafeInteger(result.workflow_run_id)) {
+      release.state = "awaiting receipt"; this.save();
+      return `Release ${release.tag} requested as @${api.user.login}. Its run receipt is pending; Refresh will reconcile publication without sending another request.`;
+    }
     release.run = result.workflow_run_id; release.state = "queued"; release.url = `https://github.com/${card.repository}/actions/runs/${release.run}`;
     attempt.state = "done"; this.save();
     return `Release ${release.tag} requested as @${api.user.login}. Publication is running: ${release.url}`;
