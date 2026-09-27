@@ -85,7 +85,7 @@ test("Codex recovers a missing legacy handoff source without discarding ordinary
   assert.ok(store.getState("conversation")?.context);
 });
 
-test("Codex retains a saved handoff while replacing unreadable first-turn history", async t => {
+for (const rebuild of [false, true]) test(`Codex retains handoff when recovering history (rebuild host context: ${rebuild})`, async t => {
   const directory = mkdtempSync(join(tmpdir(), "interrupted-handoff-"));
   const store = new SessionStore("test", join(directory, "sessions.json"));
   store.set("conversation", "interrupted-thread", resolveSessionContext().applied, "Historical PROJECT_ORCHID facts");
@@ -99,6 +99,7 @@ test("Codex retains a saved handoff while replacing unreadable first-turn histor
     startThread: () => ({ id: "recovered-thread", runStreamed: async (input: unknown) => ({
       events: (async function* () {
         assert.match(String(input), /PROJECT_ORCHID/);
+        if (rebuild) assert.match(String(input), /retained host discussion/);
         yield { type: "thread.started", thread_id: "recovered-thread" };
         assert.equal(store.get("conversation"), "recovered-thread");
         assert.match(store.getState("conversation")?.handoff ?? "", /PROJECT_ORCHID/);
@@ -109,7 +110,11 @@ test("Codex retains a saved handoff while replacing unreadable first-turn histor
   }), store);
   provider.setSessionWorkingDir("conversation", directory);
   t.after(() => provider.shutdown());
-  assert.equal((await provider.sendMessage("conversation", "Retry")).content, "Recovered");
+  let rebuilds = 0;
+  assert.equal((await provider.sendMessage("conversation", "Retry", undefined, rebuild ? {
+    onSessionRecovery: () => { rebuilds++; return "retained host discussion\nRetry"; },
+  } : undefined)).content, "Recovered");
+  assert.equal(rebuilds, rebuild ? 1 : 0);
   assert.equal(store.get("conversation"), "recovered-thread");
   assert.equal(store.getState("conversation")?.handoff, undefined);
 });

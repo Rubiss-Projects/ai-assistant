@@ -170,7 +170,7 @@ export class ConversationService {
             let authorizationUnavailable = false;
             const authorize = async (stage) => {
                 try {
-                    return await host.authorize(input, stage, record.output);
+                    return await host.authorize(input, stage, record.output, controller.signal);
                 }
                 catch (error) {
                     authorizationUnavailable = true;
@@ -186,6 +186,7 @@ export class ConversationService {
                 controller.signal.throwIfAborted();
                 if (!await authorize('execution'))
                     throw new Error('Conversation access denied.');
+                controller.signal.throwIfAborted();
                 if (!record.output) {
                     this.save({ ...record, state: 'running' });
                     prepared = await host.prepare(input, executionKey, controller.signal);

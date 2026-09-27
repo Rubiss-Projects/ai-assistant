@@ -490,6 +490,7 @@ export class CodexProvider {
                 return `[Discord attachment: ${attachment.displayName ?? "file"}]\n${text}\n[/Discord attachment]`;
             }));
             const resolvedPrompt = fileContext.length ? `${prompt}\n\n${fileContext.join("\n\n")}` : prompt;
+            const previousSessionId = this.store.get(userId);
             this.appendHistory(userId, { type: "user.message", data: { content: prompt } });
             const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
             const workingDirectory = this.workingDirOverrides.get(userId) ?? ensureProviderWorkingDirectory();
@@ -499,14 +500,19 @@ export class CodexProvider {
             const response = await this.githubTools.run(userId, options, context.githubContributionsEnabled, githubRun => runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (runtime, staged) => {
                 runtime.providerSourceRoot = () => generatedImageThreadDirectory(this.sessions.get(userId)?.id ?? null);
                 const images = staged.filter((attachment) => attachment.kind !== "file");
-                const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(resolvedPrompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
-                const artifactPrompt = githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun);
-                const inputFor = (handoff) => images.length > 0
-                    ? [
-                        { type: "text", text: withHandoff(artifactPrompt, handoff) },
-                        ...images.map((a) => ({ type: "local_image", path: a.path })),
-                    ]
-                    : withHandoff(artifactPrompt, handoff);
+                const inputFor = (handoff, recovered = false) => {
+                    const recoveryPrompt = recovered ? options?.onSessionRecovery?.() : undefined;
+                    const turnPrompt = recoveryPrompt === undefined ? resolvedPrompt
+                        : fileContext.length ? `${recoveryPrompt}\n\n${fileContext.join("\n\n")}` : recoveryPrompt;
+                    const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(turnPrompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
+                    const artifactPrompt = githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun);
+                    return images.length > 0
+                        ? [
+                            { type: "text", text: withHandoff(artifactPrompt, handoff) },
+                            ...images.map((a) => ({ type: "local_image", path: a.path })),
+                        ]
+                        : withHandoff(artifactPrompt, handoff);
+                };
                 const timeoutMs = providerTimeout("CODEX_TIMEOUT_MS", options);
                 const controller = new AbortController();
                 let timedOut = false;
@@ -534,7 +540,7 @@ export class CodexProvider {
                 try {
                     const run = this.enqueueSessionOperation(userId, async () => {
                         const thread = await this.getOrCreateSession(userId, context, controller.signal);
-                        return this.runWithSessionRecovery(userId, context, controller.signal, thread, current => runCodexCapturingEvents(current, inputFor(this.handoffs.get(userId)), controller.signal, () => {
+                        return this.runWithSessionRecovery(userId, context, controller.signal, thread, current => runCodexCapturingEvents(current, inputFor(this.handoffs.get(userId), current !== thread || Boolean(previousSessionId && current.id !== previousSessionId)), controller.signal, () => {
                             controller.signal.throwIfAborted();
                             if (!current.id || current.id === startedThreadId)
                                 return;

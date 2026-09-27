@@ -38,7 +38,7 @@ export interface TrustedAdapterContext<P extends PreparedTurn = PreparedTurn> {
   /** Coordinate the resolved destination around queueing, preparation and delivery. */
   coordinate?(key: string, run: () => Promise<void>): Promise<void>;
   /** False denies access; a thrown check is unavailable. Replay-capable adapters retain generated output. */
-  authorize(input: IncomingTurn, stage: "ingress" | "execution" | "delivery", output?: TurnOutput): Promise<boolean>;
+  authorize(input: IncomingTurn, stage: "ingress" | "execution" | "delivery", output?: TurnOutput, signal?: AbortSignal): Promise<boolean>;
   prepare(input: IncomingTurn, key: string, signal: AbortSignal): Promise<P>;
   generate(prepared: P, key: string, signal: AbortSignal, progress: (p: ProgressUpdate) => Promise<void>): Promise<TurnOutput>;
   deliver(output: TurnOutput, deliveryKey: string, sessionKey: string): Promise<DeliveryReceipt>;
