@@ -1,6 +1,7 @@
 import { mkdirSync, openSync, closeSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, fsyncSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { JournalLock } from './journalLock.js';
 import { eventKey, sessionKey, validateIdentity } from '../core/conversation.js';
 export class MemoryTurnJournal {
     records = new Map();
@@ -9,7 +10,7 @@ export class MemoryTurnJournal {
     all() { return [...this.records.values()]; }
     close() { }
 }
-/** One process owns a journal directory. Stale locks require explicit operator recovery. */
+/** One process owns a journal directory; OS-backed ownership survives unclean shutdowns. */
 export class FileTurnJournal {
     directory;
     limits;
@@ -22,15 +23,7 @@ export class FileTurnJournal {
         this.limits = limits;
         mkdirSync(directory, { recursive: true, mode: 0o700 });
         chmodSync(directory, 0o700);
-        this.lock = join(directory, 'owner.lock');
-        const fd = openSync(this.lock, 'wx', 0o600);
-        try {
-            writeFileSync(fd, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }));
-            fsyncSync(fd);
-        }
-        finally {
-            closeSync(fd);
-        }
+        this.lock = new JournalLock(directory);
         try {
             for (const name of readdirSync(directory))
                 if (/^[a-f0-9]{64}\.json$/.test(name))
@@ -108,7 +101,7 @@ export class FileTurnJournal {
     }
     close() { if (!this.closed) {
         this.closed = true;
-        unlinkSync(this.lock);
+        this.lock.close();
     } }
 }
 /** Owns admission, execution order and the generate/deliver boundary for every adapter. */
