@@ -12,10 +12,14 @@ export class MemoryTurnJournal {
 /** One process owns a journal directory. Stale locks require explicit operator recovery. */
 export class FileTurnJournal {
     directory;
+    limits;
     lock;
     closed = false;
-    constructor(directory) {
+    files = new Set();
+    lastPruned = 0;
+    constructor(directory, limits = { records: 10_000, retentionMs: 7 * 24 * 60 * 60 * 1000 }) {
         this.directory = directory;
+        this.limits = limits;
         mkdirSync(directory, { recursive: true, mode: 0o700 });
         chmodSync(directory, 0o700);
         this.lock = join(directory, 'owner.lock');
@@ -27,8 +31,18 @@ export class FileTurnJournal {
         finally {
             closeSync(fd);
         }
+        try {
+            for (const name of readdirSync(directory))
+                if (/^[a-f0-9]{64}\.json$/.test(name))
+                    this.files.add(name);
+        }
+        catch (error) {
+            this.close();
+            throw error;
+        }
     }
-    path(id) { return join(this.directory, createHash('sha256').update(id).digest('hex') + '.json'); }
+    filename(id) { return createHash('sha256').update(id).digest('hex') + '.json'; }
+    path(id) { return join(this.directory, this.filename(id)); }
     get(id) {
         try {
             return this.read(this.path(id));
@@ -45,6 +59,12 @@ export class FileTurnJournal {
     put(record) {
         if (this.closed)
             throw new Error('Journal closed.');
+        if (Date.now() - this.lastPruned >= 60_000)
+            this.all();
+        const filename = this.filename(record.id);
+        if (!this.files.has(filename) && this.files.size >= this.limits.records) {
+            throw new Error('Turn journal capacity reached; wait for retention expiry or reconcile outstanding turns.');
+        }
         const target = this.path(record.id), temp = target + '.' + randomUUID() + '.tmp';
         const fd = openSync(temp, 'wx', 0o600);
         try {
@@ -55,6 +75,7 @@ export class FileTurnJournal {
             closeSync(fd);
         }
         renameSync(temp, target);
+        this.files.add(filename);
         // Windows cannot fsync directory handles; the file is flushed before rename.
         if (process.platform !== 'win32') {
             const dir = openSync(this.directory, 'r');
@@ -66,7 +87,25 @@ export class FileTurnJournal {
             }
         }
     }
-    all() { return readdirSync(this.directory).filter(n => /^[a-f0-9]{64}\.json$/.test(n)).map(n => this.read(join(this.directory, n))); }
+    all() {
+        const now = Date.now();
+        const records = [];
+        for (const name of this.files) {
+            const path = join(this.directory, name);
+            const record = this.read(path);
+            if (['delivered', 'failed', 'cancelled'].includes(record.state) && Date.parse(record.updatedAt) <= now - this.limits.retentionMs) {
+                unlinkSync(path);
+                this.files.delete(name);
+            }
+            else {
+                if (records.length >= this.limits.records)
+                    throw new Error('Turn journal exceeds capacity; reconcile retained records before startup.');
+                records.push(record);
+            }
+        }
+        this.lastPruned = now;
+        return records;
+    }
     close() { if (!this.closed) {
         this.closed = true;
         unlinkSync(this.lock);
@@ -174,7 +213,7 @@ export class ConversationService {
                 }
                 catch { /* Diagnostics cannot prevent cleanup. */ }
                 const current = this.journal.get(id);
-                if (current.state === 'generated' && authorizationUnavailable && !controller.signal.aborted) {
+                if (host.retryGeneratedDelivery && current.state === 'generated' && authorizationUnavailable && !controller.signal.aborted) {
                     return this.save({ ...current, error: 'Authorization unavailable; generated output retained for retry.' });
                 }
                 const uncertainDelivery = current.state === 'delivering';

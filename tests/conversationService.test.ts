@@ -56,6 +56,38 @@ test('durable ownership rejects second worker; restart flags ambiguous running t
  }finally{rmSync(dir,{recursive:true,force:true})}
 });
 
+test('adapters without outbox replay fail an unavailable delivery check instead of stranding output', async () => {
+ const journal = new MemoryTurnJournal(), service = new ConversationService(journal);
+ try {
+  const turn = await service.submit(input(), host({ authorize: async (_input, stage) => {
+   if (stage === 'delivery') throw new Error('Membership lookup unavailable');
+   return true;
+  } }));
+  assert.equal((await turn.completion).state, 'failed');
+  assert.deepEqual(service.pendingDeliveries(), []);
+ } finally { await service.shutdown(); }
+});
+
+test('durable journal bounds admission and expires completed records while preserving uncertain output', () => {
+ const dir = mkdtempSync(join(tmpdir(), 'journal-retention-'));
+ const journal = new FileTurnJournal(dir, { records: 3, retentionMs: 7 * 24 * 60 * 60 * 1000 });
+ const make = (id: string) => ({ id, input: input(id), sessionKey: 'session', updatedAt: new Date().toISOString() });
+ try {
+  journal.put({ ...make('done'), state: 'delivered', receipt: { messageIds: ['m'] } });
+  journal.put({ ...make('failed'), state: 'failed' });
+  journal.put({ ...make('uncertain'), state: 'interrupted', updatedAt: new Date(0).toISOString(), output: { content: 'reconcile first', attachments: [] } });
+  assert.throws(() => journal.put({ ...make('new'), state: 'accepted' }), /capacity/);
+  assert.equal(journal.all().length, 3, 'keep deduplication throughout the retry window');
+  journal.put({ ...make('done'), state: 'delivered', updatedAt: new Date(0).toISOString() });
+  journal.put({ ...make('failed'), state: 'failed', updatedAt: new Date(0).toISOString() });
+  assert.deepEqual(journal.all().map(record => record.id), ['uncertain']);
+  assert.equal(journal.get('done'), undefined);
+  assert.equal(journal.get('failed'), undefined);
+  journal.put({ ...make('new'), state: 'accepted' });
+  assert.equal(journal.all().length, 2);
+ } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('durable delivery keeps recovery payloads until success and deduplicates after payload removal', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'turn-payload-'));
   const request = input();

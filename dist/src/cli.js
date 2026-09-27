@@ -232,7 +232,10 @@ switch (cmd) {
             await (await import("./adapters/cli/run.js")).runCli();
         }
         catch {
-            console.error("CLI failed. Check arguments, local state ownership and provider configuration.");
+            const error = "CLI failed. Check arguments, local state ownership and provider configuration.";
+            console.error(error);
+            if (process.argv.slice(3).includes('--json'))
+                process.stdout.write(JSON.stringify({ status: 'failed', error }) + '\n');
             process.exitCode = 1;
         }
         break;

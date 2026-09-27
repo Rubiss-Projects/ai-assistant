@@ -362,7 +362,12 @@ switch (cmd) {
       if (existsSync(ENV_FILE)) { dotenv.config({ path: ENV_FILE, quiet: true }); process.chdir(CONFIG_DIR); }
       await (await import("./adapters/cli/run.js")).runCli();
     }
-    catch { console.error("CLI failed. Check arguments, local state ownership and provider configuration."); process.exitCode = 1; }
+    catch {
+      const error = "CLI failed. Check arguments, local state ownership and provider configuration.";
+      console.error(error);
+      if (process.argv.slice(3).includes('--json')) process.stdout.write(JSON.stringify({ status: 'failed', error }) + '\n');
+      process.exitCode = 1;
+    }
     break;
   case "setup":
     await setup();
