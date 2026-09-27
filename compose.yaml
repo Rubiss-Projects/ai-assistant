@@ -14,6 +14,7 @@ services:
       AI_ASSISTANT_CONFIG_DIR: /data
       # Provider tools can access this directory, but not the adjacent login state under /data.
       AI_ASSISTANT_WORKSPACE_ROOT: /data/workspaces
+      REGISTER_COMMANDS_ON_START: ${REGISTER_COMMANDS_ON_START:-true}
       AI_ASSISTANT_BROWSER_URL: http://browser:3123
       GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT: ${GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT:-20}
       CODEX_REVIEW_LIMIT: ${CODEX_REVIEW_LIMIT:-20}

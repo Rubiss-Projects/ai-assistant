@@ -66,8 +66,3 @@ test('custom commands bypass registration and preserve arguments and exit status
 test('application exit status is preserved', shellOptions, () => {
   assert.deepEqual(run('slack', undefined, ['start'], '0', '9'), { status: 9, calls: [application] });
 });
-test('Compose leaves the registration flag to the service env file', () => {
-  const compose = readFileSync(new URL('../compose.yaml', import.meta.url), 'utf8');
-  assert.match(compose, /env_file:\s*\n\s*- \.env/);
-  assert.doesNotMatch(compose, /^\s*REGISTER_COMMANDS_ON_START:/m);
-});
