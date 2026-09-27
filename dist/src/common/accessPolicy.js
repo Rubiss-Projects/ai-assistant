@@ -93,6 +93,10 @@ export function createAccessPolicy(env = process.env) {
         },
     };
 }
+/** Linking and reading cards are available to contributors and explicitly granted maintainers. */
+export function canUseGitHubActions(access, subject) {
+    return access.can(subject, "github.contribute") || access.can(subject, "github.merge") || access.can(subject, "github.release");
+}
 export function slashCommandCapability({ commandName: command, subcommand: sub, hasWorkspace }) {
     if (command === "github" && ["link", "status"].includes(sub ?? ""))
         return "github.contribute";
@@ -125,6 +129,8 @@ export function slashCommandRequiresAdmin(request) {
     return slashCommandCapability(request) !== "chat.use";
 }
 export function canInvokeSlashCommand(access, userId, request, subject = { userId }) {
+    if (request.commandName === "github" && ["link", "status"].includes(request.subcommand ?? ""))
+        return canUseGitHubActions(access, subject);
     if (request.commandName === "ruleset") {
         if (configuredUserInstructionMode() === "off")
             return false;

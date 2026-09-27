@@ -1,5 +1,5 @@
 import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, MessageFlags, SlashCommandBuilder, } from "discord.js";
-import { createAccessPolicy } from "../../common/accessPolicy.js";
+import { canUseGitHubActions, createAccessPolicy } from "../../common/accessPolicy.js";
 import { discordSubject } from "../../common/discordAccess.js";
 import { githubContributionService } from "../../common/githubContributions.js";
 import { GitHubMaintainer } from "../../common/githubMaintainer.js";
@@ -83,7 +83,7 @@ class DiscordGitHub {
             const subject = await discordSubject(interaction.client, interaction.user.id, interaction.guildId, signal);
             const access = createAccessPolicy();
             const capability = action === "merge" ? "github.merge" : action === "release" ? "github.release" : "github.contribute";
-            if (!access.can(subject, capability))
+            if (!(action === "read" ? canUseGitHubActions(access, subject) : access.can(subject, capability)))
                 throw new GitHubActionError(`You do not have permission to ${action === "read" ? "use GitHub actions" : action} through this bot.`);
             signal.throwIfAborted();
         };
@@ -137,8 +137,9 @@ class DiscordGitHub {
             if (action !== "approve" && action !== "merge" && action !== "release")
                 throw new GitHubActionError("Unknown GitHub action.");
             const result = await this.actions.act(id, action, context);
-            await interaction.message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] });
             await interaction.editReply(result);
+            // A failed public-card update must not turn a successful GitHub mutation into a failure reply.
+            await interaction.message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] }).catch(() => { });
         }
         catch (error) {
             // Never log OAuth payloads, tokens, or transport errors carrying credential-bearing request data.

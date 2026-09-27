@@ -92,6 +92,10 @@ export function createAccessPolicy(env: NodeJS.ProcessEnv = process.env) {
   };
 }
 export type AccessPolicy = ReturnType<typeof createAccessPolicy>;
+/** Linking and reading cards are available to contributors and explicitly granted maintainers. */
+export function canUseGitHubActions(access: AccessPolicy, subject: AccessSubject): boolean {
+  return access.can(subject, "github.contribute") || access.can(subject, "github.merge") || access.can(subject, "github.release");
+}
 export interface SlashCommandRequest { commandName: string; subcommand?: string | null; hasWorkspace?: boolean }
 export function slashCommandCapability({ commandName: command, subcommand: sub, hasWorkspace }: SlashCommandRequest): Capability | undefined {
   if (command === "github" && ["link", "status"].includes(sub ?? "")) return "github.contribute";
@@ -115,6 +119,7 @@ export function slashCommandRequiresAdmin(request: SlashCommandRequest): boolean
   return slashCommandCapability(request) !== "chat.use";
 }
 export function canInvokeSlashCommand(access: AccessPolicy, userId: string, request: SlashCommandRequest, subject: AccessSubject = { userId }): boolean {
+  if (request.commandName === "github" && ["link", "status"].includes(request.subcommand ?? "")) return canUseGitHubActions(access, subject);
   if (request.commandName === "ruleset") {
     if (configuredUserInstructionMode() === "off") return false;
     return access.can(subject, "ruleset.manage") || access.can(subject, "chat.use");

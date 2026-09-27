@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { githubContributionsEnabled, hostOnlyGitHubPath } from "./githubContributionConfig.js";
+import { contributionReviewsEnabled, githubContributionsEnabled, hostOnlyGitHubPath } from "./githubContributionConfig.js";
 export class GitHubActionError extends Error {
     status;
     constructor(message, status) {
@@ -16,6 +16,8 @@ export function githubActionsEnabled(env = process.env) {
         throw new Error("AI_ASSISTANT_ENABLE_GITHUB_ACTIONS must be true or false.");
     if (value === "true" && !githubContributionsEnabled(env))
         throw new Error("GitHub actions require shared-mode contributions.");
+    if (value === "true" && !contributionReviewsEnabled(env))
+        throw new Error("GitHub actions require server-side Codex reviews.");
     return value === "true";
 }
 export function githubActionDirectory(env = process.env) {
