@@ -35,7 +35,8 @@ export interface TrustedAdapterContext<P extends PreparedTurn = PreparedTurn> {
   resolveSession?(input: IncomingTurn): Promise<string>;
   /** Coordinate the resolved destination around queueing, preparation and delivery. */
   coordinate?(key: string, run: () => Promise<void>): Promise<void>;
-  authorize(input: IncomingTurn, stage: "ingress" | "execution" | "delivery"): Promise<boolean>;
+  /** False denies access; a thrown check is unavailable and preserves an undelivered outbox record. */
+  authorize(input: IncomingTurn, stage: "ingress" | "execution" | "delivery", output?: TurnOutput): Promise<boolean>;
   prepare(input: IncomingTurn, key: string, signal: AbortSignal): Promise<P>;
   generate(prepared: P, key: string, signal: AbortSignal, progress: (p: ProgressUpdate) => Promise<void>): Promise<TurnOutput>;
   deliver(output: TurnOutput, deliveryKey: string, sessionKey: string): Promise<DeliveryReceipt>;

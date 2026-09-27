@@ -160,7 +160,7 @@ export class SlackAdapter {
         const channel = info.channel;
         // Shared/external channels and DMs require a separate visibility policy.
         if (!channel || channel.is_im || channel.is_mpim || channel.is_ext_shared || channel.is_org_shared || !channel.is_member)
-            throw new Error('Unsupported channel audience.');
+            return;
         const members = new Set();
         let cursor;
         for (let page = 0; page < 20; page++) {
@@ -171,8 +171,10 @@ export class SlackAdapter {
             if (!cursor)
                 break;
         }
-        if (cursor || !members.has(input.actor.userId) || !members.has(this.config.botUserId))
-            throw new Error('Cannot establish channel audience.');
+        if (cursor)
+            throw new Error('Cannot establish the complete channel audience.');
+        if (!members.has(input.actor.userId) || !members.has(this.config.botUserId))
+            return;
         return createHash('sha256').update(JSON.stringify([...members].sort())).digest('hex');
     }
     stateFile(key) { return join(this.config.stateDirectory, createHash('sha256').update(key).digest('hex') + '.json'); }
@@ -213,21 +215,26 @@ export class SlackAdapter {
         const key = sessionKey(input, 'shared');
         let audience;
         const authorized = async () => {
-            try {
-                const current = await this.audience(input);
-                return audience === undefined || current === audience;
-            }
-            catch {
-                return false;
-            }
+            const current = await this.audience(input);
+            return current !== undefined && (audience === undefined || current === audience);
         };
         const port = new SlackHistory(this.historyApi, input.conversation, authorized, this.config.excludedAuthors);
         return this.service.submit(input, {
             platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
             audience: 'shared', capabilities: { ...TEXT_CAPABILITIES, history: true, progress: false },
-            authorize: async (_i, stage) => stage === 'ingress' ? true : authorized(),
+            authorize: async (_i, stage, output) => {
+                if (stage === 'ingress')
+                    return true;
+                if (output) {
+                    const current = await this.audience(input);
+                    return Boolean(output.audienceTag && current === output.audienceTag);
+                }
+                return authorized();
+            },
             prepare: async (_i, session, signal) => {
                 audience = await this.audience(input);
+                if (!audience)
+                    throw new Error('Conversation access denied.');
                 const state = this.load(session);
                 state.represented ??= [];
                 state.scopes ??= {};
@@ -241,7 +248,7 @@ export class SlackAdapter {
                 const removed = observed?.complete && Object.entries(state.positions).some(([id, pos]) => state.scopes[id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId) < 0 && !observedIds.has(id));
                 const exclusionPolicy = JSON.stringify([...this.config.excludedAuthors].sort());
                 const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
-                if (state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) {
+                if (result.coverage.status === 'unavailable' || state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) {
                     await this.engine.resetSession(session);
                     state.seen = {};
                     state.positions = {};
@@ -286,8 +293,6 @@ export class SlackAdapter {
                 return response;
             },
             deliver: async (output, deliveryKey) => {
-                if (!output.audienceTag || output.audienceTag !== await this.audience(input))
-                    throw new Error("Generated output audience changed; delivery denied.");
                 const text = output.content + (output.attachments.length ? '\n[File delivery is unavailable in Slack.]' : '');
                 const chars = Array.from(text || '(No text response)');
                 const ids = [];

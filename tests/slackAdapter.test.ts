@@ -26,17 +26,19 @@ test('Slack service shutdown cancels active text-engine generation without deliv
 });
 function setup(){
  const dir=mkdtempSync(join(tmpdir(),'slack-adapter-'));const journal=new MemoryTurnJournal();const service=new ConversationService(journal);const prompts:string[]=[],posts:Record<string,string>[]=[];let identity="provider-a/session-1";let reads=0,authorized=true,extra=false,resets=0;let history:Record<string,unknown>[]=[{ts:'1700000001.000000',user:'U',text:'<@BOT> question',thread_ts:'1700000001.000000'},{ts:'1700000002.000000',user:'FRIEND',text:'unmentioned clarification',thread_ts:'1700000001.000000'}];
+ let historyUnavailable = false, audienceFailureAt = 0, audienceCalls = 0;
  const api={call:async(method:string,args?:Record<string,string>)=>{
+  if(method==='conversations.members' && ++audienceCalls === audienceFailureAt) throw new Error('Slack temporarily unavailable');
   if(method==='conversations.info')return {ok:true,channel:{is_member:true}};
   if(method==='conversations.members')return {ok:true,members:authorized?['U','FRIEND','BOT',...(extra?['NEW']:[])]:['FRIEND','BOT']};
   if(method==='chat.postMessage'){posts.push(args!);return {ok:true,ts:'1900000009.000001'}};
-  if(method==='conversations.replies'||method==='conversations.history'){reads++;return {ok:true,messages:history}}
+  if(method==='conversations.replies'||method==='conversations.history'){reads++;if(historyUnavailable)throw new Error('missing_scope');return {ok:true,messages:history}}
   throw Error(method);
  }};
  const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string,_files?:never,_options?:SendMessageOptions)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
  const excludedAuthors=new Set<string>();
  const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service);
- return {adapter,engine,service,prompts,posts,journal,exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
+ return {adapter,engine,service,prompts,posts,journal,failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 test('Slack explicit thread mention includes unmentioned discussion and replies in thread',async()=>{
  const f=setup();try{const h=await f.adapter.receive(event('e','1700000003.000000','1700000001.000000'));assert.ok(h);assert.equal((await h.completion).state,'delivered');assert.match(f.prompts[0],/unmentioned clarification/);assert.equal(f.posts[0].thread_ts,'1700000001.000000');assert.ok(f.reads()>0);}finally{await f.close()}
@@ -57,9 +59,53 @@ test('recovered generated output cannot cross a changed audience',async()=>{
  const payload=event('recovery','1700000003.000000','1700000001.000000');const handle=await f.adapter.receive(payload);const delivered=await handle!.completion;
  assert.equal(delivered.state,'delivered');assert.ok(output?.audienceTag);
  f.journal.put({...delivered,state:'generated',output,receipt:undefined});f.changeAudience();
- await f.adapter.recover();assert.equal(f.journal.get(delivered.id)?.state,'interrupted');
+ await f.adapter.recover();assert.equal(f.journal.get(delivered.id)?.state,'failed');
  assert.equal(f.posts.length,1);assert.equal(f.prompts.length,1);
  }finally{await f.close()}
+});
+
+for (const check of [1, 2]) test('Slack recovery preserves output when authorization check ' + check + ' is unavailable', async () => {
+ const f = setup();
+ try {
+  const generate = f.engine.sendMessage;
+  let output: TurnOutput | undefined;
+  f.engine.sendMessage = async (...args) => { const result = await generate(...args); output = result; return result; };
+  const handle = await f.adapter.receive(event('retry-recovery', '1700000003.000000', '1700000001.000000'));
+  const delivered = await handle!.completion;
+  assert.equal(delivered.state, 'delivered');
+  assert.ok(output?.audienceTag);
+  f.journal.put({ ...delivered, state: 'generated', output, receipt: undefined });
+  f.failAudienceCheck(check);
+  await f.adapter.recover();
+  assert.equal(f.journal.get(delivered.id)?.state, 'generated');
+  assert.equal(f.posts.length, 1);
+  await f.adapter.recover();
+  assert.equal(f.journal.get(delivered.id)?.state, 'delivered');
+  assert.equal(f.journal.get(delivered.id)?.output, undefined);
+  assert.equal(f.journal.get(delivered.id)?.error, undefined);
+  assert.equal(f.posts.length, 2);
+  assert.equal(f.prompts.length, 1);
+ } finally { await f.close(); }
+});
+
+test('Slack resets retained provider history before continuing after history access is lost', async () => {
+ const f = setup();
+ try {
+  const root = '1700000001.000000';
+  await (await f.adapter.receive(event('history-first', '1700000003.000000', root)))!.completion;
+  assert.match(f.prompts[0], /unmentioned clarification/);
+  const resets = f.resets();
+  f.loseHistoryAccess();
+  const generate = f.engine.sendMessage;
+  f.engine.sendMessage = async (...args) => {
+   assert.equal(f.resets(), resets + 1, 'old context must be cleared before provider execution');
+   return generate(...args);
+  };
+  const result = await (await f.adapter.receive(event('history-lost', '1700000004.000000', root)))!.completion;
+  assert.equal(result.state, 'delivered');
+  assert.match(f.prompts[1], /unavailable/);
+  assert.doesNotMatch(f.prompts[1], /unmentioned clarification|Previously supplied records retained/);
+ } finally { await f.close(); }
 });
 
 test('sampling a long thread does not erase retained context',async()=>{

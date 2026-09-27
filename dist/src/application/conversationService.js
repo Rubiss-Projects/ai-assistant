@@ -128,6 +128,16 @@ export class ConversationService {
         this.pending++;
         const execute = async (executionKey) => {
             let prepared;
+            let authorizationUnavailable = false;
+            const authorize = async (stage) => {
+                try {
+                    return await host.authorize(input, stage, record.output);
+                }
+                catch (error) {
+                    authorizationUnavailable = true;
+                    throw error;
+                }
+            };
             // Providers own their configured generation deadlines. Only an explicit host
             // deadline may also bound preparation/delivery; never impose a hidden hour cap.
             const timer = this.timeoutMs === undefined ? undefined
@@ -135,7 +145,7 @@ export class ConversationService {
             timer?.unref();
             try {
                 controller.signal.throwIfAborted();
-                if (!await host.authorize(input, "execution"))
+                if (!await authorize('execution'))
                     throw new Error('Conversation access denied.');
                 if (!record.output) {
                     this.save({ ...record, state: 'running' });
@@ -151,12 +161,12 @@ export class ConversationService {
                     this.save(record);
                 }
                 // Never disclose a stored output after access has been revoked.
-                if (!await host.authorize(input, "delivery"))
+                if (!await authorize('delivery'))
                     throw new Error('Conversation access denied.');
                 controller.signal.throwIfAborted();
                 this.save({ ...record, state: 'delivering' });
                 const receipt = await host.deliver(record.output, id, executionKey);
-                return this.save({ ...record, state: 'delivered', output: undefined, receipt });
+                return this.save({ ...record, state: 'delivered', output: undefined, error: undefined, receipt });
             }
             catch (error) {
                 try {
@@ -164,6 +174,9 @@ export class ConversationService {
                 }
                 catch { /* Diagnostics cannot prevent cleanup. */ }
                 const current = this.journal.get(id);
+                if (current.state === 'generated' && authorizationUnavailable && !controller.signal.aborted) {
+                    return this.save({ ...current, error: 'Authorization unavailable; generated output retained for retry.' });
+                }
                 const uncertainDelivery = current.state === 'delivering';
                 return this.save({ ...current, state: uncertainDelivery ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'failed',
                     error: uncertainDelivery ? 'Delivery uncertain; provider will not be rerun automatically.' : controller.signal.aborted ? 'Turn cancelled; provider cancellation may not be supported.' : 'Turn failed. Check host diagnostics.' });
