@@ -5,9 +5,10 @@ Authorized Discord users can ask the assistant to propose a change to
 draft pull request in the same conversation, read its review threads, reply to
 feedback, and resolve addressed findings. For example: “Implement a clearer
 error message for missing attachments and open a draft PR in AI Assistant.”
-Maintainers review, mark ready, and merge on GitHub. The bot cannot approve,
-merge, or enable auto-merge. Existing Dependabot workflows and branch rules do
-not need to change.
+The model cannot approve, merge, release, or enable auto-merge. With optional
+[linked GitHub actions](#linked-github-actions-in-discord), people can approve,
+merge, and release through authenticated Discord buttons using their own GitHub
+accounts. Otherwise maintainers review, mark ready, and merge on GitHub.
 
 ## Configuration
 
@@ -171,8 +172,81 @@ does not enforce a cap on reviews independently triggered by Codex.
 
 GitHub's PR-write permission includes more than these operations, so the host
 exposes only the seven contribution tools and enforces ownership on every call.
-It has no arbitrary API/comment, review-approval, merge, auto-merge, or
+The model bridge has no arbitrary API/comment, review-approval, merge, auto-merge, or
 workflow-dispatch operation. Read-only personal connector behavior remains unchanged.
+
+## Linked GitHub actions in Discord
+
+Enable `AI_ASSISTANT_ENABLE_GITHUB_ACTIONS=true` alongside contributions and server
+reviews. Set `GITHUB_USER_APP_CLIENT_ID` to a **separate GitHub App's Client ID**.
+Keep the existing publisher/writer Apps and their permissions unchanged.
+
+Configure the new App with device flow and expiring user tokens enabled, webhooks
+disabled, and installation limited to the configured contribution repositories.
+Repository permissions: Contents, Pull requests, and Actions read/write; Checks
+and Commit statuses read-only; Metadata read-only (automatic). No private key,
+client secret, administration permission, or ruleset bypass is needed. User
+tokens can exercise only permissions held by both the App and the linked person.
+
+Run `/github link` in a server conversation. The bot privately gives the requester
+a code to enter at `https://github.com/login/device`. After authorizing, click
+**Finish linking**, verify the displayed GitHub login, then click the desired PR
+action. Linking never resumes an earlier approval/merge/release automatically.
+`/github status` shows the linked identity and refreshes this conversation's cards;
+`/github unlink` deletes that person's local tokens and pending link. To revoke the
+grant at GitHub as well, remove the App under GitHub Settings → Applications.
+
+Each button uses only the clicking Discord user's linked account. Missing,
+expired, or revoked authorization never falls back to an operator or App token.
+One GitHub account cannot be linked to multiple Discord users. Contributors may
+submit approvals under their own identities; those reviews are informational
+unless they meet GitHub's required-review rules. They do not authorize a merge or
+release. Explicit bot administrators and rights grants control `github.merge`
+and `github.release` separately; chat access, the contributor/server-admin presets,
+and the legacy open-admin fallback do not grant these capabilities. For example:
+
+```json
+{"grants":[{"guildId":"123","roleId":"456","capabilities":["github.merge","github.release"]}]}
+```
+
+Cards appear after Discord turns that have published bot contributions. They bind
+the repository, PR, contribution, conversation, head and reviewed base. Every
+click refreshes membership/rights and GitHub state. Approve and merge require a
+completed clean server review, successful checks, and resolved threads; large
+review histories fail closed. A changed revision requires a new card and review.
+Merge checks repository write access and GitHub merge requirements and uses rebase
+with the expected head SHA. If GitHub does not require approval, the authorized
+maintainer must personally approve that revision first. The model never receives
+these mutation tools or credentials.
+
+After merging an AI Assistant PR, **Refresh** prepares the next patch version and
+attaches a summary of all commits since the latest stable release. **Cut release**
+publishes the displayed commit through the fixed `release.yml` workflow on `main`.
+The merged commit's CI must pass; a moving main or changed preceding release
+requires reassessment. Release publication also updates `latest`. It does not
+deploy the running installation; the Docker promotion PR is separate. Manual
+workflow dispatch now requires both `tag` and `expected_sha`; tag-push releases
+continue to work. The workflow independently validates the selected commit and
+refuses to rebuild an already published release.
+
+The host persists action receipts before writes, reconciles lost approval/merge
+responses, and polls release runs across restarts. Ambiguous writes are never
+blindly repeated; if a release run cannot be uniquely identified, the card needs
+operator investigation in GitHub Actions. A failed publication stops promotion.
+Retries of a failed release workflow are an operator action, not a new release
+button click. GitHub does not support an atomic comparison of a PR's base SHA at
+merge; strict required checks on the target branch remain the protection against
+a base changing concurrently with the final merge call.
+
+`GITHUB_ACTIONS_STATE_DIR` defaults to `~/.config/ai-assistant/github-actions` and
+must be outside the provider workspace. Tokens are encrypted with AES-256-GCM;
+the owner-only directory contains `accounts.json`, its `token-key`, and `cards.json`.
+Back up all three privately. The encryption key must remain accessible only to
+the host; encryption does not protect against compromise of that host. Codes are
+ephemeral Discord responses and never enter model prompts. Logs omit OAuth data.
+Restarting abandons unfinished device links, while completed links and action
+receipts survive. Storage is bounded to 1,000 linked users and 1,000 cards; archive
+old terminal history during operator maintenance if capacity is reached.
 
 ## Rollout and rollback
 

@@ -9,6 +9,7 @@ import type { SessionManager } from '../../sessionManager.js';
 import { discordSubject } from '../../common/discordAccess.js';
 import { canInvokeSlashCommand } from '../../common/accessPolicy.js';
 import type { Client } from 'discord.js';
+import { presentGitHubCards } from './github.js';
 const services = new WeakMap<object, ConversationService>();
 /** Production installs durable ownership before logging in; unit fixtures use isolated memory. */
 export function installDiscordConversations(sessions: SessionManager): ConversationService {
@@ -61,7 +62,13 @@ export async function executeDiscordTurn(
     prepare: async (_input, session, signal) => prepare ? prepare(session, signal) : ({ prompt, attachments }),
     generate: (prepared, session, signal, onProgress) => sessions.sendMessage(session, prepared.prompt, prepared.attachments, { ...options, signal, onProgress }),
     progress: async update => { await options.onProgress?.(update); },
-    deliver: async (response, _id, session) => { await deliver(response, session); return { messageIds: [] }; },
+    deliver: async (response, _id, session) => {
+      await deliver(response, session);
+      if (source.client && source.guildId && source.commandName !== 'ask') {
+        await presentGitHubCards(source.client, session, source.guildId, /^\d+$/.test(session) ? session : source.channelId);
+      }
+      return { messageIds: [] };
+    },
   });
   const result = await handle.completion;
   if (result.state !== 'delivered') throw originalError ?? new Error(result.error ?? 'Conversation failed.');

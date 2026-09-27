@@ -43,12 +43,14 @@ import { ScheduleStore } from "./scheduling/store.js";
 import { discordSubject, contextAuthorPolicy } from "./common/discordAccess.js";
 import { DiscordScheduleAdapter } from "./scheduling/discordAdapter.js";
 import { handleSchedule } from "./handlers/slash/schedule.js";
+import { discordGitHub } from "./adapters/discord/github.js";
 export { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
 export type { SlashCommandRequest } from "./common/accessPolicy.js";
 
 export function createBot(sessions: SessionManager): Client & { waitUntilReady(signal: AbortSignal): Promise<void>; stopScheduler(): Promise<void> } {
   // Computed here so dotenv.config() has already run in index.ts.
   const access = createAccessPolicy();
+  const github = discordGitHub();
   if (userInstructionFeaturesEnabled()) userInstructionRulesetsFile();
   if (githubContributionsEnabled()) {
     const contributions = githubContributionService();
@@ -114,6 +116,16 @@ export function createBot(sessions: SessionManager): Client & { waitUntilReady(s
   ) : undefined;
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (interaction.isChatInputCommand() && interaction.commandName === "github") {
+      if (!interaction.guildId) await interaction.reply({ content: "GitHub actions are available only in server conversations.", ephemeral: true });
+      else if (github) await github.handle(interaction);
+      else await interaction.reply({ content: "Linked GitHub actions are not configured on this bot yet.", ephemeral: true });
+      return;
+    }
+    if (github && interaction.isButton() && interaction.customId.startsWith("gh:")) {
+      await github.handle(interaction);
+      return;
+    }
     if (!interaction.isChatInputCommand()) return;
 
     const cmd = interaction as ChatInputCommandInteraction;
@@ -254,8 +266,9 @@ export function createBot(sessions: SessionManager): Client & { waitUntilReady(s
       if (!client.isReady()) await once(client, Events.ClientReady, { signal });
       signal.throwIfAborted();
       scheduler?.start();
+      github?.start(client);
       console.log(`✅ Discord bot ready as ${client.user!.tag}`);
     },
-    stopScheduler: async () => { await Promise.all([scheduler?.stop(), participation.stop()]); },
+    stopScheduler: async () => { await Promise.all([scheduler?.stop(), participation.stop(), github?.stop()]); },
   });
 }

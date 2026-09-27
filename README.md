@@ -824,6 +824,15 @@ protected `GITHUB_CONTRIBUTIONS_CONFIG_FILE`. `GITHUB_CONTRIBUTIONS_ACCESS=grant
 preset; `chat` admits everyone already allowed to chat. See the linked guide for
 App setup, limits, and recovery. Dependabot's existing merge path is unchanged.
 
+Optional [linked GitHub actions](docs/github-contributions.md#linked-github-actions-in-discord)
+add Discord buttons for approving, merging, and releasing bot contributions.
+Each person links their own GitHub account with `/github link`; no action uses
+another person's identity. Contributors may approve; explicit bot administrators
+or `github.merge` / `github.release` rights control the privileged buttons.
+GitHub repository permissions still apply. Enable with
+`AI_ASSISTANT_ENABLE_GITHUB_ACTIONS=true` and a separate device-flow App's
+`GITHUB_USER_APP_CLIENT_ID`. The model has no access to user tokens or these actions.
+
 | Variable | Default / accepted values | What it does |
 | --- | --- | --- |
 | `GITHUB_CONTRIBUTIONS_PUBLISH_LIMIT` | `20`; non-negative safe integer | Publish attempts per response, including failed attempts. `0` means unlimited. Other tool budgets are independent and unchanged. |

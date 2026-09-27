@@ -239,6 +239,14 @@ export class GitHubContributions {
     }));
   }
 
+  /** Host-only Discord cards; no credentials or maintainer mutations enter the model bridge. */
+  actionTargets(session: string, guild: string) {
+    return this.records.filter(record => record.session === session && record.guild === guild && record.pull && record.published).map(record => ({
+      id: record.id, repository: this.repository(record.repository), pull: record.pull!, branch: record.branch,
+      baseBranch: record.baseBranch, head: record.headSha, publisher: this.config.publisherBotLogin, review: this.autoReviewStatus(record.id),
+    }));
+  }
+
   /** Reconcile an already-authorized publish before advertising a head for the next edit. */
   private async refresh(caller: ContributionCaller, record: Contribution): Promise<PullRequest | undefined> {
     const pull = record.published || record.pendingSha ? await this.currentPull(caller, record) : undefined;

@@ -6,7 +6,7 @@ import { githubContributionAccess } from "./githubContributionConfig.js";
 
 export const CAPABILITIES = [
   "chat.use", "ask.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
-  "ruleset.manage", "github.contribute", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
+  "ruleset.manage", "github.contribute", "github.merge", "github.release", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
 ] as const;
 export type Capability = typeof CAPABILITIES[number];
 export interface AccessSubject { userId: string; guildId?: string | null; roleIds?: readonly string[] }
@@ -79,6 +79,8 @@ export function createAccessPolicy(env: NodeJS.ProcessEnv = process.env) {
       if (capability === "ask.use") return explicitAdmin(s) || granted(s, capability);
       if (capability === "github.contribute") return explicitAdmin(s) || granted(s, capability)
         || (contributionAccess === "chat" && (legacyMessage(s.userId) || legacyAdmin(s.userId) || granted(s, "chat.use")));
+      // Privileged GitHub actions never inherit the legacy open-admin fallback.
+      if (capability === "github.merge" || capability === "github.release") return Boolean(s.guildId) && (explicitAdmin(s) || granted(s, capability));
       if (capability.startsWith("schedule.")) {
         if (!s.guildId) return false;
         // Legacy open-admin fallback never grants unattended execution.
@@ -92,6 +94,8 @@ export function createAccessPolicy(env: NodeJS.ProcessEnv = process.env) {
 export type AccessPolicy = ReturnType<typeof createAccessPolicy>;
 export interface SlashCommandRequest { commandName: string; subcommand?: string | null; hasWorkspace?: boolean }
 export function slashCommandCapability({ commandName: command, subcommand: sub, hasWorkspace }: SlashCommandRequest): Capability | undefined {
+  if (command === "github" && ["link", "status"].includes(sub ?? "")) return "github.contribute";
+  if (command === "github" && sub === "unlink") return "chat.use";
   if (["ask", "chat"].includes(command) && !sub) return hasWorkspace ? "workspace.manage" : "chat.use";
   if (["reset", "history", "compact"].includes(command) && !sub) return "chat.use";
   if (["servers", "leave", "status", "fleet"].includes(command) && !sub) return "bot.manage";
