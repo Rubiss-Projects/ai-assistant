@@ -31,7 +31,8 @@ export class GitHubMaintainer {
     auth;
     targets;
     cards;
-    queue = Promise.resolve();
+    queues = new Map();
+    releasePollOffset = 0;
     file;
     constructor(auth, targets, directory) {
         this.auth = auth;
@@ -42,10 +43,18 @@ export class GitHubMaintainer {
             throw new Error("Invalid GitHub action card store.");
     }
     save() { writeGitHubState(this.file, this.cards); }
-    pendingReleases() { return this.cards.filter(card => card.release && card.attempts.some(attempt => attempt.action === "release") && !["success", "failure", "cancelled", "timed_out", "action_required", "skipped", "neutral", "stale"].includes(card.release.state ?? "")); }
-    serial(action) {
-        const pending = this.queue.catch(() => { }).then(action);
-        this.queue = pending;
+    pendingReleases(limit = 10) {
+        const pending = this.cards.filter(card => card.release && card.attempts.some(attempt => attempt.action === "release") && !["success", "failure", "cancelled", "timed_out", "action_required", "skipped", "neutral", "stale"].includes(card.release.state ?? ""));
+        const start = this.releasePollOffset % (pending.length || 1);
+        const batch = [...pending.slice(start), ...pending.slice(0, start)].slice(0, limit);
+        this.releasePollOffset = start + batch.length;
+        return batch;
+    }
+    serial(id, action) {
+        const pending = (this.queues.get(id) ?? Promise.resolve()).catch(() => { }).then(action);
+        this.queues.set(id, pending);
+        void pending.finally(() => { if (this.queues.get(id) === pending)
+            this.queues.delete(id); }).catch(() => { });
         return pending;
     }
     target(card) {
@@ -156,7 +165,7 @@ export class GitHubMaintainer {
             throw new GitHubActionError("Your linked GitHub account does not have write access to this repository.");
     }
     async act(id, action, context) {
-        return this.serial(async () => {
+        return this.serial(id, async () => {
             await context.authorize(action);
             const card = this.get(id, context);
             const api = await this.auth.client(context.userId, context.signal, () => context.authorize(action));
@@ -204,7 +213,7 @@ export class GitHubMaintainer {
         });
     }
     async refresh(id, context) {
-        return this.serial(async () => {
+        return this.serial(id, async () => {
             await context.authorize("read");
             const card = this.get(id, context);
             const api = await this.auth.client(context.userId, context.signal, () => context.authorize("read"));

@@ -8,7 +8,7 @@ export class GitHubActionError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
 }
 export interface GitHubUser { id: number; login: string }
-interface Account extends GitHubUser { generation: string; access: string; refresh: string; expires: number; refreshExpires: number }
+interface Account extends GitHubUser { generation: string; access: string; refresh: string; expires: number; refreshExpires: number; identityVerified?: boolean }
 interface Device { id: string; code: string; expires: number; nextPoll: number; interval: number }
 export interface UserGitHubClient {
   user: GitHubUser;
@@ -81,7 +81,8 @@ export class GitHubUserAuth {
       decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
       const records = JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, "base64")), decipher.final()]).toString("utf8")) as Record<string, Account>;
       if (!records || Array.isArray(records) || Object.keys(records).length > 1000 || Object.entries(records).some(([id, a]) =>
-        !/^\d+$/.test(id) || !a || !Number.isSafeInteger(a.id) || !a.login || !a.generation || !a.access || !a.refresh || !Number.isFinite(a.expires) || !Number.isFinite(a.refreshExpires))) throw new Error("Invalid linked GitHub account store.");
+        !/^\d+$/.test(id) || !a || !Number.isSafeInteger(a.id) || !a.login || !a.generation || !a.access || !a.refresh || !Number.isFinite(a.expires) || !Number.isFinite(a.refreshExpires)
+        || (a.identityVerified !== undefined && typeof a.identityVerified !== "boolean"))) throw new Error("Invalid linked GitHub account store.");
       Object.assign(this.accounts, records);
     }
   }
@@ -161,16 +162,23 @@ export class GitHubUserAuth {
   private async current(userId: string, signal: AbortSignal): Promise<Account> {
     const account = this.accounts[userId];
     if (!account) throw new GitHubActionError("Link your own GitHub account with /github link first.");
-    if (account.expires > this.now() + 60_000) return account;
+    if (account.expires > this.now() + 60_000 && account.identityVerified !== false) return account;
     let refreshing = this.refreshing.get(userId);
     if (!refreshing) {
       refreshing = (async () => {
-        if (account.refreshExpires <= this.now()) throw new GitHubActionError("Your GitHub authorization expired. Link your account again.");
-        const token = this.token(await this.oauth({ grant_type: "refresh_token", refresh_token: account.refresh }, signal));
-        if (this.accounts[userId] !== account) throw new GitHubActionError("Your GitHub link changed during this action.");
-        const user = await this.identity(token.access, signal);
-        if (user.id !== account.id || this.accounts[userId] !== account) throw new GitHubActionError("Your GitHub identity changed. Link again.");
-        const updated = { ...account, ...user, ...token };
+        let pending = account;
+        if (account.expires <= this.now() + 60_000) {
+          if (account.refreshExpires <= this.now()) throw new GitHubActionError("Your GitHub authorization expired. Link your account again.");
+          const token = this.token(await this.oauth({ grant_type: "refresh_token", refresh_token: account.refresh }, signal));
+          if (this.accounts[userId] !== account) throw new GitHubActionError("Your GitHub link changed during this action.");
+          // Refresh tokens rotate once. Keep the replacement across a failed identity
+          // lookup or restart, but prohibit its use until the identity is verified.
+          pending = { ...account, ...token, identityVerified: false };
+          this.accounts[userId] = pending; this.save();
+        }
+        const user = await this.identity(pending.access, signal);
+        if (user.id !== account.id || this.accounts[userId] !== pending) throw new GitHubActionError("Your GitHub identity changed. Link again.");
+        const updated = { ...pending, ...user, identityVerified: true };
         this.accounts[userId] = updated; this.save(); return updated;
       })();
       this.refreshing.set(userId, refreshing);
