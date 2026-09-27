@@ -44,6 +44,7 @@ export interface SessionContext {
   transportContext?: ContextRequest["transportContext"];
   rulesetsEnabled: boolean;
   githubContributionsEnabled: boolean;
+  sitesEnabled: boolean;
 }
 
 /** Sort object keys, preserving meaningful array order. Only the digest is persisted. */
@@ -109,8 +110,8 @@ export const CONTEXT_CONTRIBUTORS: readonly ContextContributor[] = [
     id: "security",
     profiles: allProfiles,
     resolve: request => ({
-      instructions: request.transportContext ? secureSystemPrompt(undefined, { ...process.env, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "false" }).replaceAll("Discord", request.transportContext.platform) : secureSystemPrompt(),
-      capabilities: { mode: configuredSecurityMode(), sites: configuredSitesEnabled() },
+      instructions: request.transportContext ? secureSystemPrompt(undefined, { ...process.env, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "false", AI_ASSISTANT_ENABLE_SITES: "false" }).replaceAll("Discord", request.transportContext.platform) : secureSystemPrompt(),
+      capabilities: { mode: configuredSecurityMode(), sites: !request.transportContext && configuredSitesEnabled() },
     }),
   },
 ];
@@ -143,6 +144,7 @@ export function resolveSessionContext(
     transportContext: request.transportContext,
     rulesetsEnabled: resolved.some(part => part.id === "user-rulesets"),
     githubContributionsEnabled: resolved.some(part => part.id === "github-contributions"),
+    sitesEnabled: !request.transportContext && configuredSitesEnabled(),
   };
 }
 

@@ -97,7 +97,10 @@ export class SlackHistory implements HistoryPort {
 }
 
 interface SlackConfig { teamId: string; installationId: string; botUserId: string; channels: Set<string>; users: Set<string>; excludedAuthors: Set<string>; stateDirectory: string }
-interface ContextState { exclusionPolicy?: string; contextIdentity?: string; represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string>; scopes?: Record<string,string> }
+interface ContextState { resetRequired?: boolean; exclusionPolicy?: string; contextIdentity?: string; represented: string[]; audience?: string; seen: Record<string,string>; positions: Record<string,string>; scopes?: Record<string,string> }
+function contextOverBudget(state: ContextState): boolean {
+  return state.represented.length + Object.keys(state.seen).length + Object.keys(state.positions).length + Object.keys(state.scopes ?? {}).length > 4000;
+}
 function fingerprint(message: { authorId: string; text: string; revision?: string }): string {
   return createHash('sha256').update(JSON.stringify([message.authorId, message.text, message.revision ?? 'null'])).digest('hex');
 }
@@ -143,7 +146,11 @@ export class SlackAdapter {
     try { return JSON.parse(readFileSync(this.stateFile(key),'utf8')); }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; return { represented: [], seen: {}, positions: {} }; }
   }
-  private save(key: string, state: ContextState) { const p = this.stateFile(key); writeFileSync(p + '.tmp', JSON.stringify(state), { mode: 0o600 }); renameSync(p + '.tmp', p); }
+  private save(key: string, state: ContextState) {
+    // Compact metadata now; discard the matching provider history before the next turn.
+    if (contextOverBudget(state)) state = { resetRequired: true, represented: [], seen: {}, positions: {}, scopes: {} };
+    const p = this.stateFile(key); writeFileSync(p + '.tmp', JSON.stringify(state), { mode: 0o600 }); renameSync(p + '.tmp', p);
+  }
   async receive(payload: Record<string,unknown>): Promise<TurnHandle | undefined> {
     const input = this.normalize(payload); if (!input) return;
     const source = payload.event as Record<string, unknown>;
@@ -201,7 +208,7 @@ export class SlackAdapter {
           state.scopes![id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId!) < 0 && !observedIds.has(id));
         const exclusionPolicy = JSON.stringify([...this.config.excludedAuthors].sort());
         const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
-        if (result.coverage.status === 'unavailable' || state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
+        if (state.resetRequired || contextOverBudget(state) || result.coverage.status === 'unavailable' || state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
         const fresh = result.messages.filter(m => !state.seen[m.id] && !state.represented.includes(m.position));
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
         const next: ContextState = { exclusionPolicy, represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };

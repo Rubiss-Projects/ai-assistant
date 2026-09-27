@@ -122,6 +122,9 @@ export class SlackHistory {
         return { messages, cursor: next, truncated: Boolean(result.has_more && !next) };
     }
 }
+function contextOverBudget(state) {
+    return state.represented.length + Object.keys(state.seen).length + Object.keys(state.positions).length + Object.keys(state.scopes ?? {}).length > 4000;
+}
 function fingerprint(message) {
     return createHash('sha256').update(JSON.stringify([message.authorId, message.text, message.revision ?? 'null'])).digest('hex');
 }
@@ -190,7 +193,14 @@ export class SlackAdapter {
             return { represented: [], seen: {}, positions: {} };
         }
     }
-    save(key, state) { const p = this.stateFile(key); writeFileSync(p + '.tmp', JSON.stringify(state), { mode: 0o600 }); renameSync(p + '.tmp', p); }
+    save(key, state) {
+        // Compact metadata now; discard the matching provider history before the next turn.
+        if (contextOverBudget(state))
+            state = { resetRequired: true, represented: [], seen: {}, positions: {}, scopes: {} };
+        const p = this.stateFile(key);
+        writeFileSync(p + '.tmp', JSON.stringify(state), { mode: 0o600 });
+        renameSync(p + '.tmp', p);
+    }
     async receive(payload) {
         const input = this.normalize(payload);
         if (!input)
@@ -252,7 +262,7 @@ export class SlackAdapter {
                 const removed = observed?.complete && Object.entries(state.positions).some(([id, pos]) => state.scopes[id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId) < 0 && !observedIds.has(id));
                 const exclusionPolicy = JSON.stringify([...this.config.excludedAuthors].sort());
                 const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
-                if (result.coverage.status === 'unavailable' || state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) {
+                if (state.resetRequired || contextOverBudget(state) || result.coverage.status === 'unavailable' || state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) {
                     await this.engine.resetSession(session);
                     state.seen = {};
                     state.positions = {};

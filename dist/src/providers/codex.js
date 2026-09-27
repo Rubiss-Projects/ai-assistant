@@ -105,7 +105,7 @@ export function codexShellEnvironment(workingDirectory, childEnvironment) {
     return result;
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt = secureSystemPrompt(providerSystemPrompt()), github) {
+export function codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt = secureSystemPrompt(providerSystemPrompt()), github, sitesEnabled = configuredSitesEnabled()) {
     if (configuredSecurityMode() === "unrestricted") {
         return {
             ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
@@ -113,7 +113,7 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
                 : {}),
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
             ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
-            config: { developer_instructions: systemPrompt },
+            config: { developer_instructions: systemPrompt, ...(!sitesEnabled ? { apps: { [CODEX_SITES_CONNECTOR_ID]: { enabled: false } }, features: { plugins: false } } : {}) },
             ...(artifacts || rulesets || github ? { configOverrides: codexHostMcpOverrides(artifacts, rulesets, false, github) } : {}),
         };
     }
@@ -121,7 +121,6 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
         throw new Error("Shared Codex clients require an isolated temporary directory.");
     }
     const workingDirectory = ensureProviderWorkingDirectory();
-    const sitesEnabled = configuredSitesEnabled();
     const childEnvironment = Object.fromEntries(Object.entries(providerChildEnvironment("codex"))
         .filter(([name]) => !["TEMP", "TMP", "TMPDIR"].includes(name.toUpperCase())));
     childEnvironment.TEMP = temporaryDirectory;
@@ -379,7 +378,7 @@ export class CodexProvider {
             temporaryDirectory = createCodexSessionTemporaryDirectory();
             this.temporaryDirectories.set(key, temporaryDirectory);
         }
-        const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github));
+        const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github, context.sitesEnabled));
         this.clients.set(key, { fingerprint, client });
         this.sessions.delete(key);
         return client;
@@ -410,7 +409,7 @@ export class CodexProvider {
         let stored = forceNew ? undefined : this.store.getState(key);
         let handoff = forceNew ? this.handoffs.get(key) : stored?.handoff;
         if (stored && !sameContext(stored.context, context.applied)) {
-            const summaryClient = this.makeClient(codexHandoffOptions(codexClientOptions(this.temporaryDirectories.get(key))));
+            const summaryClient = this.makeClient(codexHandoffOptions(codexClientOptions(this.temporaryDirectories.get(key), undefined, undefined, context.systemPrompt, undefined, false)));
             const summaryThread = summaryClient.resumeThread(stored.sessionId, {
                 ...this.threadOptions(key), sandboxMode: "read-only", networkAccessEnabled: false, webSearchMode: "disabled",
             });

@@ -125,7 +125,7 @@ export class ConversationService {
         this.maxPending = maxPending;
         this.timeoutMs = timeoutMs;
         for (const record of journal.all()) {
-            if (['accepted', 'running', 'delivering'].includes(record.state)) {
+            if (['accepted', 'running', 'delivering'].includes(record.state) || (record.state === 'generated' && !record.retryGeneratedDelivery)) {
                 this.save({ ...record, state: 'interrupted', error: 'Process stopped before completion; execution or delivery may have occurred. Submit a new request explicitly.' });
             }
             else if (record.state === 'delivered' && record.output) {
@@ -198,6 +198,7 @@ export class ConversationService {
                     controller.signal.throwIfAborted();
                     record.output = output;
                     record.state = 'generated';
+                    record.retryGeneratedDelivery = Boolean(host.retryGeneratedDelivery);
                     this.save(record);
                 }
                 // Never disclose a stored output after access has been revoked.
@@ -219,6 +220,7 @@ export class ConversationService {
                 }
                 const uncertainDelivery = current.state === 'delivering';
                 return this.save({ ...current, state: uncertainDelivery ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'failed',
+                    output: uncertainDelivery ? current.output : undefined,
                     error: uncertainDelivery ? 'Delivery uncertain; provider will not be rerun automatically.' : controller.signal.aborted ? 'Turn cancelled; provider cancellation may not be supported.' : 'Turn failed. Check host diagnostics.' });
             }
             finally {

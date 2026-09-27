@@ -23,6 +23,7 @@ export type TurnState = 'accepted' | 'running' | 'generated' | 'delivering' | 'd
 export interface TurnRecord {
   id: string; sessionKey: string; input: IncomingTurn; state: TurnState; updatedAt: string;
   output?: TurnOutput; receipt?: DeliveryReceipt; error?: string;
+  retryGeneratedDelivery?: boolean;
 }
 export interface TurnHandle { id: string; completion: Promise<TurnRecord>; cancel(): void }
 export interface PreparedTurn { prompt: string; cleanup?(): Promise<void> }
