@@ -204,7 +204,12 @@ export class GitHubMaintainer {
                 throw new GitHubActionError("GitHub is not ready to merge this PR. Refresh once all repository requirements pass.");
             const attempt = this.attempt(card, action, api.user.id, context.userId);
             const result = await this.send(card, attempt, () => api.request("PUT", `/repos/${card.repository}/pulls/${card.pull}/merge`, { sha: card.head, merge_method: "rebase" }));
-            if (!result.merged)
+            if (result.merged === false) {
+                card.attempts = card.attempts.filter(item => item !== attempt);
+                this.save();
+                throw new GitHubActionError("GitHub did not merge this PR. Resolve its blocking conditions, then retry.");
+            }
+            if (result.merged !== true)
                 throw new GitHubActionError("GitHub did not confirm the merge. Refresh to check its outcome.");
             card.merged = commit(result.sha);
             attempt.state = "done";

@@ -161,7 +161,7 @@ function fixture(t: TestContext) {
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } };
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
-  let lost = false, denial = false, unsent = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged;
+  let lost = false, denial = false, unsent = false, mergeDenied = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged;
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
       await authorize(); calls.push({ user, method, endpoint, body: raw });
@@ -177,7 +177,8 @@ function fixture(t: TestContext) {
         if (lost) throw new Error("connection lost");
         result = { id: 100 };
       } else if (endpoint.endsWith("/merge")) {
-        pull.state = "MERGED"; pull.mergeCommit = { oid: merged }; result = { merged: true, sha: merged };
+        if (mergeDenied) result = { merged: false, sha: "" };
+        else { pull.state = "MERGED"; pull.mergeCommit = { oid: merged }; result = { merged: true, sha: merged }; }
       } else if (endpoint.endsWith("/releases/latest")) result = { tag_name: latest };
       else if (endpoint.includes("/tags?")) result = [{ name: latest }, { name: "v1.10.0-beta.1" }];
       else if (endpoint.includes("/compare/")) result = { status: "ahead", total_commits: 2, commits: [{ commit: { message: "Other person's change" } }, { commit: { message: "This change" } }] };
@@ -198,7 +199,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { root, service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; } };
+  return { root, service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -218,6 +219,28 @@ test("Discord permission cannot substitute for GitHub repository write permissio
   await f.service.act(f.card.id, "approve", f.context("contributor"));
   await assert.rejects(f.service.act(f.card.id, "merge", { ...f.context("contributor"), authorize: async () => {} }), /write access/);
   assert.ok(!f.calls.some(call => call.endpoint.endsWith("/merge")));
+});
+
+test("contributors can approve a draft, and a maintainer makes it ready only during merge", async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  await f.service.act(f.card.id, "approve", f.context("contributor"));
+  await f.service.act(f.card.id, "approve", f.context());
+  assert.equal(f.pull.isDraft, true);
+  await f.service.act(f.card.id, "merge", f.context());
+  assert.equal(f.pull.isDraft, false); assert.equal(f.pull.state, "MERGED");
+  assert.equal(f.calls.filter(call => call.endpoint.endsWith("/reviews")).length, 2);
+});
+
+test("a definitive non-merge response clears the receipt so a later merge can succeed", async t => {
+  const f = fixture(t);
+  await f.service.act(f.card.id, "approve", f.context());
+  f.setMergeDenied(true);
+  await assert.rejects(f.service.act(f.card.id, "merge", f.context()), /did not merge/);
+  const restored = f.make();
+  assert.ok(!restored.get(f.card.id, f.context()).attempts.some(attempt => attempt.action === "merge"));
+  f.setMergeDenied(false);
+  await restored.act(f.card.id, "merge", f.context());
+  assert.equal(f.pull.state, "MERGED");
 });
 
 test("stale, foreign, unreviewed, incomplete, and failing PRs cannot be approved", async t => {
