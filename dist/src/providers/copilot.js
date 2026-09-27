@@ -346,7 +346,12 @@ export class CopilotProvider {
         const next = tail.then(async () => {
             options?.signal?.throwIfAborted();
             const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
+            const previousSessionId = this.store.get(userId);
+            let attempted = false;
             return this.withLiveSession(userId, async (session) => {
+                const turnPrompt = attempted || (previousSessionId && previousSessionId !== session.sessionId)
+                    ? options?.onSessionRecovery?.() ?? prompt : prompt;
+                attempted = true;
                 try {
                     const workingDirectory = this.sessionWorkingDirectories.get(userId)
                         ?? this.workingDirOverrides.get(userId)
@@ -356,7 +361,7 @@ export class CopilotProvider {
                         : action();
                     return await this.githubTools.run(userId, options, context.githubContributionsEnabled, githubRun => runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
                         const attachments = staged.filter((file) => !file.binary).map((file) => ({ type: "file", path: file.path, displayName: file.displayName }));
-                        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
+                        const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(turnPrompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
                         return sendUntilIdle(session, {
                             prompt: githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun),
                             ...(attachments?.length ? { attachments } : {}),

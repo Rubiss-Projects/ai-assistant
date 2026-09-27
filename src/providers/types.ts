@@ -87,6 +87,8 @@ export interface SendAttachment {
 export interface SendMessageOptions {
   /** Host-owned cancellation for active generation and shutdown. */
   signal?: AbortSignal;
+  /** Rebuild host context before retrying a turn in a replacement native session. */
+  onSessionRecovery?: () => string;
   /** Host-selected transport. Omitted preserves the Discord compatibility profile. */
   transportContext?: { platform: "slack" | "cli"; history: boolean };
   contextProfile?: ContextProfile;

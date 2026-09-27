@@ -115,7 +115,7 @@ export class ConversationService {
       let prepared: P | undefined;
       let authorizationUnavailable = false;
       const authorize = async (stage: 'execution' | 'delivery') => {
-        try { return await host.authorize(input, stage, record.output); }
+        try { return await host.authorize(input, stage, record.output, controller.signal); }
         catch (error) { authorizationUnavailable = true; throw error; }
       };
       // Providers own their configured generation deadlines. Only an explicit host
@@ -126,6 +126,7 @@ export class ConversationService {
       try {
         controller.signal.throwIfAborted();
         if (!await authorize('execution')) throw new Error('Conversation access denied.');
+        controller.signal.throwIfAborted();
         if (!record.output) {
           this.save({ ...record, state: 'running' });
           prepared = await host.prepare(input, executionKey, controller.signal);

@@ -34,7 +34,7 @@ export function comparePosition(a: string, b: string): number {
 
 export class SlackHistory implements HistoryPort {
   constructor(private readonly api: SlackApi, private readonly origin: ConversationRef,
-    private readonly authorize: () => Promise<boolean>, private readonly excluded: Set<string> = new Set()) {}
+    private readonly authorize: (signal?: AbortSignal) => Promise<boolean>, private readonly excluded: Set<string> = new Set()) {}
   private hasMore(result: SlackResponse): boolean { return Boolean(result.has_more || (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor); }
   includeAuthor(id: string): boolean { return !this.excluded.has(id); }
   resolveMessageReference(url: string, resource: ConversationRef): string | undefined {
@@ -48,7 +48,7 @@ export class SlackHistory implements HistoryPort {
   async page(resource: ConversationRef, before: string, cursor: string | undefined, signal: AbortSignal, range?: HistoryRange): Promise<HistoryPage> {
     if (resource.platform !== 'slack' || resource.tenantId !== this.origin.tenantId || resource.installationId !== this.origin.installationId
       || resource.channelId !== this.origin.channelId || (resource.threadId && resource.threadId !== this.origin.threadId)
-      || !await this.authorize()) throw new Error('History access denied.');
+      || !await this.authorize(signal)) throw new Error('History access denied.');
     const args: Record<string,string> = { channel: resource.channelId, latest: before, inclusive: 'false', limit: '100', ...(cursor ? { cursor } : {}) };
     if (resource.threadId) args.ts = resource.threadId;
     let result = await this.api.call(resource.threadId ? 'conversations.replies' : 'conversations.history', args, signal);
@@ -61,9 +61,9 @@ export class SlackHistory implements HistoryPort {
       const stamp = (n: bigint) => (n / 1000000n).toString() + '.' + (n % 1000000n).toString().padStart(6,'0');
       const windows: Array<[bigint,bigint]> = [[micros(resource.threadId), micros(before)]];
       let calls = 1;
-      while (windows.length && calls < 10 && collected.length < range.count) {
+      while (windows.length && calls < 10 && collected.filter(m => m.ts !== resource.threadId).length < range.count) {
         signal.throwIfAborted();
-        if (!await this.authorize()) throw new Error('History access denied.');
+        if (!await this.authorize(signal)) throw new Error('History access denied.');
         const [low,high] = windows.pop()!;
         const page = await this.api.call('conversations.replies', { ...args, oldest: stamp(low), latest: stamp(high) }, signal);
         calls++;
@@ -120,14 +120,16 @@ export class SlackAdapter {
       receivedAt: new Date(Number(ts) * 1000).toISOString(), actor: { platform: 'slack', tenantId: this.config.teamId, userId: e.user },
       conversation: { platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId, channelId: e.channel, threadId: thread, kind: 'thread' } };
   }
-  private async audience(input: IncomingTurn): Promise<string | undefined> {
-    const info = await this.api.call('conversations.info', { channel: input.conversation.channelId });
+  private async audience(input: IncomingTurn, signal?: AbortSignal): Promise<string | undefined> {
+    signal?.throwIfAborted();
+    const info = await this.api.call('conversations.info', { channel: input.conversation.channelId }, signal);
     const channel = info.channel as Record<string,unknown>;
     // Shared/external channels and DMs require a separate visibility policy.
     if (!channel || channel.is_im || channel.is_mpim || channel.is_ext_shared || channel.is_org_shared || !channel.is_member) return;
     const members = new Set<string>(); let cursor: string | undefined;
     for (let page = 0; page < 20; page++) {
-      const result = await this.api.call('conversations.members', { channel: input.conversation.channelId, limit: '200', ...(cursor ? { cursor } : {}) });
+      signal?.throwIfAborted();
+      const result = await this.api.call('conversations.members', { channel: input.conversation.channelId, limit: '200', ...(cursor ? { cursor } : {}) }, signal);
       for (const id of result.members as string[] ?? []) members.add(id);
       cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
       if (!cursor) break;
@@ -163,8 +165,8 @@ export class SlackAdapter {
   private submit(input: IncomingTurn, sourceFingerprint?: string): Promise<TurnHandle> {
     const key = sessionKey(input, 'shared');
     let audience: string | undefined;
-    const authorized = async () => {
-      const current = await this.audience(input);
+    const authorized = async (signal?: AbortSignal) => {
+      const current = await this.audience(input, signal);
       return current !== undefined && (audience === undefined || current === audience);
     };
     const port = new SlackHistory(this.historyApi, input.conversation, authorized, this.config.excludedAuthors);
@@ -172,16 +174,16 @@ export class SlackAdapter {
       platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
       audience: 'shared', capabilities: { ...TEXT_CAPABILITIES, history: true, progress: false },
       retryGeneratedDelivery: true,
-      authorize: async (_i, stage, output) => {
+      authorize: async (_i, stage, output, signal) => {
         if (stage === 'ingress') return true;
         if (output) {
-          const current = await this.audience(input);
+          const current = await this.audience(input, signal);
           return Boolean(output.audienceTag && current === output.audienceTag);
         }
-        return authorized();
+        return authorized(signal);
       },
       prepare: async (_i, session, signal) => {
-        audience = await this.audience(input);
+        audience = await this.audience(input, signal);
         if (!audience) throw new Error('Conversation access denied.');
         const state = this.load(session);
         state.represented ??= [];
@@ -204,12 +206,20 @@ export class SlackAdapter {
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
         const next: ContextState = { exclusionPolicy, represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
         const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
-        return { prompt, next, coverage: result.coverage };
+        return { prompt, next, coverage: result.coverage, history: result, scope: historyScope(resource) };
       },
       generate: async (prepared, session, signal, onProgress) => {
         if (!sourceFingerprint) throw new Error('Recovered turns may only deliver persisted output.');
         const response = await this.engine.sendMessage(session, prepared.prompt, undefined, {
           transportContext: { platform: 'slack', history: true }, signal, onProgress,
+          onSessionRecovery: () => {
+            signal.throwIfAborted();
+            prepared.next.represented = [input.sourceMessageId!];
+            prepared.next.seen = Object.fromEntries(prepared.history.messages.map(m => [m.id, fingerprint(m)]));
+            prepared.next.positions = Object.fromEntries(prepared.history.messages.map(m => [m.id, m.position]));
+            prepared.next.scopes = Object.fromEntries(prepared.history.messages.map(m => [m.id, prepared.scope]));
+            return historyBlock(prepared.history) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
+          },
           resolveChannelHistory: async (args, signal) => {
             if (args.scope && !['channel','thread'].includes(String(args.scope))) throw new Error('Unsupported history scope.');
             const resource = args.scope === 'channel' ? { ...input.conversation, kind: 'channel' as const, threadId: undefined } : input.conversation;

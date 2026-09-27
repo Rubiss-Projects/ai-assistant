@@ -64,7 +64,7 @@ export class SlackHistory {
     async page(resource, before, cursor, signal, range) {
         if (resource.platform !== 'slack' || resource.tenantId !== this.origin.tenantId || resource.installationId !== this.origin.installationId
             || resource.channelId !== this.origin.channelId || (resource.threadId && resource.threadId !== this.origin.threadId)
-            || !await this.authorize())
+            || !await this.authorize(signal))
             throw new Error('History access denied.');
         const args = { channel: resource.channelId, latest: before, inclusive: 'false', limit: '100', ...(cursor ? { cursor } : {}) };
         if (resource.threadId)
@@ -79,9 +79,9 @@ export class SlackHistory {
             const stamp = (n) => (n / 1000000n).toString() + '.' + (n % 1000000n).toString().padStart(6, '0');
             const windows = [[micros(resource.threadId), micros(before)]];
             let calls = 1;
-            while (windows.length && calls < 10 && collected.length < range.count) {
+            while (windows.length && calls < 10 && collected.filter(m => m.ts !== resource.threadId).length < range.count) {
                 signal.throwIfAborted();
-                if (!await this.authorize())
+                if (!await this.authorize(signal))
                     throw new Error('History access denied.');
                 const [low, high] = windows.pop();
                 const page = await this.api.call('conversations.replies', { ...args, oldest: stamp(low), latest: stamp(high) }, signal);
@@ -155,8 +155,9 @@ export class SlackAdapter {
             receivedAt: new Date(Number(ts) * 1000).toISOString(), actor: { platform: 'slack', tenantId: this.config.teamId, userId: e.user },
             conversation: { platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId, channelId: e.channel, threadId: thread, kind: 'thread' } };
     }
-    async audience(input) {
-        const info = await this.api.call('conversations.info', { channel: input.conversation.channelId });
+    async audience(input, signal) {
+        signal?.throwIfAborted();
+        const info = await this.api.call('conversations.info', { channel: input.conversation.channelId }, signal);
         const channel = info.channel;
         // Shared/external channels and DMs require a separate visibility policy.
         if (!channel || channel.is_im || channel.is_mpim || channel.is_ext_shared || channel.is_org_shared || !channel.is_member)
@@ -164,7 +165,8 @@ export class SlackAdapter {
         const members = new Set();
         let cursor;
         for (let page = 0; page < 20; page++) {
-            const result = await this.api.call('conversations.members', { channel: input.conversation.channelId, limit: '200', ...(cursor ? { cursor } : {}) });
+            signal?.throwIfAborted();
+            const result = await this.api.call('conversations.members', { channel: input.conversation.channelId, limit: '200', ...(cursor ? { cursor } : {}) }, signal);
             for (const id of result.members ?? [])
                 members.add(id);
             cursor = result.response_metadata?.next_cursor || undefined;
@@ -214,8 +216,8 @@ export class SlackAdapter {
     submit(input, sourceFingerprint) {
         const key = sessionKey(input, 'shared');
         let audience;
-        const authorized = async () => {
-            const current = await this.audience(input);
+        const authorized = async (signal) => {
+            const current = await this.audience(input, signal);
             return current !== undefined && (audience === undefined || current === audience);
         };
         const port = new SlackHistory(this.historyApi, input.conversation, authorized, this.config.excludedAuthors);
@@ -223,17 +225,17 @@ export class SlackAdapter {
             platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
             audience: 'shared', capabilities: { ...TEXT_CAPABILITIES, history: true, progress: false },
             retryGeneratedDelivery: true,
-            authorize: async (_i, stage, output) => {
+            authorize: async (_i, stage, output, signal) => {
                 if (stage === 'ingress')
                     return true;
                 if (output) {
-                    const current = await this.audience(input);
+                    const current = await this.audience(input, signal);
                     return Boolean(output.audienceTag && current === output.audienceTag);
                 }
-                return authorized();
+                return authorized(signal);
             },
             prepare: async (_i, session, signal) => {
-                audience = await this.audience(input);
+                audience = await this.audience(input, signal);
                 if (!audience)
                     throw new Error('Conversation access denied.');
                 const state = this.load(session);
@@ -261,13 +263,21 @@ export class SlackAdapter {
                 // Commit inclusion only after provider success. Failed turns may require explicit reset.
                 const next = { exclusionPolicy, represented: [...state.represented, input.sourceMessageId], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id, m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
                 const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
-                return { prompt, next, coverage: result.coverage };
+                return { prompt, next, coverage: result.coverage, history: result, scope: historyScope(resource) };
             },
             generate: async (prepared, session, signal, onProgress) => {
                 if (!sourceFingerprint)
                     throw new Error('Recovered turns may only deliver persisted output.');
                 const response = await this.engine.sendMessage(session, prepared.prompt, undefined, {
                     transportContext: { platform: 'slack', history: true }, signal, onProgress,
+                    onSessionRecovery: () => {
+                        signal.throwIfAborted();
+                        prepared.next.represented = [input.sourceMessageId];
+                        prepared.next.seen = Object.fromEntries(prepared.history.messages.map(m => [m.id, fingerprint(m)]));
+                        prepared.next.positions = Object.fromEntries(prepared.history.messages.map(m => [m.id, m.position]));
+                        prepared.next.scopes = Object.fromEntries(prepared.history.messages.map(m => [m.id, prepared.scope]));
+                        return historyBlock(prepared.history) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
+                    },
                     resolveChannelHistory: async (args, signal) => {
                         if (args.scope && !['channel', 'thread'].includes(String(args.scope)))
                             throw new Error('Unsupported history scope.');

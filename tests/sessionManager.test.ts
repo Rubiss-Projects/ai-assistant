@@ -64,7 +64,7 @@ function createTestManager(storedSessions: Record<string, string> = {}): Testabl
   return manager;
 }
 
-test("sendMessage resumes and retries once when cached session is missing from Copilot", async () => {
+for (const rebuild of [false, true]) test(`sendMessage retries missing Copilot sessions (rebuild host context: ${rebuild})`, async () => {
   const storedSessions: Record<string, string> = { "user-1": "stale-session" };
   const manager = createTestManager(storedSessions);
   let staleSendCalls = 0;
@@ -98,7 +98,7 @@ test("sendMessage resumes and retries once when cached session is missing from C
     abort: async () => {},
     send: async (options) => {
       freshSendCalls += 1;
-      assert.deepEqual(options, { prompt: "hello" });
+      assert.deepEqual(options, { prompt: rebuild ? "retained discussion\nhello" : "hello" });
       return "message-1";
     },
     disconnect: async () => {},
@@ -119,7 +119,11 @@ test("sendMessage resumes and retries once when cached session is missing from C
     stop: async () => [],
   };
 
-  const response = await manager.sendMessage("user-1", "hello");
+  let rebuilds = 0;
+  const response = await manager.sendMessage("user-1", "hello", undefined, rebuild ? {
+    onSessionRecovery: () => { rebuilds++; return "retained discussion\nhello"; },
+  } : undefined);
+  assert.equal(rebuilds, rebuild ? 1 : 0);
 
   assert.equal(response.content, "retry ok");
   assert.deepEqual(response.attachments, []);
