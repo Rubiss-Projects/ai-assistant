@@ -50,7 +50,7 @@ test('core/application imports do not depend on platform SDKs or adapters',()=>{
 for (const signal of ['SIGINT', 'SIGTERM']) test('CLI releases journal when ' + signal + ' arrives during ownership acquisition', () => {
  const dir=mkdtempSync(join(tmpdir(),'adapter-cli-startup-signal-'));
  const code=`import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';
- const open=fs.openSync;fs.openSync=function(path,...args){const fd=open(path,...args);if(String(path).endsWith('owner.lock'))process.emit('${signal}','${signal}');return fd};syncBuiltinESMExports();
+ const link=fs.linkSync;fs.linkSync=function(source,path){link(source,path);if(String(path).endsWith('owner.lock'))process.emit('${signal}','${signal}')};syncBuiltinESMExports();
  const {runCli}=await import('./src/adapters/cli/run.ts');await runCli(['--message','hello'],async()=>{throw Error('Engine must not start after cancellation')});`;
  try {
   const result=spawnSync(process.execPath,['--experimental-transform-types','--loader','./scripts/typescript-loader.mjs','--input-type=module','-e',code],{cwd:root,encoding:'utf8',timeout:10000,env:{...process.env,AI_ASSISTANT_STATE_DIR:dir}});

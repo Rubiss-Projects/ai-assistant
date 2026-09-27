@@ -1,6 +1,7 @@
 import { mkdirSync, openSync, closeSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, fsyncSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { JournalLock } from './journalLock.js';
 import { eventKey, sessionKey, validateIdentity, type IncomingTurn, type PreparedTurn, type TrustedAdapterContext, type TurnHandle, type TurnRecord, type ConversationRef, type HistoryPort, type HistoryRange, type HistoryResult, type HistoryMessage } from '../core/conversation.js';
 export interface TurnJournal { get(id: string): TurnRecord | undefined; put(record: TurnRecord): void; all(): TurnRecord[]; close(): void }
 export class MemoryTurnJournal implements TurnJournal {
@@ -10,19 +11,16 @@ export class MemoryTurnJournal implements TurnJournal {
   all() { return [...this.records.values()]; }
   close() {}
 }
-/** One process owns a journal directory. Stale locks require explicit operator recovery. */
+/** One process owns a journal directory; OS-backed ownership survives unclean shutdowns. */
 export class FileTurnJournal implements TurnJournal {
-  private readonly lock: string;
+  private readonly lock: JournalLock;
   private closed = false;
   private readonly files = new Set<string>();
   private lastPruned = 0;
   constructor(private readonly directory: string, private readonly limits = { records: 10_000, retentionMs: 7 * 24 * 60 * 60 * 1000 }) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
-    this.lock = join(directory, 'owner.lock');
-    const fd = openSync(this.lock, 'wx', 0o600);
-    try { writeFileSync(fd, JSON.stringify({ pid: process.pid, started: new Date().toISOString() })); fsyncSync(fd); }
-    finally { closeSync(fd); }
+    this.lock = new JournalLock(directory);
     try {
       for (const name of readdirSync(directory)) if (/^[a-f0-9]{64}\.json$/.test(name)) this.files.add(name);
     } catch (error) { this.close(); throw error; }
@@ -70,7 +68,7 @@ export class FileTurnJournal implements TurnJournal {
     this.lastPruned = now;
     return records;
   }
-  close(): void { if (!this.closed) { this.closed = true; unlinkSync(this.lock); } }
+  close(): void { if (!this.closed) { this.closed = true; this.lock.close(); } }
 }
 
 /** Owns admission, execution order and the generate/deliver boundary for every adapter. */
