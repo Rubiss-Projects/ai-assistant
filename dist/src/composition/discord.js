@@ -8,7 +8,11 @@ import { contributionReviewsEnabled } from "../common/githubContributionReviewWo
 import { githubContributionService } from "../common/githubContributions.js";
 import { discordSubject } from "../common/discordAccess.js";
 import { DiscordRuntime } from "./discordLifecycle.js";
+import { githubContributionsEnabled } from "../common/githubContributionConfig.js";
+import { githubContributionLimits } from "../common/githubContributionLimits.js";
 reportProviderSecurityConfiguration();
+if (githubContributionsEnabled())
+    githubContributionLimits();
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
     console.error("❌ DISCORD_TOKEN is not set in .env");
