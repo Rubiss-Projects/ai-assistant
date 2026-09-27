@@ -45,7 +45,7 @@ test('delivery failure remains uncertain and retries never regenerate', async ()
   assert.equal(journal.get(a.id)?.output?.content,'saved'); await (await s.submit(input(),h)).completion; assert.equal(runs,1); await s.shutdown();
 });
 test('generated records recover delivery without provider execution',async()=>{
- const journal=new MemoryTurnJournal(); const i=input(); journal.put({id:eventKey(i),sessionKey:sessionKey(i,'shared'),input:i,state:'generated',updatedAt:'',output:{content:'saved',attachments:[]}});
+ const journal=new MemoryTurnJournal(); const i=input(); journal.put({id:eventKey(i),sessionKey:sessionKey(i,'shared'),input:i,state:'generated',retryGeneratedDelivery:true,updatedAt:'',output:{content:'saved',attachments:[]}});
  const s=new ConversationService(journal); let delivered=''; const h=await s.submit(i,host({generate:async()=>{throw Error('must not execute')},deliver:async o=>{delivered=o.content;return {messageIds:['m']}}}));
  assert.equal((await h.completion).state,'delivered');assert.equal(delivered,'saved');await s.shutdown();
 });
@@ -64,8 +64,22 @@ test('adapters without outbox replay fail an unavailable delivery check instead 
    return true;
   } }));
   assert.equal((await turn.completion).state, 'failed');
+  assert.equal(journal.get(turn.id)?.output, undefined);
   assert.deepEqual(service.pendingDeliveries(), []);
  } finally { await service.shutdown(); }
+});
+
+test('restart marks generated output interrupted when the adapter has no replay route', async () => {
+ const journal=new MemoryTurnJournal();const i=input();
+ journal.put({id:eventKey(i),sessionKey:sessionKey(i,'shared'),input:i,state:'generated',retryGeneratedDelivery:false,updatedAt:new Date().toISOString(),output:{content:'reconcile manually',attachments:[]}});
+ const service=new ConversationService(journal);
+ try {
+  assert.equal(journal.get(eventKey(i))?.state,'interrupted');
+  assert.equal(journal.get(eventKey(i))?.output?.content,'reconcile manually');
+  assert.deepEqual(service.pendingDeliveries(),[]);
+  const turn=await service.submit(i,host({generate:async()=>{throw Error('must not regenerate')}}));
+  assert.equal((await turn.completion).state,'interrupted');
+ } finally {await service.shutdown();}
 });
 
 test('durable journal expires terminal records after retention while preserving retryable output', () => {

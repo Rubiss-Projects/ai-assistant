@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SendMessageOptions } from '../src/providers/types.js';
@@ -45,7 +45,7 @@ function setup(){
  const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string,_files?:never,_options?:SendMessageOptions)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
  const excludedAuthors=new Set<string>();
  const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service);
- return {adapter,engine,service,prompts,posts,journal,blockAudience:(started:()=>void)=>{audienceStarted=started},blockHistory:(started:()=>void)=>{historyStarted=started},failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
+ return {dir,adapter,engine,service,prompts,posts,journal,blockAudience:(started:()=>void)=>{audienceStarted=started},blockHistory:(started:()=>void)=>{historyStarted=started},failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 
 test('Slack shutdown aborts audience membership retrieval before generation', { timeout: 2000 }, async () => {
@@ -226,4 +226,27 @@ test('shared Slack prompt includes verified attribution for the current request'
  const f=setup();try{await (await f.adapter.receive(event('speaker','1700000003.000000','1700000001.000000')))!.completion;
  assert.match(f.prompts[0],/Current speaker \(host-verified\): {"platform":"slack","tenantId":"T","userId":"U"}/);
  }finally{await f.close()}
+});
+
+test('Slack compacts context at its metadata budget and resets before reusing provider history', async () => {
+ const f=setup();
+ try {
+  const root='1700000001.000000';
+  await (await f.adapter.receive(event('budget-first','1700000003.000000',root)))!.completion;
+  const path=join(f.dir,readdirSync(f.dir).find(name=>name.endsWith('.json'))!);
+  const state=JSON.parse(readFileSync(path,'utf8')) as {represented:string[];seen:Record<string,string>;positions:Record<string,string>;scopes:Record<string,string>};
+  const entries=Object.keys(state.seen).length+Object.keys(state.positions).length+Object.keys(state.scopes).length;
+  state.represented=Array.from({length:4000-entries},()=>state.represented[0]);
+  writeFileSync(path,JSON.stringify(state));
+  f.setHistory([{ts:root,thread_ts:root,user:'U',text:'<@BOT> question'},{ts:'1700000002.000000',thread_ts:root,user:'FRIEND',text:'unmentioned clarification'},{ts:'1700000003.000000',thread_ts:root,user:'U',text:'<@BOT> question'}]);
+  const resets=f.resets();
+  await (await f.adapter.receive(event('budget-compact','1700000004.000000',root)))!.completion;
+  const compacted=JSON.parse(readFileSync(path,'utf8')) as {resetRequired:boolean;represented:string[]};
+  assert.equal(compacted.resetRequired,true);
+  assert.ok(compacted.represented.length<10);
+  assert.equal(f.resets(),resets);
+  await (await f.adapter.receive(event('budget-reset','1700000005.000000',root)))!.completion;
+  assert.equal(f.resets(),resets+1);
+  assert.match(f.prompts[2],/unmentioned clarification/);
+ } finally {await f.close();}
 });

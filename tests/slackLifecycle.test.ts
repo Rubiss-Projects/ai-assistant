@@ -38,7 +38,7 @@ test('Slack startup replays generated output without a source retry and never re
   const journal = new FileTurnJournal(journalPath);
   const record = { id: eventKey(input), input, sessionKey: sessionKey(input, 'shared'), updatedAt: '',
     output: { content: 'already generated', attachments: [], audienceTag: createHash('sha256').update(JSON.stringify(['BOT', 'U'])).digest('hex') } };
-  journal.put({ ...record, state: 'generated' });
+  journal.put({ ...record, state: 'generated', retryGeneratedDelivery: true });
   const uncertain = { ...input, eventId: 'uncertain' };
   journal.put({ ...record, id: eventKey(uncertain), input: uncertain, state: 'delivering' });
   journal.close();

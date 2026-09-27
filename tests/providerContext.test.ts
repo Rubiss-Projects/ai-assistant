@@ -11,6 +11,33 @@ import { openCodeChildEnvironment } from "../src/providers/opencode.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { SessionStore } from "../src/common/sessionStore.js";
 
+for (const platform of ['slack', 'cli'] as const) test(platform + ' disables Sites in context and the actual Codex client', async t => {
+  const directory=mkdtempSync(join(tmpdir(),'text-sites-'));
+  const values={AI_ASSISTANT_SECURITY_MODE:'shared',AI_ASSISTANT_ENABLE_SITES:'true',AI_ASSISTANT_WORKSPACE_ROOT:directory};
+  const previous=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));
+  t.after(()=>{for(const [key,value] of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value}});
+  Object.assign(process.env,values);
+  const transportContext={platform,history:platform==='slack'};
+  const enabled=resolveSessionContext({transportContext});
+  assert.equal(enabled.sitesEnabled,false);
+  assert.doesNotMatch(enabled.systemPrompt,/except for ChatGPT Sites/);
+  process.env.AI_ASSISTANT_ENABLE_SITES='false';
+  assert.equal(resolveSessionContext({transportContext}).fingerprint,enabled.fingerprint);
+  process.env.AI_ASSISTANT_ENABLE_SITES='true';
+  let clients=0;
+  const provider=new CodexProvider(options=>{
+    clients++;
+    assert.doesNotMatch(JSON.stringify(options.config?.apps),/connector_20205bf7d4e99a89d7154bb849718324/);
+    assert.match(JSON.stringify(options.config?.features),/"plugins":false/);
+    assert.doesNotMatch(options.configOverrides?.join('\n')??'',/mode="full"|sites-git|"\.openai\/\*\*"="write"/);
+    return {startThread:()=>({id:'text-thread',run:async()=>({finalResponse:'ready',items:[],usage:null})}) as unknown as Thread,resumeThread:()=>{throw Error('unexpected resume')}};
+  },new SessionStore('test',join(directory,'sessions.json')));
+  t.after(()=>provider.shutdown());
+  provider.setSessionWorkingDir('conversation',directory);
+  assert.equal((await provider.sendMessage('conversation','hello',undefined,{transportContext})).content,'ready');
+  assert.equal(clients,1);
+});
+
 for (const scenario of [
   { name: "production overage", responses: [JSON.stringify({ summary: "x".repeat(12_857) })], succeeds: true },
   { name: "shortening succeeds", responses: [JSON.stringify({ summary: "x".repeat(16_001) }), JSON.stringify({ summary: "Retained facts." })], succeeds: true },
