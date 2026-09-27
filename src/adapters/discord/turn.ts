@@ -35,7 +35,7 @@ export async function executeDiscordTurn(
   source: { id: string; guildId: string | null; channelId: string; client?: Client; author?: { id: string }; user?: { id: string }; commandName?: string; options?: { getString(name: string, required?: boolean): string | null; getSubcommand(required?: boolean): string | null } },
   key: string, prompt: string, attachments: SendAttachment[] | undefined, options: SendMessageOptions,
   deliver: (response: AgentResponse, sessionKey: string) => Promise<void>,
-  prepare?: (key: string) => Promise<{ prompt: string; attachments?: SendAttachment[]; cleanup?(): Promise<void> }>,
+  prepare?: (key: string, signal: AbortSignal) => Promise<{ prompt: string; attachments?: SendAttachment[]; cleanup?(): Promise<void> }>,
   resolveSession?: () => Promise<string>,
   coordinate?: (key: string, run: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
@@ -58,7 +58,7 @@ export async function executeDiscordTurn(
       return source.commandName ? canInvokeSlashCommand(access, actor, { commandName: source.commandName,
         subcommand: source.options?.getSubcommand(false), hasWorkspace: Boolean(source.options?.getString('workspace', false)) }, current) : access.canMessage(actor, current);
     },
-    prepare: async (_input, session) => prepare ? prepare(session) : ({ prompt, attachments }),
+    prepare: async (_input, session, signal) => prepare ? prepare(session, signal) : ({ prompt, attachments }),
     generate: (prepared, session, signal, onProgress) => sessions.sendMessage(session, prepared.prompt, prepared.attachments, { ...options, signal, onProgress }),
     progress: async update => { await options.onProgress?.(update); },
     deliver: async (response, _id, session) => { await deliver(response, session); return { messageIds: [] }; },

@@ -1,9 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { downloadFileAttachments, prepareDownloadedAttachments } from "../src/utils/downloadAttachments.js";
+
+test('attachment cancellation aborts downloads and cleans earlier temporary files', { timeout: 2000 }, async t => {
+  const controller = new AbortController();
+  const before = new Set(await readdir(tmpdir()));
+  let began!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (_url: string, options: RequestInit) => {
+    if (++calls === 1) return new Response('downloaded');
+    const signal = options.signal!;
+    return new Promise<Response>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      began();
+    });
+  });
+  const pending = downloadFileAttachments([1, 2, 3].map(n => ({ url: 'https://cdn.discordapp.com/' + n, contentType: 'text/plain', name: 'file.txt' })), controller.signal);
+  const rejected = assert.rejects(pending, /cancel download/);
+  await started;
+  controller.abort(new Error('cancel download'));
+  await rejected;
+  assert.equal(calls, 2);
+  assert.deepEqual((await readdir(tmpdir())).filter(name => name.startsWith('discord-file-') && !before.has(name)), []);
+});
 
 test("text attachment mode inlines non-images without exposing their path", async () => {
   const directory = await mkdtemp(join(tmpdir(), "assistant-attachment-test-"));

@@ -47,6 +47,19 @@ test('core/application imports do not depend on platform SDKs or adapters',()=>{
  for(const directory of ['src/core','src/application'])for(const file of readdirSync(join(root,directory))){if(!file.endsWith('.ts'))continue;const source=readFileSync(join(root,directory,file),'utf8');assert.doesNotMatch(source,/from ['"][^'"]*(?:discord\.js|@slack|adapters\/|sessionManager)/);}
 });
 
+for (const signal of ['SIGINT', 'SIGTERM']) test('CLI releases journal when ' + signal + ' arrives during ownership acquisition', () => {
+ const dir=mkdtempSync(join(tmpdir(),'adapter-cli-startup-signal-'));
+ const code=`import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';
+ const open=fs.openSync;fs.openSync=function(path,...args){const fd=open(path,...args);if(String(path).endsWith('owner.lock'))process.emit('${signal}','${signal}');return fd};syncBuiltinESMExports();
+ const {runCli}=await import('./src/adapters/cli/run.ts');await runCli(['--message','hello'],async()=>{throw Error('Engine must not start after cancellation')});`;
+ try {
+  const result=spawnSync(process.execPath,['--experimental-transform-types','--loader','./scripts/typescript-loader.mjs','--input-type=module','-e',code],{cwd:root,encoding:'utf8',timeout:10000,env:{...process.env,AI_ASSISTANT_STATE_DIR:dir}});
+  assert.equal(result.status,signal==='SIGTERM'?143:130,result.stderr);
+  assert.doesNotMatch(result.stderr,/Engine must not start/);
+  assert.equal(existsSync(join(dir,'cli-turns','owner.lock')),false);
+ }finally{rmSync(dir,{recursive:true,force:true})}
+});
+
 for(const active of [false,true])test('CLI SIGTERM releases journal '+(active?'after active work settles':'while idle'),{timeout:10000},async()=>{
  const dir=mkdtempSync(join(tmpdir(),'adapter-cli-signal-'));
  const code=active

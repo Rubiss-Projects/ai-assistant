@@ -57,7 +57,7 @@ export async function executeDiscordTurn(sessions, source, key, prompt, attachme
             return source.commandName ? canInvokeSlashCommand(access, actor, { commandName: source.commandName,
                 subcommand: source.options?.getSubcommand(false), hasWorkspace: Boolean(source.options?.getString('workspace', false)) }, current) : access.canMessage(actor, current);
         },
-        prepare: async (_input, session) => prepare ? prepare(session) : ({ prompt, attachments }),
+        prepare: async (_input, session, signal) => prepare ? prepare(session, signal) : ({ prompt, attachments }),
         generate: (prepared, session, signal, onProgress) => sessions.sendMessage(session, prepared.prompt, prepared.attachments, { ...options, signal, onProgress }),
         progress: async (update) => { await options.onProgress?.(update); },
         deliver: async (response, _id, session) => { await deliver(response, session); return { messageIds: [] }; },

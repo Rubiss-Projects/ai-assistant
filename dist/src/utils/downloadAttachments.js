@@ -67,13 +67,15 @@ function isTextFile(contentType, name) {
  * Enforces per-file size and count limits, and a per-fetch timeout.
  * Returns the prepared downloads and a cleanup function for any temp files.
  */
-export async function downloadFileAttachments(attachments) {
+export async function downloadFileAttachments(attachments, signal) {
     const downloaded = [];
     const warnings = [];
     const maxBytes = inputByteLimit();
     const seenUrls = new Set();
     let count = 0;
     for (const attachment of attachments) {
+        if (signal?.aborted)
+            break;
         if (seenUrls.has(attachment.url))
             continue;
         seenUrls.add(attachment.url);
@@ -89,7 +91,7 @@ export async function downloadFileAttachments(attachments) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
         try {
-            const response = await fetch(attachment.url, { signal: controller.signal });
+            const response = await fetch(attachment.url, { signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal });
             if (!response.ok) {
                 await response.body?.cancel();
                 warnings.push(`${attachment.name}: download failed (HTTP ${response.status}).`);
@@ -148,6 +150,8 @@ export async function downloadFileAttachments(attachments) {
             }
         }
         catch (err) {
+            if (signal?.aborted)
+                break;
             warnings.push(`${attachment.name}: ${err instanceof Error ? err.message : "download failed"}`);
             if (err instanceof Error && err.name === "AbortError") {
                 console.warn(`[downloadAttachments] Timeout downloading "${attachment.name}"`);
@@ -159,6 +163,10 @@ export async function downloadFileAttachments(attachments) {
         finally {
             clearTimeout(timer);
         }
+    }
+    if (signal?.aborted) {
+        await Promise.all(downloaded.flatMap(d => d.filePath ? [unlink(d.filePath).catch(() => { })] : []));
+        signal.throwIfAborted();
     }
     return {
         attachments: downloaded,

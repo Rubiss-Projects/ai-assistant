@@ -26,19 +26,6 @@ export async function runCli(args = process.argv.slice(3), makeEngine = createTe
     const directory = process.env.AI_ASSISTANT_STATE_DIR ?? join(homedir(), '.config', 'ai-assistant', 'adapters');
     let journal;
     let service;
-    try {
-        journal = new FileTurnJournal(join(directory, 'cli-turns'));
-        service = new ConversationService(journal);
-    }
-    catch (error) {
-        try {
-            journal?.close();
-        }
-        finally {
-            console.log = originalLog;
-        }
-        throw error;
-    }
     let engine;
     let cancel;
     let interrupted = false;
@@ -54,22 +41,28 @@ export async function runCli(args = process.argv.slice(3), makeEngine = createTe
     };
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
-    const actor = { platform: 'cli', tenantId: 'local', userId: process.env.AI_ASSISTANT_CLI_USER || userInfo().username };
-    const input = (text) => ({ eventId: randomUUID(), text, actor, receivedAt: new Date().toISOString(),
-        conversation: { platform: 'cli', tenantId: 'local', installationId: 'local', channelId: opts.channel || 'local', threadId: opts.thread || 'default', kind: 'thread' } });
-    const print = (data) => process.stdout.write((opts.json ? JSON.stringify(data) : String(data)) + '\n');
     try {
+        journal = new FileTurnJournal(join(directory, 'cli-turns'));
+        const conversations = service = new ConversationService(journal);
+        // Let signals queued during synchronous journal restoration run before startup.
+        await new Promise(resolve => setImmediate(resolve));
+        if (interrupted)
+            return;
+        const actor = { platform: 'cli', tenantId: 'local', userId: process.env.AI_ASSISTANT_CLI_USER || userInfo().username };
+        const input = (text) => ({ eventId: randomUUID(), text, actor, receivedAt: new Date().toISOString(),
+            conversation: { platform: 'cli', tenantId: 'local', installationId: 'local', channelId: opts.channel || 'local', threadId: opts.thread || 'default', kind: 'thread' } });
+        const print = (data) => process.stdout.write((opts.json ? JSON.stringify(data) : String(data)) + '\n');
         engine = await makeEngine(opts.provider || process.env.PROVIDER || 'copilot', join(directory, 'cli-provider-state'));
         if (interrupted)
             return;
         const reset = async () => {
             if (process.env.AI_ASSISTANT_CLI_ALLOW_RESET === 'false')
                 throw new Error('Reset is disabled by local policy.');
-            await service.serial(sessionKey(input(''), 'individual'), () => engine.resetSession(sessionKey(input(''), 'individual')));
+            await conversations.serial(sessionKey(input(''), 'individual'), () => engine.resetSession(sessionKey(input(''), 'individual')));
             print(opts.json ? { status: 'reset' } : 'Session reset.');
         };
         const turn = async (text) => {
-            const handle = await service.submit(input(text), {
+            const handle = await conversations.submit(input(text), {
                 platform: 'cli', tenantId: 'local', installationId: 'local', capabilities: TEXT_CAPABILITIES, audience: 'individual',
                 authorize: async (i) => i.actor.userId === actor.userId,
                 prepare: async (i) => ({ prompt: i.text }),
@@ -111,7 +104,10 @@ export async function runCli(args = process.argv.slice(3), makeEngine = createTe
     }
     finally {
         try {
-            await service.shutdown();
+            if (service)
+                await service.shutdown();
+            else
+                journal?.close();
         }
         finally {
             try {

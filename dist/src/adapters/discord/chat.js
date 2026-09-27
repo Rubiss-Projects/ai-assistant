@@ -46,11 +46,13 @@ export async function handleChat(interaction, sessions, canIncludeContextAuthor 
                     await durableReply.reply(discordTextOptions(chunk));
                 await deliverDiscordAttachments(options => durableReply.reply(options), response.attachments);
             }
-        }, async (destination) => {
+        }, async (destination, signal) => {
+            signal.throwIfAborted();
             if (workspace)
                 sessions.setSessionWorkingDir(destination, workspace);
             const context = existingThread && threadContext ? await threadContext(durableReply) : [];
-            const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, internal => sessions.runEphemeral(destination, internal), participationAttachments(context));
+            signal.throwIfAborted();
+            const prepared = await prepareSlashAttachments(message, interaction.client, interaction.user.id, imageAttachment, interaction, canIncludeContextAuthor, internal => sessions.runEphemeral(destination, internal, signal), participationAttachments(context), signal);
             return { prompt: !prepared.isChannelSummary && context.length
                     ? `${participationReplyContext(context, [durableReply.id])}\n\nCurrent speaker: ${interaction.user.id}\n${prepared.prompt}` : prepared.prompt,
                 attachments: prepared.attachments.length ? prepared.attachments : undefined, cleanup: prepared.cleanup };
