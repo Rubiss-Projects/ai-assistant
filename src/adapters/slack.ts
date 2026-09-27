@@ -171,6 +171,7 @@ export class SlackAdapter {
     return this.service.submit(input, {
       platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
       audience: 'shared', capabilities: { ...TEXT_CAPABILITIES, history: true, progress: false },
+      retryGeneratedDelivery: true,
       authorize: async (_i, stage, output) => {
         if (stage === 'ingress') return true;
         if (output) {
@@ -189,6 +190,7 @@ export class SlackAdapter {
           ? { ...input.conversation, kind: 'channel' as const, threadId: undefined } : input.conversation;
         const result = await retrieveHistory(port, input, resource, { kind: 'recent', count: 50 },
           AbortSignal.any([signal, AbortSignal.timeout(15_000)]), { messages: 50, characters: 8_000, pages: 10, scanned: 1000 }, Boolean(resource.threadId));
+        signal.throwIfAborted();
         const fingerprints = Object.fromEntries(result.messages.map(m => [m.id, fingerprint(m)]));
         const observed = result.observed;
         const observedIds = new Set(observed?.messages.map(m => m.id));

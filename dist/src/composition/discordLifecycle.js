@@ -6,6 +6,7 @@ export class DiscordRuntime {
     client;
     stopping;
     started = false;
+    startup = new AbortController();
     constructor(dependencies) {
         this.dependencies = dependencies;
     }
@@ -18,6 +19,7 @@ export class DiscordRuntime {
             this.conversations = this.dependencies.installConversations(this.sessions);
             this.client = this.dependencies.createClient(this.sessions);
             await this.client.login(token);
+            await this.client.waitUntilReady?.(this.startup.signal);
             if (this.stopping)
                 throw new Error('Discord startup interrupted by shutdown.');
             this.dependencies.startReviews(this.client);
@@ -33,6 +35,7 @@ export class DiscordRuntime {
         }
     }
     stop() {
+        this.startup.abort(new Error('Discord startup interrupted by shutdown.'));
         // Cache before cleanup begins so concurrent signals cannot run cleanup twice.
         return this.stopping ??= Promise.resolve().then(async () => {
             const errors = [];
@@ -44,13 +47,15 @@ export class DiscordRuntime {
                     errors.push(error);
                 }
             };
-            // Start every stop operation before awaiting drains: active scheduler and
-            // conversation callbacks need provider cancellation in order to settle.
+            // Conversation shutdown cancels its own turns. Claimed scheduled runs keep
+            // their providers and Discord client until the scheduler has drained.
             await Promise.all([
                 attempt(() => this.client?.stopScheduler()),
                 attempt(() => this.dependencies.stopReviews()),
-                attempt(() => this.client?.destroy()),
                 attempt(() => this.conversations?.shutdown()),
+            ]);
+            await Promise.all([
+                attempt(() => this.client?.destroy()),
                 attempt(() => this.sessions?.shutdown()),
             ]);
             if (errors.length)

@@ -14,15 +14,21 @@ export class MemoryTurnJournal implements TurnJournal {
 export class FileTurnJournal implements TurnJournal {
   private readonly lock: string;
   private closed = false;
-  constructor(private readonly directory: string) {
+  private readonly files = new Set<string>();
+  private lastPruned = 0;
+  constructor(private readonly directory: string, private readonly limits = { records: 10_000, retentionMs: 7 * 24 * 60 * 60 * 1000 }) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
     this.lock = join(directory, 'owner.lock');
     const fd = openSync(this.lock, 'wx', 0o600);
     try { writeFileSync(fd, JSON.stringify({ pid: process.pid, started: new Date().toISOString() })); fsyncSync(fd); }
     finally { closeSync(fd); }
+    try {
+      for (const name of readdirSync(directory)) if (/^[a-f0-9]{64}\.json$/.test(name)) this.files.add(name);
+    } catch (error) { this.close(); throw error; }
   }
-  private path(id: string) { return join(this.directory, createHash('sha256').update(id).digest('hex') + '.json'); }
+  private filename(id: string) { return createHash('sha256').update(id).digest('hex') + '.json'; }
+  private path(id: string) { return join(this.directory, this.filename(id)); }
   get(id: string): TurnRecord | undefined {
     try { return this.read(this.path(id)); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; }
   }
@@ -31,17 +37,39 @@ export class FileTurnJournal implements TurnJournal {
   }
   put(record: TurnRecord): void {
     if (this.closed) throw new Error('Journal closed.');
+    if (Date.now() - this.lastPruned >= 60_000) this.all();
+    const filename = this.filename(record.id);
+    if (!this.files.has(filename) && this.files.size >= this.limits.records) {
+      throw new Error('Turn journal capacity reached; wait for retention expiry or reconcile outstanding turns.');
+    }
     const target = this.path(record.id), temp = target + '.' + randomUUID() + '.tmp';
     const fd = openSync(temp, 'wx', 0o600);
     try { writeFileSync(fd, JSON.stringify(record)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(temp, target);
+    this.files.add(filename);
     // Windows cannot fsync directory handles; the file is flushed before rename.
     if (process.platform !== 'win32') {
       const dir = openSync(this.directory, 'r');
       try { fsyncSync(dir); } finally { closeSync(dir); }
     }
   }
-  all(): TurnRecord[] { return readdirSync(this.directory).filter(n => /^[a-f0-9]{64}\.json$/.test(n)).map(n => this.read(join(this.directory, n))); }
+  all(): TurnRecord[] {
+    const now = Date.now();
+    const records: TurnRecord[] = [];
+    for (const name of this.files) {
+      const path = join(this.directory, name);
+      const record = this.read(path);
+      if (['delivered', 'failed', 'cancelled'].includes(record.state) && Date.parse(record.updatedAt) <= now - this.limits.retentionMs) {
+        unlinkSync(path);
+        this.files.delete(name);
+      } else {
+        if (records.length >= this.limits.records) throw new Error('Turn journal exceeds capacity; reconcile retained records before startup.');
+        records.push(record);
+      }
+    }
+    this.lastPruned = now;
+    return records;
+  }
   close(): void { if (!this.closed) { this.closed = true; unlinkSync(this.lock); } }
 }
 
@@ -119,7 +147,7 @@ export class ConversationService {
       } catch (error) {
         try { host.onError?.(error); } catch { /* Diagnostics cannot prevent cleanup. */ }
         const current = this.journal.get(id)!;
-        if (current.state === 'generated' && authorizationUnavailable && !controller.signal.aborted) {
+        if (host.retryGeneratedDelivery && current.state === 'generated' && authorizationUnavailable && !controller.signal.aborted) {
           return this.save({ ...current, error: 'Authorization unavailable; generated output retained for retry.' });
         }
         const uncertainDelivery = current.state === 'delivering';

@@ -29,13 +29,15 @@ export interface PreparedTurn { prompt: string; cleanup?(): Promise<void> }
 export interface TrustedAdapterContext<P extends PreparedTurn = PreparedTurn> {
   platform: string; tenantId: string; installationId: string;
   capabilities: Capabilities; audience: 'individual' | 'shared';
+  /** Set only when the adapter can replay persisted output after a failed access lookup. */
+  retryGeneratedDelivery?: boolean;
   /** Explicit compatibility binding, only set by the Discord adapter. */
   legacySessionKey?: string;
   /** Optional destination creation after durable admission, before execution. */
   resolveSession?(input: IncomingTurn): Promise<string>;
   /** Coordinate the resolved destination around queueing, preparation and delivery. */
   coordinate?(key: string, run: () => Promise<void>): Promise<void>;
-  /** False denies access; a thrown check is unavailable and preserves an undelivered outbox record. */
+  /** False denies access; a thrown check is unavailable. Replay-capable adapters retain generated output. */
   authorize(input: IncomingTurn, stage: "ingress" | "execution" | "delivery", output?: TurnOutput): Promise<boolean>;
   prepare(input: IncomingTurn, key: string, signal: AbortSignal): Promise<P>;
   generate(prepared: P, key: string, signal: AbortSignal, progress: (p: ProgressUpdate) => Promise<void>): Promise<TurnOutput>;

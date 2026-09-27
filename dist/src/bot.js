@@ -22,6 +22,7 @@ import { participationEvaluatorConfig } from "./common/participationEvaluator.js
 import { participationEmojis, reactWithParticipationEmoji, assistantIdentity, explicitlyMentionsBot, participationContext, participationReplyContext, participationAttachments } from "./common/discordParticipation.js";
 import { handleMention } from "./handlers/mention.js";
 import os from "node:os";
+import { once } from "node:events";
 import path from "node:path";
 import { createAccessPolicy, canInvokeSlashCommand, slashCommandRequiresAdmin } from "./common/accessPolicy.js";
 import { sharedSecurityEnabled } from "./common/providerSecurity.js";
@@ -92,19 +93,6 @@ export function createBot(sessions) {
     if (!["true", "false"].includes(enabled))
         throw new Error("SCHEDULES_ENABLED must be true or false.");
     const scheduler = enabled === "true" ? new Scheduler(new ScheduleStore(path.join(os.homedir(), ".config", "ai-assistant", "schedules.sqlite")), access, new DiscordScheduleAdapter(client, access, sessions)) : undefined;
-    client.once(Events.ClientReady, (c) => {
-        try {
-            scheduler?.start();
-        }
-        catch (error) {
-            console.error("[scheduler] Startup failed:", error);
-            process.exitCode = 1;
-            client.destroy();
-            void sessions.shutdown();
-            return;
-        }
-        console.log(`✅ Discord bot ready as ${c.user.tag}`);
-    });
     client.on(Events.InteractionCreate, async (interaction) => {
         if (!interaction.isChatInputCommand())
             return;
@@ -235,5 +223,15 @@ export function createBot(sessions) {
         }
         await handleMention(message, client, sessions, undefined, contextAuthorPolicy(access, client, message.guildId), { rulesetContext: { access, requester: subject, guildId: message.guildId } });
     });
-    return Object.assign(client, { stopScheduler: async () => { await Promise.all([scheduler?.stop(), participation.stop()]); } });
+    return Object.assign(client, {
+        waitUntilReady: async (signal) => {
+            signal.throwIfAborted();
+            if (!client.isReady())
+                await once(client, Events.ClientReady, { signal });
+            signal.throwIfAborted();
+            scheduler?.start();
+            console.log(`✅ Discord bot ready as ${client.user.tag}`);
+        },
+        stopScheduler: async () => { await Promise.all([scheduler?.stop(), participation.stop()]); },
+    });
 }

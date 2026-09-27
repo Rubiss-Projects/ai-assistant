@@ -7,20 +7,21 @@ import { DiscordRuntime } from '../src/composition/discordLifecycle.js';
 import { ConversationService, FileTurnJournal } from '../src/application/conversationService.js';
 import { TEXT_CAPABILITIES } from '../src/core/conversation.js';
 
-test('provider shutdown unblocks conversation and scheduler drains before ownership is released', { timeout: 2000 }, async () => {
+test('shutdown cancels conversation turns but drains scheduled work before stopping providers', { timeout: 2000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'discord-drain-'));
   let finish!: () => void;
   let began!: () => void;
   const generating = new Promise<void>(resolve => { began = resolve; });
   const providerWork = new Promise<void>(resolve => { finish = resolve; });
+  let sessionsStopped = false, clientDestroyed = false, scheduledFinished = false;
   const service = new ConversationService(new FileTurnJournal(dir));
   const runtime = new DiscordRuntime({
     createSessions: () => ({ shutdown: async () => {
-      assert.equal(existsSync(join(dir, 'owner.lock')), true);
-      finish();
+      assert.equal(scheduledFinished, true);
+      sessionsStopped = true;
     } }),
     installConversations: () => service,
-    createClient: () => ({ login: async () => {}, stopScheduler: () => providerWork, destroy: () => {} }),
+    createClient: () => ({ login: async () => {}, stopScheduler: async () => { await providerWork; scheduledFinished = true; }, destroy: () => { clientDestroyed = true; } }),
     startReviews: () => {}, stopReviews: async () => {},
   });
   try {
@@ -30,12 +31,21 @@ test('provider shutdown unblocks conversation and scheduler drains before owners
       conversation: { platform: 'discord', tenantId: 'g', installationId: 'i', channelId: 'c', kind: 'channel' },
     }, { platform: 'discord', tenantId: 'g', installationId: 'i', audience: 'individual', capabilities: TEXT_CAPABILITIES,
       authorize: async () => true, prepare: async () => ({ prompt: 'work' }),
-      generate: async () => { began(); await providerWork; return { content: 'late', attachments: [] }; },
+      generate: async (_prepared, _key, signal) => {
+        began();
+        await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+        return { content: 'late', attachments: [] };
+      },
       deliver: async () => { throw new Error('Cancelled generation must not deliver'); },
     });
     await generating;
-    await runtime.stop();
+    const stopping = runtime.stop();
     assert.equal((await turn.completion).state, 'cancelled');
+    assert.equal(sessionsStopped, false);
+    assert.equal(clientDestroyed, false);
+    finish();
+    await stopping;
+    assert.equal(sessionsStopped, true);
     assert.equal(existsSync(join(dir, 'owner.lock')), false);
   } finally { finish(); await service.shutdown(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -67,7 +77,7 @@ test('shared Discord journal rejects workspace paths and aliases before writing 
   await service.shutdown();
 });
 
-for (const failure of ['client', 'login', 'reviews']) {
+for (const failure of ['client', 'login', 'ready', 'reviews']) {
   test(`Discord ${failure} startup failure releases the journal for a successful restart`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'discord-startup-'));
     const calls: string[] = [];
@@ -77,6 +87,7 @@ for (const failure of ['client', 'login', 'reviews']) {
       createClient: () => {
         if (failure === 'client') throw new Error('client failure');
         return { login: async () => { if (failure === 'login') throw new Error('login failure'); },
+          waitUntilReady: async () => { if (failure === 'ready') throw new Error('ready failure'); },
           stopScheduler: async () => { calls.push('scheduler'); }, destroy: () => { calls.push('client'); } };
       },
       startReviews: () => { if (failure === 'reviews') throw new Error('reviews failure'); },
