@@ -13,6 +13,79 @@ import { OpenCodeProvider } from "../src/providers/opencode.js";
 import { RunTimeoutError, UnsupportedError } from "../src/providers/types.js";
 import { ProviderStore } from "../src/common/providerStore.js";
 
+for (const cooperative of [true, false]) test(`Codex host cancellation settles generation (cooperative=${cooperative})`, { timeout: 3000 }, async t => {
+  const previous = process.env.AI_CANCELLATION_GRACE_MS;
+  process.env.AI_CANCELLATION_GRACE_MS = '20';
+  t.after(() => { if (previous === undefined) delete process.env.AI_CANCELLATION_GRACE_MS; else process.env.AI_CANCELLATION_GRACE_MS = previous; });
+  const provider = testCodex();
+  t.after(() => provider.shutdown());
+  const controller = new AbortController();
+  let began!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  let signal!: AbortSignal;
+  (provider as any).sessions.set('cancel', { id: 'cancel-thread', run: (_input: unknown, options: { signal: AbortSignal }) => {
+    signal = options.signal;
+    return new Promise((_resolve, reject) => {
+      if (cooperative) signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      began();
+    });
+  } });
+  const rejected = assert.rejects(provider.sendMessage('cancel', 'work', undefined, { signal: controller.signal }), /host stopped/);
+  await started;
+  controller.abort(new Error('host stopped'));
+  await rejected;
+  assert.equal(signal.aborted, true);
+  if (!cooperative) assert.equal((provider as any).sessions.has('cancel'), false);
+});
+
+test('Copilot host cancellation invokes abort and does not wait for the provider deadline', { timeout: 3000 }, async t => {
+  const provider = new CopilotProvider();
+  const controller = new AbortController();
+  let began!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  let aborted = 0;
+  let unsubscribed = 0;
+  const session = { on: () => () => { unsubscribed++; }, send: async () => { began(); }, abort: async () => { aborted++; } };
+  (provider as any).withLiveSession = async (_key: string, action: (session: unknown) => Promise<unknown>) => action(session);
+  (provider as any).abandonTimedOutSession = () => {};
+  t.after(() => provider.shutdown());
+  const rejected = assert.rejects(provider.sendMessage('cancel', 'work', undefined, { signal: controller.signal }), /host stopped/);
+  await started;
+  controller.abort(new Error('host stopped'));
+  await rejected;
+  assert.equal(aborted, 1);
+  assert.equal(unsubscribed, 1);
+});
+
+test('OpenCode host cancellation terminates the active CLI process', { timeout: 5000 }, async t => {
+  const { readFileSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'opencode-cancel-'));
+  const ready = join(dir, 'ready');
+  const binary = join(dir, 'fake-opencode');
+  writeFileSync(binary, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  const previous = process.env.OPENCODE_BIN;
+  process.env.OPENCODE_BIN = binary;
+  const controller = new AbortController();
+  const provider = new OpenCodeProvider();
+  t.after(async () => {
+    controller.abort(); await provider.shutdown();
+    if (previous === undefined) delete process.env.OPENCODE_BIN; else process.env.OPENCODE_BIN = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const rejected = assert.rejects(provider.sendMessage('cancel', 'work', undefined, { signal: controller.signal }), /abort/i);
+  for (let i = 0; !existsSync(ready) && i < 200; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(existsSync(ready), true);
+  const pid = Number(readFileSync(ready, 'utf8'));
+  controller.abort(new Error('host stopped'));
+  await rejected;
+  let alive = true;
+  for (let i = 0; alive && i < 200; i++) {
+    try { process.kill(pid, 0); await new Promise(resolve => setTimeout(resolve, 10)); }
+    catch { alive = false; }
+  }
+  assert.equal(alive, false);
+});
+
 // These transport/artifact tests inject threads directly. Context transitions have
 // separate tests exercising the real session creation path and the Codex runtime.
 function testCodex(): CodexProvider {

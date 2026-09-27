@@ -2,13 +2,33 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SessionManager } from "../src/sessionManager.js";
 
+test('shutdown aborts the signal of an active generation before provider cleanup', async () => {
+  const manager = Object.create(SessionManager.prototype) as SessionManager;
+  let signal!: AbortSignal;
+  Object.assign(manager, {
+    name: 'codex', stopping: false, shutdownController: new AbortController(), overrides: new Map(),
+    providers: new Map([['codex', {
+      sendMessage: (_key: string, _prompt: string, _files: unknown, options: { signal: AbortSignal }) => {
+        signal = options.signal;
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      },
+      shutdown: async () => { assert.equal(signal.aborted, true); },
+    }]]),
+  });
+  const controller = new AbortController();
+  const result = assert.rejects(manager.sendMessage('thread', 'work', undefined, { signal: controller.signal }), /shutting down/);
+  await manager.shutdown();
+  await result;
+  assert.equal(controller.signal.aborted, false);
+});
+
 test("late preparation cannot create a provider once shutdown starts", async () => {
   // Exercise the facade with an injected provider, without starting a real SDK.
   const manager = Object.create(SessionManager.prototype) as SessionManager;
   let finish!: () => void;
   const cleanup = new Promise<void>(resolve => { finish = resolve; });
   Object.assign(manager, {
-    name: "codex", stopping: false, overrides: new Map(),
+    name: "codex", stopping: false, shutdownController: new AbortController(), overrides: new Map(),
     providers: new Map([["codex", { shutdown: () => cleanup }]]),
   });
   const stopping = manager.shutdown();
@@ -27,7 +47,7 @@ test("shutdown during model lookup prevents starting a classifier", async () => 
   const model = new Promise<string>(resolve => { resolveModel = resolve; });
   let evaluations = 0;
   Object.assign(manager, {
-    name: "opencode", stopping: false, overrides: new Map(),
+    name: "opencode", stopping: false, shutdownController: new AbortController(), overrides: new Map(),
     providers: new Map([["opencode", {
       name: "opencode", getCurrentModel: () => model,
       evaluateParticipation: async () => { evaluations++; return '{}'; },

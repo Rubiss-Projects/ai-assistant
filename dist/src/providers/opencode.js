@@ -165,6 +165,8 @@ function runOpenCode(args, opts) {
         const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
         const child = spawn(openCodeBin(), args, {
             cwd: opts.cwd,
+            signal: opts.signal,
+            killSignal: "SIGKILL",
             stdio: ["ignore", "pipe", "pipe"],
             env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets, opts.systemPrompt, opts.agentName, opts.github),
         });
@@ -271,6 +273,7 @@ export class OpenCodeProvider {
     async sendMessage(userId, prompt, imagePaths, options) {
         const tail = this.messageQueues.get(userId) ?? Promise.resolve();
         const next = tail.then(async () => {
+            options?.signal?.throwIfAborted();
             const args = openCodeBaseRunArguments();
             const sessionId = this.sessions.get(userId) ?? this.store.get(userId);
             if (sessionId)
@@ -296,6 +299,7 @@ export class OpenCodeProvider {
                 const stopProgress = startProgressUpdates(options);
                 const { stdout, stderr, code } = await runOpenCode(args, {
                     cwd: workingDirectory,
+                    signal: options?.signal,
                     timeoutMs,
                     providerName: this.displayName,
                     artifacts: await this.artifactTools.config(userId, options?.transportContext),

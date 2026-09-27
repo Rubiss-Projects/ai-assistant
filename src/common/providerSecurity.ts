@@ -157,7 +157,7 @@ export function ensureProviderWorkingDirectory(source: Environment = process.env
   return fs.realpathSync.native(workingDirectory);
 }
 
-function canonicalizeForPolicy(candidate: string): string {
+export function canonicalizeForPolicy(candidate: string): string {
   let cursor = path.resolve(candidate);
   const missingSegments: string[] = [];
 

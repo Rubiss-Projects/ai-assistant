@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { canonicalizeForPolicy, configuredSecurityMode, defaultProviderWorkingDirectory, workspacePathIsAllowed } from '../../common/providerSecurity.js';
 import { ConversationService } from '../../application/conversationService.js';
 import { FileTurnJournal } from '../../application/conversationService.js';
 import { TEXT_CAPABILITIES } from '../../core/conversation.js';
@@ -13,7 +14,11 @@ const services = new WeakMap<object, ConversationService>();
 export function installDiscordConversations(sessions: SessionManager): ConversationService {
   const existing = services.get(sessions); if (existing) return existing;
   const dir = process.env.AI_ASSISTANT_STATE_DIR ?? join(homedir(), '.config', 'ai-assistant', 'adapters');
-  const journal = new FileTurnJournal(join(dir, 'discord-turns'));
+  const journalPath = canonicalizeForPolicy(resolve(dir, 'discord-turns'));
+  if (configuredSecurityMode() === 'shared' && workspacePathIsAllowed(defaultProviderWorkingDirectory(), journalPath)) {
+    throw new Error('Discord adapter state must be outside provider-readable workspace paths.');
+  }
+  const journal = new FileTurnJournal(journalPath);
   try {
     const service = new ConversationService(journal);
     services.set(sessions, service); return service;
@@ -54,7 +59,7 @@ export async function executeDiscordTurn(
         subcommand: source.options?.getSubcommand(false), hasWorkspace: Boolean(source.options?.getString('workspace', false)) }, current) : access.canMessage(actor, current);
     },
     prepare: async (_input, session) => prepare ? prepare(session) : ({ prompt, attachments }),
-    generate: (prepared, session, _signal, onProgress) => sessions.sendMessage(session, prepared.prompt, prepared.attachments, { ...options, onProgress }),
+    generate: (prepared, session, signal, onProgress) => sessions.sendMessage(session, prepared.prompt, prepared.attachments, { ...options, signal, onProgress }),
     progress: async update => { await options.onProgress?.(update); },
     deliver: async (response, _id, session) => { await deliver(response, session); return { messageIds: [] }; },
   });
