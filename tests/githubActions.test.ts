@@ -182,6 +182,8 @@ function fixture(t: TestContext) {
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } };
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
+  const tag = { object: { type: "commit", sha: merged } };
+  const tagObjects = new Map<string, typeof tag>();
   let lost = false, denial = false, unsent = false, mergeDenied = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged, runConclusion = "success";
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
@@ -209,7 +211,8 @@ function fixture(t: TestContext) {
       else if (endpoint.includes("/release.yml/runs")) result = { workflow_runs: [{ id: 123, display_title: `Release v1.9.1 @${merged}`, actor: { id: 1 }, head_sha: merged, created_at: new Date().toISOString() }] };
       else if (endpoint.endsWith("/actions/runs/123")) result = { path: ".github/workflows/release.yml", status: "completed", conclusion: runConclusion, head_sha: runHead };
       else if (endpoint.includes("/releases/tags/")) result = { draft: false, tag_name: "v1.9.1" };
-      else if (endpoint.includes("/git/ref/tags/")) result = { object: { type: "commit", sha: merged } };
+      else if (endpoint.includes("/git/ref/tags/")) result = tag;
+      else if (endpoint.includes("/git/tags/")) { result = tagObjects.get(endpoint.split("/").at(-1)!); assert.ok(result, "Expected a known annotated tag object"); }
       else result = { archived: false, permissions: { push: user === "ben" } };
       return result as T;
     },
@@ -220,7 +223,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { root, service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
+  return { root, service, card, pull, target, calls, context, make, tag, tagObjects, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -410,6 +413,28 @@ test("a release previews all changes and binds dispatch to the merged SHA and pr
   await f.service.refresh(f.card.id, f.context());
   assert.equal(f.card.release!.state, "success");
   assert.match(f.card.release!.url!, /releases\/tag\/v1.9.1/);
+});
+
+test("release verification peels annotated tags and rejects mismatched or non-commit targets", async t => {
+  const f = fixture(t); f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged };
+  await f.service.refresh(f.card.id, f.context());
+  await f.service.act(f.card.id, "release", f.context());
+  const outer = "d".repeat(40), inner = "e".repeat(40);
+  f.tag.object = { type: "tag", sha: outer };
+  f.tagObjects.set(outer, { object: { type: "tag", sha: inner } });
+  const target = { object: { type: "commit", sha: base } };
+  f.tagObjects.set(inner, target);
+  await assert.rejects(f.service.refresh(f.card.id, f.context()), /release commit could not be verified/);
+  target.object = { type: "tree", sha: merged };
+  await assert.rejects(f.service.refresh(f.card.id, f.context()), /release commit could not be verified/);
+  target.object = { type: "tag", sha: outer };
+  await assert.rejects(f.service.refresh(f.card.id, f.context()), /release commit could not be verified/);
+  assert.notEqual(f.card.release?.state, "success");
+  target.object = { type: "commit", sha: merged };
+  const restored = f.make();
+  assert.equal((await restored.refresh(f.card.id, f.context())).card.release?.state, "success");
+  assert.deepEqual(restored.pendingReleases(), []);
+  assert.equal(f.calls.filter(call => call.endpoint.endsWith("/dispatches")).length, 1);
 });
 
 test("refresh replaces an undispatched release preview when another release is published", async t => {
