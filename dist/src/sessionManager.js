@@ -152,11 +152,13 @@ export class SessionManager {
         return provider.evaluateParticipation(providerParticipationPrompt(prompt), options);
     }
     /** Run an internal one-shot inference without adding it to the user's conversation. */
-    async runEphemeral(key, prompt) {
+    async runEphemeral(key, prompt, signal) {
+        const cancellation = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal;
+        cancellation.throwIfAborted();
         const provider = this.providerFor(key);
         const temporaryKey = `internal_${randomUUID()}`;
         try {
-            return (await provider.sendMessage(temporaryKey, prompt, undefined, { contextProfile: "ephemeral", signal: this.shutdownController.signal })).content;
+            return (await provider.sendMessage(temporaryKey, prompt, undefined, { contextProfile: "ephemeral", signal: cancellation })).content;
         }
         finally {
             await provider.resetSession(temporaryKey).catch((error) => {

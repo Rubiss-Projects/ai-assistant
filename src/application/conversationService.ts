@@ -59,7 +59,7 @@ export class FileTurnJournal implements TurnJournal {
     for (const name of this.files) {
       const path = join(this.directory, name);
       const record = this.read(path);
-      if (['delivered', 'failed', 'cancelled'].includes(record.state) && Date.parse(record.updatedAt) <= now - this.limits.retentionMs) {
+      if (['delivered', 'failed', 'cancelled', 'interrupted'].includes(record.state) && Date.parse(record.updatedAt) <= now - this.limits.retentionMs) {
         unlinkSync(path);
         this.files.delete(name);
       } else {

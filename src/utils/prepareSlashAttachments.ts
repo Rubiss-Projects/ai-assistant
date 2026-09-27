@@ -15,12 +15,14 @@ export async function prepareSlashAttachments(
   canIncludeContextAuthor: (authorId: string) => boolean = () => true,
   infer?: (prompt: string) => Promise<string>,
   contextAttachments: NonNullable<ConversationMessage["attachments"]> = [],
+  signal?: AbortSignal,
 ): Promise<{
   prompt: string;
   isChannelSummary: boolean;
   attachments: SendAttachment[];
   cleanup: () => Promise<void>;
 }> {
+  signal?.throwIfAborted();
   const linkedAttachments: Array<{
     url: string;
     contentType: string | null;
@@ -30,6 +32,7 @@ export async function prepareSlashAttachments(
   const knowledge = interaction
     ? await enrichDiscordRequest(interaction, prompt, client, canIncludeContextAuthor, infer)
     : { prompt, isChannelSummary: false };
+  signal?.throwIfAborted();
   const enrichedPrompt = knowledge.isChannelSummary ? knowledge.prompt : await resolveMessageLinks(
     knowledge.prompt,
     client,
@@ -42,7 +45,7 @@ export async function prepareSlashAttachments(
     ...(directAttachment ? [directAttachment] : []),
     ...linkedAttachments,
     ...(knowledge.isChannelSummary ? [] : contextAttachments),
-  ]);
+  ], signal);
 
   try {
     const prepared = await prepareDownloadedAttachments(result.attachments);

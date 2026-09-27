@@ -86,7 +86,8 @@ export interface DownloadResult {
  * Returns the prepared downloads and a cleanup function for any temp files.
  */
 export async function downloadFileAttachments(
-  attachments: Iterable<{ url: string; contentType: string | null; name: string; size?: number }>
+  attachments: Iterable<{ url: string; contentType: string | null; name: string; size?: number }>,
+  signal?: AbortSignal,
 ): Promise<DownloadResult> {
   const downloaded: DownloadedAttachment[] = [];
   const warnings: string[] = [];
@@ -95,6 +96,7 @@ export async function downloadFileAttachments(
   let count = 0;
 
   for (const attachment of attachments) {
+    if (signal?.aborted) break;
     if (seenUrls.has(attachment.url)) continue;
     seenUrls.add(attachment.url);
     if (count >= MAX_FILE_COUNT) {
@@ -111,7 +113,7 @@ export async function downloadFileAttachments(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      const response = await fetch(attachment.url, { signal: controller.signal });
+      const response = await fetch(attachment.url, { signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal });
 
       if (!response.ok) {
         await response.body?.cancel();
@@ -166,6 +168,7 @@ export async function downloadFileAttachments(
         });
       }
     } catch (err) {
+      if (signal?.aborted) break;
       warnings.push(`${attachment.name}: ${err instanceof Error ? err.message : "download failed"}`);
       if (err instanceof Error && err.name === "AbortError") {
         console.warn(`[downloadAttachments] Timeout downloading "${attachment.name}"`);
@@ -173,6 +176,11 @@ export async function downloadFileAttachments(
         console.warn(`[downloadAttachments] Error downloading "${attachment.name}":`, err);
       }
     } finally { clearTimeout(timer); }
+  }
+
+  if (signal?.aborted) {
+    await Promise.all(downloaded.flatMap(d => d.filePath ? [unlink(d.filePath).catch(() => {})] : []));
+    signal.throwIfAborted();
   }
 
   return {

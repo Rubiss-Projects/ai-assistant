@@ -1,6 +1,38 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SessionManager } from "../src/sessionManager.js";
+import { discordConversations, executeDiscordTurn } from "../src/adapters/discord/turn.js";
+
+test('Discord shutdown aborts ephemeral preparation before provider shutdown', { timeout: 2000 }, async () => {
+  const manager = Object.create(SessionManager.prototype) as SessionManager;
+  let began!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  let resets = 0, sends = 0;
+  Object.assign(manager, {
+    name: 'codex', stopping: false, shutdownController: new AbortController(), overrides: new Map(),
+    providers: new Map([['codex', {
+      sendMessage: (_key: string, _prompt: string, _files: unknown, options: { signal: AbortSignal }) => {
+        sends++;
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+          began();
+        });
+      },
+      resetSession: async () => { resets++; },
+      shutdown: async () => {},
+    }]]),
+  });
+  const turn = executeDiscordTurn(manager, { id: 'cancel-preparation', guildId: 'guild', channelId: 'channel', author: { id: 'user' } },
+    'thread', 'search', undefined, {}, async () => assert.fail('must not deliver'),
+    async (key, signal) => ({ prompt: await manager.runEphemeral(key, 'history inference', signal) }));
+  const rejected = assert.rejects(turn);
+  await started;
+  await discordConversations(manager).shutdown();
+  await rejected;
+  assert.equal(sends, 1);
+  assert.equal(resets, 1);
+  await manager.shutdown();
+});
 
 test('shutdown aborts the signal of an active generation before provider cleanup', async () => {
   const manager = Object.create(SessionManager.prototype) as SessionManager;

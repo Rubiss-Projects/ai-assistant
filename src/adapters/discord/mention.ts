@@ -132,15 +132,18 @@ export async function handleMention(
      async response => {
     await progressUpdates.catch(() => {});
     await deliverMentionResponse(message, progressReply, response);
-    }, async () => {
+    }, async (_session, signal) => {
+    signal.throwIfAborted();
     const knowledge = await enrichDiscordRequest(
       message,
       basePrompt,
       client,
       canIncludeContextAuthor,
-      (internalPrompt) => sessions.runEphemeral(key, internalPrompt),
+      (internalPrompt) => sessions.runEphemeral(key, internalPrompt, signal),
     );
+    signal.throwIfAborted();
     const linkedPrompt = knowledge.isChannelSummary ? knowledge.prompt : await resolveMessageLinks(knowledge.prompt, client, message.author.id, contextAttachments, canIncludeContextAuthor, basePrompt);
+    signal.throwIfAborted();
     let enrichedPrompt = knowledge.isChannelSummary ? linkedPrompt : await resolveDiscordContext(
       message,
       linkedPrompt,
@@ -155,7 +158,7 @@ export async function handleMention(
       ...(knowledge.isChannelSummary ? [message] : mentionOptions.participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
       ...contextAttachments,
       ...(knowledge.isChannelSummary ? [] : mentionOptions.participation?.attachments ?? []),
-    ]);
+    ], signal);
     cleanup = result.cleanup;
     const prepared = await prepareDownloadedAttachments(result.attachments);
     if (prepared.textContext) enrichedPrompt = `${enrichedPrompt}\n\n${prepared.textContext}`;
