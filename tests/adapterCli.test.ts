@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,25 @@ test('CLI interactive input and invalid arguments have observable outcomes',()=>
  const interactive=run(dir,['--provider','fake'],'hello\n/quit\n');assert.equal(interactive.status,0,interactive.stderr);assert.match(interactive.stdout,/Fake response/);
  const invalid=run(dir,['--user','forged']);assert.notEqual(invalid.status,0);
  }finally{rmSync(dir,{recursive:true,force:true})}
+});
+
+test('CLI restoration failure releases journal ownership so repaired state can reopen', () => {
+ const dir = mkdtempSync(join(tmpdir(), 'adapter-cli-corrupt-'));
+ try {
+  mkdirSync(join(dir, 'cli-turns'));
+  const corrupt = join(dir, 'cli-turns', '0'.repeat(64) + '.json');
+  writeFileSync(corrupt, '{invalid');
+  const args = ['--provider', 'fake', '--message', 'hello', '--json'];
+  for (let attempt = 0; attempt < 2; attempt++) {
+   const failed = run(dir, args);
+   assert.notEqual(failed.status, 0);
+   assert.equal(existsSync(join(dir, 'cli-turns', 'owner.lock')), false);
+  }
+  rmSync(corrupt);
+  const recovered = run(dir, args);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(JSON.parse(recovered.stdout).status, 'delivered');
+ } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 test('core/application imports do not depend on platform SDKs or adapters',()=>{
  for(const directory of ['src/core','src/application'])for(const file of readdirSync(join(root,directory))){if(!file.endsWith('.ts'))continue;const source=readFileSync(join(root,directory,file),'utf8');assert.doesNotMatch(source,/from ['"][^'"]*(?:discord\.js|@slack|adapters\/|sessionManager)/);}

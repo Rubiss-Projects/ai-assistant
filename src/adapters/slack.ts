@@ -120,11 +120,11 @@ export class SlackAdapter {
       receivedAt: new Date(Number(ts) * 1000).toISOString(), actor: { platform: 'slack', tenantId: this.config.teamId, userId: e.user },
       conversation: { platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId, channelId: e.channel, threadId: thread, kind: 'thread' } };
   }
-  private async audience(input: IncomingTurn): Promise<string> {
+  private async audience(input: IncomingTurn): Promise<string | undefined> {
     const info = await this.api.call('conversations.info', { channel: input.conversation.channelId });
     const channel = info.channel as Record<string,unknown>;
     // Shared/external channels and DMs require a separate visibility policy.
-    if (!channel || channel.is_im || channel.is_mpim || channel.is_ext_shared || channel.is_org_shared || !channel.is_member) throw new Error('Unsupported channel audience.');
+    if (!channel || channel.is_im || channel.is_mpim || channel.is_ext_shared || channel.is_org_shared || !channel.is_member) return;
     const members = new Set<string>(); let cursor: string | undefined;
     for (let page = 0; page < 20; page++) {
       const result = await this.api.call('conversations.members', { channel: input.conversation.channelId, limit: '200', ...(cursor ? { cursor } : {}) });
@@ -132,7 +132,8 @@ export class SlackAdapter {
       cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
       if (!cursor) break;
     }
-    if (cursor || !members.has(input.actor.userId) || !members.has(this.config.botUserId)) throw new Error('Cannot establish channel audience.');
+    if (cursor) throw new Error('Cannot establish the complete channel audience.');
+    if (!members.has(input.actor.userId) || !members.has(this.config.botUserId)) return;
     return createHash('sha256').update(JSON.stringify([...members].sort())).digest('hex');
   }
   private stateFile(key: string) { return join(this.config.stateDirectory, createHash('sha256').update(key).digest('hex') + '.json'); }
@@ -163,15 +164,24 @@ export class SlackAdapter {
     const key = sessionKey(input, 'shared');
     let audience: string | undefined;
     const authorized = async () => {
-      try { const current = await this.audience(input); return audience === undefined || current === audience; } catch { return false; }
+      const current = await this.audience(input);
+      return current !== undefined && (audience === undefined || current === audience);
     };
     const port = new SlackHistory(this.historyApi, input.conversation, authorized, this.config.excludedAuthors);
     return this.service.submit(input, {
       platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
       audience: 'shared', capabilities: { ...TEXT_CAPABILITIES, history: true, progress: false },
-      authorize: async (_i, stage) => stage === 'ingress' ? true : authorized(),
+      authorize: async (_i, stage, output) => {
+        if (stage === 'ingress') return true;
+        if (output) {
+          const current = await this.audience(input);
+          return Boolean(output.audienceTag && current === output.audienceTag);
+        }
+        return authorized();
+      },
       prepare: async (_i, session, signal) => {
         audience = await this.audience(input);
+        if (!audience) throw new Error('Conversation access denied.');
         const state = this.load(session);
         state.represented ??= [];
         state.scopes ??= {};
@@ -187,7 +197,7 @@ export class SlackAdapter {
           state.scopes![id] === historyScope(resource) && comparePosition(pos, input.sourceMessageId!) < 0 && !observedIds.has(id));
         const exclusionPolicy = JSON.stringify([...this.config.excludedAuthors].sort());
         const contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
-        if (state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
+        if (result.coverage.status === 'unavailable' || state.exclusionPolicy !== exclusionPolicy || state.contextIdentity !== contextIdentity || state.audience !== audience || changed || removed) { await this.engine.resetSession(session); state.seen = {}; state.positions = {}; state.represented = []; state.scopes = {}; }
         const fresh = result.messages.filter(m => !state.seen[m.id] && !state.represented.includes(m.position));
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
         const next: ContextState = { exclusionPolicy, represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
@@ -223,7 +233,6 @@ export class SlackAdapter {
         return response;
       },
       deliver: async (output, deliveryKey) => {
-        if (!output.audienceTag || output.audienceTag !== await this.audience(input)) throw new Error("Generated output audience changed; delivery denied.");
         const text = output.content + (output.attachments.length ? '\n[File delivery is unavailable in Slack.]' : '');
         const chars = Array.from(text || '(No text response)'); const ids: string[] = [];
         const sent: Array<{ position: string; text: string }> = [];

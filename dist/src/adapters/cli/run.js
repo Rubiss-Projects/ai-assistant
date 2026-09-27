@@ -24,7 +24,21 @@ export async function runCli(args = process.argv.slice(3), makeEngine = createTe
     if (opts.json)
         console.log = (...values) => console.error(...values);
     const directory = process.env.AI_ASSISTANT_STATE_DIR ?? join(homedir(), '.config', 'ai-assistant', 'adapters');
-    const service = new ConversationService(new FileTurnJournal(join(directory, 'cli-turns')));
+    let journal;
+    let service;
+    try {
+        journal = new FileTurnJournal(join(directory, 'cli-turns'));
+        service = new ConversationService(journal);
+    }
+    catch (error) {
+        try {
+            journal?.close();
+        }
+        finally {
+            console.log = originalLog;
+        }
+        throw error;
+    }
     let engine;
     let cancel;
     let interrupted = false;
