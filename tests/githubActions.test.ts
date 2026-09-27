@@ -107,6 +107,46 @@ test("refresh is single-flight and revoked Discord permission prevents the GitHu
   assert.equal(writes, 0);
 });
 
+test("rotated credentials survive failed identity lookup and restart without permitting an unverified write", async t => {
+  const root = directory(t);
+  let now = Date.now(), refreshes = 0, identityFailure = false, identityId = 1, writes = 0;
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("device/code")) return Response.json({ device_code: "device", user_code: "ABCD-EFGH", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 1 });
+    if (url.endsWith("access_token")) {
+      const body = JSON.parse(String(init?.body)) as { grant_type: string; refresh_token?: string };
+      if (body.grant_type === "refresh_token") {
+        assert.equal(body.refresh_token, `ghr_${refreshes}`);
+        refreshes++;
+      }
+      return Response.json({ access_token: `ghu_${refreshes}`, refresh_token: `ghr_${refreshes}`, expires_in: 28800, refresh_token_expires_in: 15897600 });
+    }
+    if (url.endsWith("/user")) {
+      if (identityFailure) return new Response(null, { status: 503 });
+      return Response.json({ id: identityId, login: "ben" });
+    }
+    writes++; return Response.json({});
+  };
+  const auth = new GitHubUserAuth("Iv1.test-client-id", root, fetcher, () => now);
+  const pending = await auth.begin("111", AbortSignal.timeout(1000)); now += 1100;
+  await auth.finish("111", pending.id, AbortSignal.timeout(1000));
+  const client = await auth.client("111", AbortSignal.timeout(1000), async () => {});
+  now += 28800_000; identityFailure = true;
+  await assert.rejects(client.request("POST", "/repos/owner/repo/pulls/1/reviews"), /503/);
+  assert.equal(refreshes, 1); assert.equal(writes, 0);
+  const restored = new GitHubUserAuth("Iv1.test-client-id", root, fetcher, () => now);
+  await assert.rejects(restored.client("111", AbortSignal.timeout(1000), async () => {}), /503/);
+  identityFailure = false; identityId = 2;
+  await assert.rejects(restored.client("111", AbortSignal.timeout(1000), async () => {}), /identity changed/);
+  identityId = 1;
+  const recovered = await restored.client("111", AbortSignal.timeout(1000), async () => {});
+  await recovered.request("POST", "/repos/owner/repo/pulls/1/reviews");
+  assert.equal(refreshes, 1); assert.equal(writes, 1);
+  now += 28800_000;
+  await recovered.request("POST", "/repos/owner/repo/pulls/1/reviews");
+  assert.equal(refreshes, 2);
+});
+
 const head = "a".repeat(40), base = "b".repeat(40), merged = "c".repeat(40);
 function fixture(t: TestContext) {
   const root = directory(t);
@@ -203,6 +243,40 @@ test("double clicks and restart after a lost approval response do not post twice
   const results = await Promise.all([restored.act(f.card.id, "approve", f.context()), restored.act(f.card.id, "approve", f.context())]);
   assert.ok(results.every(result => result.includes("already approved")));
   assert.equal(f.calls.filter(call => call.endpoint.endsWith("/reviews")).length, 1);
+});
+
+test("a blocked card does not delay another card while clicks on the same card remain serialized", async t => {
+  const f = fixture(t);
+  const other = f.service.forConversation("session", "guild", "other-channel")[0];
+  let resume!: () => void, started!: () => void;
+  const blocked = new Promise<void>(resolve => { resume = resolve; });
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  const first = f.service.refresh(f.card.id, { ...f.context(), authorize: async () => { started(); await blocked; } });
+  await entered;
+  let sameCardEntered = false;
+  const second = f.service.refresh(f.card.id, { ...f.context(), authorize: async () => { sameCardEntered = true; } });
+  try {
+    await Promise.race([
+      f.service.refresh(other.id, { ...f.context(), channel: "other-channel" }),
+      new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error("unrelated card was blocked")), 1000); timer.unref(); }),
+    ]);
+    assert.equal(sameCardEntered, false);
+  } finally { resume(); await Promise.all([first, second]); }
+  assert.equal(sameCardEntered, true);
+});
+
+test("release polling reaches later cards even when ten old receipts remain unresolved", t => {
+  const f = fixture(t);
+  const cards = Array.from({ length: 11 }, (_, index) => {
+    const card = f.service.forConversation("session", "guild", `channel-${index}`)[0];
+    card.release = { tag: "v1.9.1", sha: merged, previous: "v1.9.0", notes: "Change" };
+    card.attempts.push({ action: "release", user: 1, discordUser: "ben", state: "pending", at: Date.now() });
+    return card;
+  });
+  assert.equal(f.service.pendingReleases().length, 10);
+  assert.ok(f.service.pendingReleases().some(card => card.id === cards[10].id));
+  for (const card of cards.slice(0, 10)) card.release!.state = "success";
+  assert.deepEqual(f.service.pendingReleases().map(card => card.id), [cards[10].id]);
 });
 
 test("a GitHub rejection can be retried without leaving a false pending operation", async t => {

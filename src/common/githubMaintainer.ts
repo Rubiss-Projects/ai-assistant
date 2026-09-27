@@ -54,7 +54,8 @@ export function nextReleaseTag(tags: readonly string[]): string {
 /** Human-only operations. This service is never registered as a model tool. */
 export class GitHubMaintainer {
   private cards: ContributionCard[];
-  private queue: Promise<unknown> = Promise.resolve();
+  private readonly queues = new Map<string, Promise<unknown>>();
+  private releasePollOffset = 0;
   private readonly file: string;
   constructor(private readonly auth: Pick<GitHubUserAuth, "client">, private readonly targets: (session: string, guild: string) => ActionTarget[], directory: string) {
     this.file = hostOnlyGitHubPath(path.join(directory, "cards.json"));
@@ -62,9 +63,18 @@ export class GitHubMaintainer {
     if (!Array.isArray(this.cards) || this.cards.length > 1000 || this.cards.some(card => !/^[a-f0-9-]{36}$/.test(card.id) || !card.guild || !card.channel || !Array.isArray(card.attempts))) throw new Error("Invalid GitHub action card store.");
   }
   private save() { writeGitHubState(this.file, this.cards); }
-  pendingReleases() { return this.cards.filter(card => card.release && card.attempts.some(attempt => attempt.action === "release") && !["success", "failure", "cancelled", "timed_out", "action_required", "skipped", "neutral", "stale"].includes(card.release.state ?? "")); }
-  private serial<T>(action: () => Promise<T>): Promise<T> {
-    const pending = this.queue.catch(() => {}).then(action); this.queue = pending; return pending;
+  pendingReleases(limit = 10) {
+    const pending = this.cards.filter(card => card.release && card.attempts.some(attempt => attempt.action === "release") && !["success", "failure", "cancelled", "timed_out", "action_required", "skipped", "neutral", "stale"].includes(card.release.state ?? ""));
+    const start = this.releasePollOffset % (pending.length || 1);
+    const batch = [...pending.slice(start), ...pending.slice(0, start)].slice(0, limit);
+    this.releasePollOffset = start + batch.length;
+    return batch;
+  }
+  private serial<T>(id: string, action: () => Promise<T>): Promise<T> {
+    const pending = (this.queues.get(id) ?? Promise.resolve()).catch(() => {}).then(action);
+    this.queues.set(id, pending);
+    void pending.finally(() => { if (this.queues.get(id) === pending) this.queues.delete(id); }).catch(() => {});
+    return pending;
   }
   private target(card: ContributionCard): ActionTarget {
     const target = this.targets(card.session, card.guild).find(target => target.id === card.contribution);
@@ -150,7 +160,7 @@ export class GitHubMaintainer {
     if (!repo.permissions?.push || repo.archived) throw new GitHubActionError("Your linked GitHub account does not have write access to this repository.");
   }
   async act(id: string, action: MaintainerAction, context: ActionContext): Promise<string> {
-    return this.serial(async () => {
+    return this.serial(id, async () => {
       await context.authorize(action);
       const card = this.get(id, context);
       const api = await this.auth.client(context.userId, context.signal, () => context.authorize(action));
@@ -184,7 +194,7 @@ export class GitHubMaintainer {
     });
   }
   async refresh(id: string, context: ActionContext): Promise<{ card: ContributionCard; pull: PullSnapshot; actor: string }> {
-    return this.serial(async () => {
+    return this.serial(id, async () => {
       await context.authorize("read");
       const card = this.get(id, context);
       const api = await this.auth.client(context.userId, context.signal, () => context.authorize("read"));

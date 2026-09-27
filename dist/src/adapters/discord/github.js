@@ -48,7 +48,7 @@ class DiscordGitHub {
     }
     async stop() { clearInterval(this.timer); this.shutdown.abort(); await this.polling; }
     async poll(client) {
-        for (const card of this.actions.pendingReleases().slice(0, 10)) {
+        for (const card of this.actions.pendingReleases()) {
             try {
                 const attempt = card.attempts.find(attempt => attempt.action === "release");
                 const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(60_000)]);
