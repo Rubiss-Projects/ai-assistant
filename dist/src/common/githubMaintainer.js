@@ -44,7 +44,7 @@ export class GitHubMaintainer {
     }
     save() { writeGitHubState(this.file, this.cards); }
     pendingReleases(limit = 10) {
-        const pending = this.cards.filter(card => card.release && card.attempts.some(attempt => attempt.action === "release") && !["success", "failure", "cancelled", "timed_out", "action_required", "skipped", "neutral", "stale"].includes(card.release.state ?? ""));
+        const pending = this.cards.filter(card => card.release && card.attempts.some(attempt => attempt.action === "release") && !["success", "failure", "cancelled", "timed_out", "action_required", "skipped", "neutral", "stale", "startup_failure"].includes(card.release.state ?? ""));
         const start = this.releasePollOffset % (pending.length || 1);
         const batch = [...pending.slice(start), ...pending.slice(0, start)].slice(0, limit);
         this.releasePollOffset = start + batch.length;

@@ -11,7 +11,10 @@ export class GitHubActionError extends Error {
 export class GitHubRequestNotSentError extends GitHubActionError {}
 export interface GitHubUser { id: number; login: string }
 interface Account extends GitHubUser { generation: string; access: string; refresh: string; expires: number; refreshExpires: number; identityVerified?: boolean }
-interface Device { id: string; code: string; expires: number; nextPoll: number; interval: number }
+interface Device {
+  id: string; code: string; expires: number; nextPoll: number; interval: number;
+  token?: Pick<Account, "access" | "refresh" | "expires" | "refreshExpires">;
+}
 export interface UserGitHubClient {
   user: GitHubUser;
   request<T>(method: "GET" | "POST" | "PUT", endpoint: string, body?: unknown): Promise<T>;
@@ -141,15 +144,20 @@ export class GitHubUserAuth {
     if (pending.nextPoll > this.now()) throw new GitHubActionError("Please wait a few seconds before checking the link again.");
     pending.nextPoll = Infinity;
     try {
-      const result = await this.oauth({ device_code: pending.code, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }, signal);
-      if (result.error === "slow_down") pending.interval += 5000;
-      if (result.error === "authorization_pending" || result.error === "slow_down") return undefined;
-      if (result.error) { this.pending.delete(userId); throw new GitHubActionError("GitHub linking expired or was declined. Start /github link again."); }
-      const token = this.token(result);
-      const user = await this.identity(token.access, signal);
+      if (!pending.token) {
+        const result = await this.oauth({ device_code: pending.code, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }, signal);
+        if (this.pending.get(userId) !== pending) throw new GitHubActionError("Linking was cancelled.");
+        if (result.error === "slow_down") pending.interval += 5000;
+        if (result.error === "authorization_pending" || result.error === "slow_down") return undefined;
+        if (result.error) { this.pending.delete(userId); throw new GitHubActionError("GitHub linking expired or was declined. Start /github link again."); }
+        // Keep the issued grant for retries within this pending device flow. A failed
+        // identity lookup must not exchange the already-consumed device code again.
+        pending.token = this.token(result);
+      }
+      const user = await this.identity(pending.token.access, signal);
       if (this.pending.get(userId) !== pending) throw new GitHubActionError("Linking was cancelled.");
       if (Object.entries(this.accounts).some(([id, account]) => id !== userId && account.id === user.id)) throw new GitHubActionError("That GitHub account is already linked to another Discord user.");
-      this.accounts[userId] = { ...user, ...token, generation: randomUUID() };
+      this.accounts[userId] = { ...user, ...pending.token, generation: randomUUID() };
       this.save(); this.pending.delete(userId);
       return user;
     } finally { pending.nextPoll = this.now() + pending.interval; }
@@ -171,6 +179,7 @@ export class GitHubUserAuth {
         let pending = account;
         if (account.expires <= this.now() + 60_000) {
           if (account.refreshExpires <= this.now()) throw new GitHubActionError("Your GitHub authorization expired. Link your account again.");
+          // GitHub also exempts Device Flow grants from client_secret during refresh.
           const token = this.token(await this.oauth({ grant_type: "refresh_token", refresh_token: account.refresh }, signal));
           if (this.accounts[userId] !== account) throw new GitHubActionError("Your GitHub link changed during this action.");
           // Refresh tokens rotate once. Keep the replacement across a failed identity
