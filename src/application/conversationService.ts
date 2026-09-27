@@ -35,8 +35,11 @@ export class FileTurnJournal implements TurnJournal {
     const fd = openSync(temp, 'wx', 0o600);
     try { writeFileSync(fd, JSON.stringify(record)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(temp, target);
-    const dir = openSync(this.directory, 'r');
-    try { fsyncSync(dir); } finally { closeSync(dir); }
+    // Windows cannot fsync directory handles; the file is flushed before rename.
+    if (process.platform !== 'win32') {
+      const dir = openSync(this.directory, 'r');
+      try { fsyncSync(dir); } finally { closeSync(dir); }
+    }
   }
   all(): TurnRecord[] { return readdirSync(this.directory).filter(n => /^[a-f0-9]{64}\.json$/.test(n)).map(n => this.read(join(this.directory, n))); }
   close(): void { if (!this.closed) { this.closed = true; unlinkSync(this.lock); } }
@@ -52,10 +55,16 @@ export class ConversationService {
     for (const record of journal.all()) {
       if (['accepted', 'running', 'delivering'].includes(record.state)) {
         this.save({ ...record, state: 'interrupted', error: 'Process stopped before completion; execution or delivery may have occurred. Submit a new request explicitly.' });
+      } else if (record.state === 'delivered' && record.output) {
+        this.save({ ...record, output: undefined });
       }
     }
   }
   private save(record: TurnRecord) { record.updatedAt = new Date().toISOString(); this.journal.put(record); return record; }
+  /** Adapters rebuild current authorization and delivery callbacks for this outbox. */
+  pendingDeliveries(): IncomingTurn[] {
+    return this.journal.all().filter(record => record.state === 'generated').map(record => record.input);
+  }
   async submit<P extends PreparedTurn>(input: IncomingTurn, host: TrustedAdapterContext<P>): Promise<TurnHandle> {
     if (this.stopped) throw new Error('Conversation service is stopping.');
     validateIdentity(input, host);
@@ -101,7 +110,7 @@ export class ConversationService {
         controller.signal.throwIfAborted();
         this.save({ ...record, state: 'delivering' });
         const receipt = await host.deliver(record.output!, id, executionKey);
-        return this.save({ ...record, state: 'delivered', receipt });
+        return this.save({ ...record, state: 'delivered', output: undefined, receipt });
       } catch (error) {
         try { host.onError?.(error); } catch { /* Diagnostics cannot prevent cleanup. */ }
         const current = this.journal.get(id)!;

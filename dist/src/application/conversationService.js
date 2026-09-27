@@ -55,12 +55,15 @@ export class FileTurnJournal {
             closeSync(fd);
         }
         renameSync(temp, target);
-        const dir = openSync(this.directory, 'r');
-        try {
-            fsyncSync(dir);
-        }
-        finally {
-            closeSync(dir);
+        // Windows cannot fsync directory handles; the file is flushed before rename.
+        if (process.platform !== 'win32') {
+            const dir = openSync(this.directory, 'r');
+            try {
+                fsyncSync(dir);
+            }
+            finally {
+                closeSync(dir);
+            }
         }
     }
     all() { return readdirSync(this.directory).filter(n => /^[a-f0-9]{64}\.json$/.test(n)).map(n => this.read(join(this.directory, n))); }
@@ -86,9 +89,16 @@ export class ConversationService {
             if (['accepted', 'running', 'delivering'].includes(record.state)) {
                 this.save({ ...record, state: 'interrupted', error: 'Process stopped before completion; execution or delivery may have occurred. Submit a new request explicitly.' });
             }
+            else if (record.state === 'delivered' && record.output) {
+                this.save({ ...record, output: undefined });
+            }
         }
     }
     save(record) { record.updatedAt = new Date().toISOString(); this.journal.put(record); return record; }
+    /** Adapters rebuild current authorization and delivery callbacks for this outbox. */
+    pendingDeliveries() {
+        return this.journal.all().filter(record => record.state === 'generated').map(record => record.input);
+    }
     async submit(input, host) {
         if (this.stopped)
             throw new Error('Conversation service is stopping.');
@@ -146,7 +156,7 @@ export class ConversationService {
                 controller.signal.throwIfAborted();
                 this.save({ ...record, state: 'delivering' });
                 const receipt = await host.deliver(record.output, id, executionKey);
-                return this.save({ ...record, state: 'delivered', receipt });
+                return this.save({ ...record, state: 'delivered', output: undefined, receipt });
             }
             catch (error) {
                 try {

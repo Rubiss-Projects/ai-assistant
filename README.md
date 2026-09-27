@@ -197,9 +197,9 @@ DMs, group DMs, externally shared and organization-shared channels are rejected.
 - **History unavailable:** check the history credential's access and scopes for both history APIs. Slack rate limits vary by app distribution; this adapter bounds retrieval and reports failure rather than guaranteeing a complete transcript.
 - **State ownership error:** only one process may own `slack-turns/owner.lock`. After a crash, confirm the recorded process has stopped before removing only its stale lock. Never remove a live worker's lock.
 - Persist `slack-turns`, `slack-context` and `slack-provider-state` under `AI_ASSISTANT_STATE_DIR` across restarts. Keep `SLACK_INSTALLATION_ID` stable. SIGINT/SIGTERM drain the adapter, but an active provider may take until completion or its timeout to stop.
-- Membership, provider/session identity and excluded-author policy changes invalidate retained context. Edit/deletion detection is limited to fetched history windows. Interrupted or uncertain deliveries need operator reconciliation; they are not automatically regenerated.
+- Membership, provider/session identity and excluded-author policy changes invalidate retained context. Edit/deletion detection is limited to fetched history windows. Slack replays generated replies at startup with current access/audience checks. Interrupted or uncertain deliveries need operator reconciliation; they are not automatically regenerated. Successfully delivered response payloads are removed from the journal while receipts remain for deduplication.
 
-See the [adapter specification and validation status](docs/adapter-refactor-spec.md) for recovery details and outstanding full-build/live-platform release checks.
+See the [adapter specification and validation status](docs/adapter-refactor-spec.md) for recovery details and validation scope.
 
 ## Using the bot
 

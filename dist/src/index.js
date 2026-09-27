@@ -5,12 +5,23 @@ if (adapter === 'discord')
     await import('./composition/discord.js');
 else if (adapter === 'slack') {
     const { startSlack } = await import('./adapters/slack.js');
-    const slack = await startSlack();
-    let stopping = false;
-    const stop = async () => { if (stopping)
-        return; stopping = true; await slack.stop(); };
-    process.once('SIGINT', () => { void stop(); });
-    process.once('SIGTERM', () => { void stop(); });
+    const controller = new AbortController();
+    let slack;
+    const stop = () => {
+        controller.abort();
+        void slack?.stop().catch(error => { console.error(error); process.exitCode = 1; });
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+    try {
+        slack = await startSlack(controller.signal);
+    }
+    catch (error) {
+        process.off('SIGINT', stop);
+        process.off('SIGTERM', stop);
+        if (error !== controller.signal.reason)
+            throw error;
+    }
 }
 else
     throw new Error('AI_ASSISTANT_ADAPTER must be discord or slack. Use ai-assistant cli for local conversations.');

@@ -191,6 +191,25 @@ export class SlackAdapter {
         const input = this.normalize(payload);
         if (!input)
             return;
+        const source = payload.event;
+        return this.submit(input, fingerprint({ authorId: input.actor.userId, text: String(source.text), revision: JSON.stringify(source.edited ?? null) }));
+    }
+    /** Replay only generated output: acknowledged Socket Mode events need not return. */
+    async recover(signal) {
+        for (const input of this.service.pendingDeliveries()) {
+            signal?.throwIfAborted();
+            const conversation = input.conversation;
+            if (conversation.platform !== 'slack' || conversation.tenantId !== this.config.teamId
+                || conversation.installationId !== this.config.installationId || conversation.kind !== 'thread'
+                || !this.config.channels.has(conversation.channelId) || !this.config.users.has(input.actor.userId))
+                continue;
+            const handle = await this.submit(input);
+            const result = await handle.completion;
+            if (result.state !== 'delivered')
+                console.error('[slack] Recovered delivery ' + result.state + ': ' + result.error);
+        }
+    }
+    submit(input, sourceFingerprint) {
         const key = sessionKey(input, 'shared');
         let audience;
         const authorized = async () => {
@@ -236,6 +255,8 @@ export class SlackAdapter {
                 return { prompt, next, coverage: result.coverage };
             },
             generate: async (prepared, session, signal, onProgress) => {
+                if (!sourceFingerprint)
+                    throw new Error('Recovered turns may only deliver persisted output.');
                 const response = await this.engine.sendMessage(session, prepared.prompt, undefined, {
                     transportContext: { platform: 'slack', history: true }, signal, onProgress,
                     resolveChannelHistory: async (args, signal) => {
@@ -255,8 +276,7 @@ export class SlackAdapter {
                 // Do not suppress the current turn until it has actually been accepted by the provider.
                 const id = JSON.stringify(['slack', input.conversation.tenantId, input.conversation.channelId, input.sourceMessageId]);
                 prepared.next.positions[id] = input.sourceMessageId;
-                const source = payload.event;
-                prepared.next.seen[id] = fingerprint({ authorId: input.actor.userId, text: String(source.text), revision: JSON.stringify(source.edited ?? null) });
+                prepared.next.seen[id] = sourceFingerprint;
                 prepared.next.scopes[id] = historyScope(input.conversation);
                 prepared.next.contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
                 this.save(session, prepared.next);
@@ -298,88 +318,127 @@ export class SlackAdapter {
 }
 function required(name) { const value = process.env[name]?.trim(); if (!value)
     throw new Error(name + ' is required.'); return value; }
-export async function startSlack() {
+export async function startSlack(signal) {
+    signal?.throwIfAborted();
     if (configuredSecurityMode() !== 'shared')
         throw new Error('Slack requires shared provider security mode.');
     const api = new SlackWebApi(required('SLACK_BOT_TOKEN'));
     const connections = new SlackWebApi(required('SLACK_APP_TOKEN'));
     const historyApi = process.env.SLACK_HISTORY_TOKEN ? new SlackWebApi(process.env.SLACK_HISTORY_TOKEN) : api;
     const teamId = required('SLACK_TEAM_ID');
-    const auth = await api.call('auth.test');
+    const auth = await api.call('auth.test', undefined, signal);
     if (auth.team_id !== teamId || typeof auth.user_id !== 'string')
         throw new Error('Slack bot identity does not match configured workspace.');
-    const historyAuth = await historyApi.call('auth.test');
+    const historyAuth = await historyApi.call('auth.test', undefined, signal);
     if (historyAuth.team_id !== teamId)
         throw new Error('Slack history credential belongs to a different workspace.');
     const list = (name) => new Set(required(name).split(',').map(s => s.trim()).filter(Boolean));
     const channels = list('SLACK_ALLOWED_CHANNELS'), users = list('SLACK_ALLOWED_USERS');
     if (!channels.size || !users.size)
         throw new Error('Slack channel and user allowlists cannot be empty.');
+    signal?.throwIfAborted();
     const directory = process.env.AI_ASSISTANT_STATE_DIR ?? join(homedir(), '.config', 'ai-assistant', 'adapters');
-    const service = new ConversationService(new FileTurnJournal(join(directory, 'slack-turns')));
+    const journal = new FileTurnJournal(join(directory, 'slack-turns'));
+    let service;
     let engine;
-    try {
-        engine = await createTextEngine(process.env.PROVIDER || 'copilot', join(directory, 'slack-provider-state'));
-    }
-    catch (error) {
-        await service.shutdown();
-        throw error;
-    }
-    const adapter = new SlackAdapter({ teamId, installationId: process.env.SLACK_INSTALLATION_ID || 'default', botUserId: auth.user_id,
-        channels, users, excludedAuthors: new Set((process.env.SLACK_EXCLUDED_CONTEXT_USERS ?? '').split(',').filter(Boolean)), stateDirectory: join(directory, 'slack-context') }, api, historyApi, engine, service);
     let stopped = false, socket, retry;
     let connecting = false;
-    const reconnect = () => { if (!stopped && !retry)
-        retry = setTimeout(() => { retry = undefined; void connect(); }, 5000); };
-    async function connect() {
-        if (stopped || connecting)
-            return;
-        connecting = true;
-        try {
-            const result = await connections.call('apps.connections.open');
-            if (typeof result.url !== 'string')
-                throw new Error('Missing Socket Mode URL.');
-            const url = new URL(result.url);
-            if (url.protocol !== 'wss:' || !url.hostname.endsWith('.slack.com'))
-                throw new Error('Invalid Socket Mode endpoint.');
-            if (stopped)
+    let stopping;
+    const stop = () => {
+        if (stopping)
+            return stopping;
+        stopped = true;
+        clearTimeout(retry);
+        stopping = Promise.resolve().then(async () => {
+            try {
+                socket?.close();
+            }
+            finally {
+                try {
+                    if (service)
+                        await service.shutdown();
+                    else
+                        journal.close();
+                }
+                finally {
+                    await engine?.shutdown();
+                }
+            }
+        });
+        return stopping;
+    };
+    try {
+        service = new ConversationService(journal);
+        engine = await createTextEngine(process.env.PROVIDER || 'copilot', join(directory, 'slack-provider-state'));
+        signal?.throwIfAborted();
+        const adapter = new SlackAdapter({ teamId, installationId: process.env.SLACK_INSTALLATION_ID || 'default', botUserId: auth.user_id,
+            channels, users, excludedAuthors: new Set((process.env.SLACK_EXCLUDED_CONTEXT_USERS ?? '').split(',').filter(Boolean)), stateDirectory: join(directory, 'slack-context') }, api, historyApi, engine, service);
+        const reconnect = () => { if (!stopped && !signal?.aborted && !retry)
+            retry = setTimeout(() => { retry = undefined; void connect(); }, 5000); };
+        async function connect() {
+            if (stopped || connecting || signal?.aborted)
                 return;
-            const ws = new WebSocket(url);
-            socket = ws;
-            ws.addEventListener('message', event => {
-                void (async () => {
-                    const envelope = JSON.parse(String(event.data));
-                    if (envelope.type === 'disconnect') {
-                        ws.close();
-                        return;
-                    }
-                    if (typeof envelope.envelope_id !== 'string')
-                        return;
-                    if (envelope.type !== 'events_api') {
+            connecting = true;
+            try {
+                const result = await connections.call('apps.connections.open', undefined, signal);
+                if (typeof result.url !== 'string')
+                    throw new Error('Missing Socket Mode URL.');
+                const url = new URL(result.url);
+                if (url.protocol !== 'wss:' || !url.hostname.endsWith('.slack.com'))
+                    throw new Error('Invalid Socket Mode endpoint.');
+                if (stopped || signal?.aborted)
+                    return;
+                const ws = new WebSocket(url);
+                socket = ws;
+                ws.addEventListener('message', event => {
+                    void (async () => {
+                        const envelope = JSON.parse(String(event.data));
+                        if (envelope.type === 'disconnect') {
+                            ws.close();
+                            return;
+                        }
+                        if (typeof envelope.envelope_id !== 'string')
+                            return;
+                        if (envelope.type !== 'events_api') {
+                            ws.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
+                            return;
+                        }
+                        const handle = await adapter.receive(envelope.payload);
+                        // Durable service admission happens before success acknowledgement.
                         ws.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
-                        return;
-                    }
-                    const handle = await adapter.receive(envelope.payload);
-                    // Durable service admission happens before success acknowledgement.
-                    ws.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
-                    if (handle)
-                        void handle.completion.then(record => {
-                            if (record.state !== 'delivered')
-                                console.error('[slack] Turn ' + record.state + ': ' + record.error);
-                        });
-                })().catch(() => console.error('[slack] Event not accepted; source may retry.'));
-            });
-            ws.addEventListener('close', reconnect);
-            ws.addEventListener('error', () => { ws.close(); reconnect(); });
+                        if (handle)
+                            void handle.completion.then(record => {
+                                if (record.state !== 'delivered')
+                                    console.error('[slack] Turn ' + record.state + ': ' + record.error);
+                            });
+                    })().catch(() => console.error('[slack] Event not accepted; source may retry.'));
+                });
+                ws.addEventListener('close', reconnect);
+                ws.addEventListener('error', () => { ws.close(); reconnect(); });
+            }
+            catch {
+                if (!stopped && !signal?.aborted) {
+                    console.error('[slack] Connection failed; retrying.');
+                    reconnect();
+                }
+            }
+            finally {
+                connecting = false;
+            }
         }
-        catch {
-            console.error('[slack] Connection failed; retrying.');
-            reconnect();
-        }
-        finally {
-            connecting = false;
-        }
+        await adapter.recover(signal);
+        signal?.throwIfAborted();
+        await connect();
+        signal?.throwIfAborted();
+        return { stop };
     }
-    await connect();
-    return { async stop() { stopped = true; clearTimeout(retry); socket?.close(); await service.shutdown(); await engine.shutdown(); } };
+    catch (error) {
+        try {
+            await stop();
+        }
+        catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], 'Slack startup and cleanup failed.');
+        }
+        throw error;
+    }
 }
