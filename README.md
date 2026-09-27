@@ -106,7 +106,7 @@ docker compose run --rm assistant codex login
 docker compose run --rm assistant opencode auth login
 ```
 
-The entrypoint registers the current slash commands on each container start unless `REGISTER_COMMANDS_ON_START=false`. Releases publish `ghcr.io/rubiss-projects/ai-assistant:<version>`; the included Compose file uses `latest`.
+For the Discord adapter, the entrypoint registers the current slash commands on each container start unless `REGISTER_COMMANDS_ON_START=false`. Slack always skips Discord registration, regardless of that flag. The included Compose file reads the flag from its service `env_file` without overriding it. Releases publish `ghcr.io/rubiss-projects/ai-assistant:<version>`; the included Compose file uses `latest`.
 
 Compose loads the project's host-side `.env` and passes its tokens and API keys into the container environment. Persisted CLI logins, session state, and retained agent files live in the Docker-managed `assistant-data` volume; provider workspaces are under `/data/workspaces`. The container runs as an unprivileged user with a read-only image filesystem, dropped Linux capabilities, and no host bind mounts. See [Container isolation](#container-isolation) for the boundary this provides.
 
@@ -175,7 +175,7 @@ Slack does not require `DISCORD_TOKEN`, `DISCORD_APP_ID` or `DISCORD_GUILD_ID`; 
 
 - **Source checkout:** place `.env` in the repository, install dependencies with `npm ci`, then run `npm start`. Do not run `npm run register`.
 - **Installed CLI:** manually create `~/.ai-assistant/.env` with the Slack/provider settings, then run `ai-assistant start`. Set `AI_ASSISTANT_CONFIG_DIR` in the launching environment to use a different configuration directory.
-- **Docker Compose:** edit the `.env` beside `compose.yaml`, including `REGISTER_COMMANDS_ON_START=false`, and use an image containing the adapter. To build from the checked-out adapter revision, run `docker compose up -d --build`; view startup errors with `docker compose logs -f assistant`. Apply later environment changes with `docker compose up -d`.
+- **Docker Compose:** edit the `.env` beside `compose.yaml`, including `AI_ASSISTANT_ADAPTER=slack`, and use an image containing the adapter. To build from the checked-out adapter revision, run `docker compose up -d --build`; view startup errors with `docker compose logs -f assistant`. Apply later environment changes with `docker compose up -d`.
 
 Set `AI_ASSISTANT_WORKSPACE_ROOT` to the directory providers may access. The default adapter state directory is `~/.config/ai-assistant/adapters`; an `AI_ASSISTANT_STATE_DIR` override must be an absolute, persistent host-owned path outside that workspace. For example, Docker can use `/data/adapter-state` beside its `/data/workspaces` workspace. Native installs should use separate sibling directories for workspace and state. Shared mode rejects provider state placed inside its allowed workspace.
 
@@ -655,7 +655,7 @@ Defaults below describe behavior when a setting is absent, with template, wizard
 | `CHAT_PARTICIPATION_REASONING` | `none` | `none` or `low`; Copilot uses `low`. Ignored by Jev. |
 | `CHAT_PARTICIPATION_TIMEOUT_MS` | `15000` | Evaluator timeout, 100–60000 ms. |
 | `TYPESAFE_API_KEY` | Unset | Required only when the participation evaluator is `jev`. |
-| `REGISTER_COMMANDS_ON_START` | `true` in the container entrypoint | Registers guild slash commands before the container starts the bot. Set `false` to skip; only the exact value `true` enables registration. Has no effect on native startup. |
+| `REGISTER_COMMANDS_ON_START` | `true` in the container entrypoint | Registers guild slash commands before the container starts the Discord adapter. Slack always skips registration. Set `false` to skip for Discord; only the exact value `true` enables registration. Has no effect on native startup. |
 
 For a short custom prompt:
 
