@@ -10,6 +10,9 @@ export class GitHubActionError extends Error {
         this.status = status;
     }
 }
+/** The requested repository operation never reached the HTTP transport. */
+export class GitHubRequestNotSentError extends GitHubActionError {
+}
 export function githubActionsEnabled(env = process.env) {
     const value = env.AI_ASSISTANT_ENABLE_GITHUB_ACTIONS?.trim() || "false";
     if (!["true", "false"].includes(value))
@@ -239,11 +242,17 @@ export class GitHubUserAuth {
         if (user.id !== account.id)
             throw new GitHubActionError("Your GitHub identity changed. Link again.");
         return { user, request: async (method, endpoint, body) => {
-                const current = await this.current(userId, signal);
-                await authorize();
-                if (current.generation !== account.generation || this.accounts[userId]?.generation !== account.generation)
-                    throw new GitHubActionError("Your GitHub link changed. Refresh before acting.");
-                signal.throwIfAborted();
+                let current;
+                try {
+                    current = await this.current(userId, signal);
+                    await authorize();
+                    if (current.generation !== account.generation || this.accounts[userId]?.generation !== account.generation)
+                        throw new GitHubActionError("Your GitHub link changed. Refresh before acting.");
+                    signal.throwIfAborted();
+                }
+                catch (error) {
+                    throw new GitHubRequestNotSentError(error instanceof GitHubActionError ? error.message : "The GitHub request was not sent. Check your permissions and linked account, then retry.");
+                }
                 return this.api(current.access, method, endpoint, signal, body);
             } };
     }

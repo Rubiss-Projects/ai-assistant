@@ -3,9 +3,11 @@ import test, { type TestContext } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { GitHubUserAuth, GitHubActionError, githubActionsEnabled, type UserGitHubClient } from "../src/common/githubUserAuth.js";
+import { GitHubUserAuth, GitHubActionError, GitHubRequestNotSentError, githubActionsEnabled, type UserGitHubClient } from "../src/common/githubUserAuth.js";
 import { GitHubMaintainer, nextReleaseTag, type ActionTarget, type PullSnapshot, type ActionContext } from "../src/common/githubMaintainer.js";
 import { canInvokeSlashCommand, canUseGitHubActions, createAccessPolicy } from "../src/common/accessPolicy.js";
+import { DiscordGitHub, githubCardMessage } from "../src/adapters/discord/github.js";
+import type { Client } from "discord.js";
 
 function directory(t: TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-actions-"));
@@ -103,7 +105,7 @@ test("refresh is single-flight and revoked Discord permission prevents the GitHu
   const [a, b] = await Promise.all([auth.client("111", AbortSignal.timeout(1000), authorize), auth.client("111", AbortSignal.timeout(1000), authorize)]);
   assert.equal(refreshes, 1); assert.deepEqual(a.user, b.user);
   allowed = false;
-  await assert.rejects(a.request("POST", "/repos/owner/repo/pulls/1/reviews"), /revoked/);
+  await assert.rejects(a.request("POST", "/repos/owner/repo/pulls/1/reviews"), GitHubRequestNotSentError);
   assert.equal(writes, 0);
 });
 
@@ -159,10 +161,11 @@ function fixture(t: TestContext) {
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } };
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
-  let lost = false, denial = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged;
+  let lost = false, denial = false, unsent = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged;
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
       await authorize(); calls.push({ user, method, endpoint, body: raw });
+      if (unsent && /\/(reviews|merge|dispatches)$/.test(endpoint)) throw new GitHubRequestNotSentError("Permission was revoked before transport.");
       let result: unknown;
       if (endpoint === "/graphql") {
         const body = raw as { query: string };
@@ -195,7 +198,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; } };
+  return { root, service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -284,6 +287,61 @@ test("a GitHub rejection can be retried without leaving a false pending operatio
   await assert.rejects(f.service.act(f.card.id, "approve", f.context()), /denied/);
   f.setDenial(false);
   assert.match(await f.service.act(f.card.id, "approve", f.context()), /Approval submitted/);
+});
+
+test("a pre-transport failure leaves approval, merge, and release retryable", async t => {
+  const f = fixture(t);
+  for (const action of ["approve", "merge", "release"] as const) {
+    if (action === "release") await f.service.refresh(f.card.id, f.context());
+    f.setUnsent(true);
+    await assert.rejects(f.service.act(f.card.id, action, f.context()), GitHubRequestNotSentError);
+    assert.ok(!f.make().get(f.card.id, f.context()).attempts.some(attempt => attempt.action === action));
+    f.setUnsent(false);
+    await f.service.act(f.card.id, action, f.context());
+  }
+});
+
+test("refresh persists closed PR state and disables mutations until the PR reopens", async t => {
+  const f = fixture(t); f.pull.state = "CLOSED";
+  await f.service.refresh(f.card.id, f.context());
+  const restored = f.make().get(f.card.id, f.context());
+  assert.equal(restored.closed, true);
+  const message = githubCardMessage(restored, true);
+  assert.match(message.content, /Closed without merging/);
+  assert.ok(message.components[0].toJSON().components.slice(0, 3).every(button => button.disabled));
+  f.pull.state = "OPEN";
+  await f.service.refresh(f.card.id, f.context());
+  assert.equal(f.card.closed, false);
+  assert.equal(githubCardMessage(f.card, true).components[0].toJSON().components[0].disabled, false);
+});
+
+test("status presents current cards even when an older card cannot refresh", async t => {
+  const f = fixture(t), root = f.root;
+  const priorDirectory = process.env.GITHUB_ACTIONS_STATE_DIR, priorClient = process.env.GITHUB_USER_APP_CLIENT_ID;
+  process.env.GITHUB_ACTIONS_STATE_DIR = root; process.env.GITHUB_USER_APP_CLIENT_ID = "Iv1.test-client-id";
+  t.after(() => {
+    if (priorDirectory === undefined) delete process.env.GITHUB_ACTIONS_STATE_DIR; else process.env.GITHUB_ACTIONS_STATE_DIR = priorDirectory;
+    if (priorClient === undefined) delete process.env.GITHUB_USER_APP_CLIENT_ID; else process.env.GITHUB_USER_APP_CLIENT_ID = priorClient;
+  });
+  const adapter = new DiscordGitHub();
+  const current = { ...f.card, id: "current-card", pull: 43 };
+  t.mock.method(adapter.actions, "forConversation", () => [f.card, current]);
+  t.mock.method(adapter.auth, "linked", () => ({ id: 1, login: "ben" }));
+  t.mock.method(adapter.actions, "refresh", async (id: string) => {
+    if (id === f.card.id) throw new GitHubActionError("Historical release is superseded.");
+    return { card: current, pull: f.pull, actor: "ben" };
+  });
+  t.mock.method(adapter.actions, "reviewReady", () => true);
+  const saved = t.mock.method(adapter.actions, "setMessage", () => {});
+  const sent: { content: string }[] = [];
+  const client = { channels: { fetch: async () => ({
+    isTextBased: () => true, isSendable: () => true, isDMBased: () => false, guildId: "guild",
+    send: async (message: { content: string }) => { sent.push(message); return { id: "message" }; },
+  }) } } as unknown as Client;
+  const failed = await adapter.present(client, "session", "guild", "channel", f.context());
+  assert.deepEqual(failed, ["Rubiss-Projects/ai-assistant #42"]);
+  assert.equal(sent.length, 1); assert.match(sent[0].content, /#43/);
+  assert.equal(saved.mock.callCount(), 1);
 });
 
 test("a release previews all changes and binds dispatch to the merged SHA and proposed version", async t => {
