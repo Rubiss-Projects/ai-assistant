@@ -3,9 +3,26 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SendMessageOptions } from '../src/providers/types.js';
 import { SlackAdapter } from '../src/adapters/slack.js';
 import { ConversationService, MemoryTurnJournal } from '../src/application/conversationService.js';
 const event = (id:string,ts:string,thread?:string) => ({team_id:'T',event_id:id,event:{type:'app_mention',user:'U',channel:'C',text:'<@BOT> question',ts,...(thread?{thread_ts:thread}:{})}});
+test('Slack service shutdown cancels active text-engine generation without delivering', { timeout: 2000 }, async () => {
+ const f=setup(); let began!:()=>void;
+ const started=new Promise<void>(resolve=>{began=resolve});
+ let signal:AbortSignal|undefined;
+ f.engine.sendMessage=async(_key,_prompt,_files,options)=>{
+  signal=options?.signal; assert.ok(signal);
+  return new Promise((_resolve,reject)=>{signal!.addEventListener('abort',()=>reject(signal!.reason),{once:true});began()});
+ };
+ try {
+  const turn=await f.adapter.receive(event('cancel','1700000003.000000','1700000001.000000'));
+  await started; await f.service.shutdown();
+  assert.equal(signal!.aborted,true);
+  assert.equal((await turn!.completion).state,'cancelled');
+  assert.equal(f.posts.length,0);
+ } finally { await f.close(); }
+});
 function setup(){
  const dir=mkdtempSync(join(tmpdir(),'slack-adapter-'));const journal=new MemoryTurnJournal();const service=new ConversationService(journal);const prompts:string[]=[],posts:Record<string,string>[]=[];let identity="provider-a/session-1";let reads=0,authorized=true,extra=false,resets=0;let history:Record<string,unknown>[]=[{ts:'1700000001.000000',user:'U',text:'<@BOT> question',thread_ts:'1700000001.000000'},{ts:'1700000002.000000',user:'FRIEND',text:'unmentioned clarification',thread_ts:'1700000001.000000'}];
  const api={call:async(method:string,args?:Record<string,string>)=>{
@@ -15,10 +32,10 @@ function setup(){
   if(method==='conversations.replies'||method==='conversations.history'){reads++;return {ok:true,messages:history}}
   throw Error(method);
  }};
- const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
+ const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string,_files?:never,_options?:SendMessageOptions)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
  const excludedAuthors=new Set<string>();
  const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service);
- return {adapter,prompts,posts,journal,exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
+ return {adapter,engine,service,prompts,posts,journal,exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 test('Slack explicit thread mention includes unmentioned discussion and replies in thread',async()=>{
  const f=setup();try{const h=await f.adapter.receive(event('e','1700000003.000000','1700000001.000000'));assert.ok(h);assert.equal((await h.completion).state,'delivered');assert.match(f.prompts[0],/unmentioned clarification/);assert.equal(f.posts[0].thread_ts,'1700000001.000000');assert.ok(f.reads()>0);}finally{await f.close()}

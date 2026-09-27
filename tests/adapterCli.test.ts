@@ -31,12 +31,13 @@ test('core/application imports do not depend on platform SDKs or adapters',()=>{
 for(const active of [false,true])test('CLI SIGTERM releases journal '+(active?'after active work settles':'while idle'),{timeout:10000},async()=>{
  const dir=mkdtempSync(join(tmpdir(),'adapter-cli-signal-'));
  const code=active
- ? "import('./src/adapters/cli/run.ts').then(m=>m.runCli(['--message','hello'],async()=>({sendMessage:async()=>{console.error('RUNNING');await new Promise(r=>setTimeout(r,300));return {content:'done',attachments:[]}},resetSession:async()=>{},shutdown:async()=>{}})))"
+ ? "import('./src/adapters/cli/run.ts').then(m=>m.runCli(['--message','hello'],async()=>({sendMessage:async(_key,_prompt,_files,options)=>{const keepAlive=setInterval(()=>{},1000);try{await new Promise((resolve,reject)=>{options.signal.addEventListener('abort',()=>{console.error('ABORTED');reject(options.signal.reason)},{once:true});console.error('RUNNING')})}finally{clearInterval(keepAlive)}},resetSession:async()=>{},shutdown:async()=>{}})))"
  : "import('./src/adapters/cli/run.ts').then(m=>m.runCli(['--provider','fake']))";
  const child=spawn(process.execPath,['--experimental-transform-types','--loader','./scripts/typescript-loader.mjs','--input-type=module','-e',code],{cwd:root,env:{...process.env,AI_ASSISTANT_STATE_DIR:dir,PROVIDER:'fake'},stdio:['pipe','pipe','pipe']});
  let output='';let sent=false;child.stderr.on('data',data=>{output+=data;if(!sent&&output.includes(active?'RUNNING':'Enter a message')){sent=true;child.kill('SIGTERM');}});
  try{
  const result=await new Promise<{code:number|null;signal:NodeJS.Signals|null}>((resolve,reject)=>{child.on('error',reject);child.on('exit',(code,signal)=>resolve({code,signal}));});
+ if(active)assert.match(output,/ABORTED/);
  assert.ok(sent,output);assert.equal(result.signal,null);assert.equal(result.code,143,output);
  assert.equal(existsSync(join(dir,'cli-turns','owner.lock')),false);
  const restarted=run(dir,['--provider','fake','--message','again','--json']);assert.equal(restarted.status,0,restarted.stderr);
