@@ -7,6 +7,8 @@ import { contributionReviewsEnabled, githubContributionsEnabled, hostOnlyGitHubP
 export class GitHubActionError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
 }
+/** The requested repository operation never reached the HTTP transport. */
+export class GitHubRequestNotSentError extends GitHubActionError {}
 export interface GitHubUser { id: number; login: string }
 interface Account extends GitHubUser { generation: string; access: string; refresh: string; expires: number; refreshExpires: number; identityVerified?: boolean }
 interface Device { id: string; code: string; expires: number; nextPoll: number; interval: number }
@@ -192,10 +194,15 @@ export class GitHubUserAuth {
     const user = await this.identity(account.access, signal);
     if (user.id !== account.id) throw new GitHubActionError("Your GitHub identity changed. Link again.");
     return { user, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, body?: unknown) => {
-      const current = await this.current(userId, signal);
-      await authorize();
-      if (current.generation !== account.generation || this.accounts[userId]?.generation !== account.generation) throw new GitHubActionError("Your GitHub link changed. Refresh before acting.");
-      signal.throwIfAborted();
+      let current: Account;
+      try {
+        current = await this.current(userId, signal);
+        await authorize();
+        if (current.generation !== account.generation || this.accounts[userId]?.generation !== account.generation) throw new GitHubActionError("Your GitHub link changed. Refresh before acting.");
+        signal.throwIfAborted();
+      } catch (error) {
+        throw new GitHubRequestNotSentError(error instanceof GitHubActionError ? error.message : "The GitHub request was not sent. Check your permissions and linked account, then retry.");
+      }
       return this.api<T>(current.access, method, endpoint, signal, body);
     } };
   }

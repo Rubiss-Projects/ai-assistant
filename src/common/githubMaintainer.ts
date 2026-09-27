@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { GitHubContributions } from "./githubContributions.js";
-import { GitHubActionError, type GitHubUserAuth, type UserGitHubClient, writeGitHubState } from "./githubUserAuth.js";
+import { GitHubActionError, GitHubRequestNotSentError, type GitHubUserAuth, type UserGitHubClient, writeGitHubState } from "./githubUserAuth.js";
 import { hostOnlyGitHubPath } from "./githubContributionConfig.js";
 
 export type ActionTarget = ReturnType<GitHubContributions["actionTargets"]>[number];
@@ -15,7 +15,7 @@ interface Attempt { action: MaintainerAction; user: number; discordUser: string;
 export interface ContributionCard {
   id: string; contribution: string; session: string; guild: string; channel: string; message?: string;
   repository: string; pull: number; head: string; base?: string; created: number;
-  merged?: string; release?: { tag: string; sha: string; previous: string; notes: string; run?: number; url?: string; state?: string };
+  closed?: boolean; merged?: string; release?: { tag: string; sha: string; previous: string; notes: string; run?: number; url?: string; state?: string };
   attempts: Attempt[];
 }
 interface Review { author: { login: string } | null; state: string; commit: { oid: string } | null }
@@ -145,7 +145,7 @@ export class GitHubMaintainer {
     catch (error) {
       // A documented client rejection did not mutate GitHub. Network/5xx failures
       // are ambiguous and retain the durable receipt until reconciled.
-      if (error instanceof GitHubActionError && [400, 401, 403, 404, 405, 409, 422, 429].includes(error.status ?? 0)) {
+      if (error instanceof GitHubRequestNotSentError || (error instanceof GitHubActionError && [400, 401, 403, 404, 405, 409, 422, 429].includes(error.status ?? 0))) {
         card.attempts = card.attempts.filter(item => item !== attempt); this.save();
       }
       throw error;
@@ -199,6 +199,7 @@ export class GitHubMaintainer {
       const card = this.get(id, context);
       const api = await this.auth.client(context.userId, context.signal, () => context.authorize("read"));
       const pull = await this.snapshot(api, card);
+      card.closed = pull.state === "CLOSED";
       if (pull.state === "MERGED") {
         card.merged = commit(pull.mergeCommit!.oid);
         if (card.repository === "Rubiss-Projects/ai-assistant") {

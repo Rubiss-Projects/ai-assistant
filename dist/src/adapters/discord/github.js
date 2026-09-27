@@ -14,16 +14,16 @@ function button(action, id, label, disabled = false) {
 }
 export function githubCardMessage(card, reviewed) {
     const release = card.release;
-    const status = card.merged ? `Merged: \`${card.merged.slice(0, 12)}\`` : `Revision: \`${card.head.slice(0, 12)}\` · Base: \`${card.base?.slice(0, 12) ?? "awaiting review"}\`\nServer review: ${reviewed ? "clean" : "pending, stale, or has findings"}`;
+    const status = card.closed ? "Closed without merging." : card.merged ? `Merged: \`${card.merged.slice(0, 12)}\`` : `Revision: \`${card.head.slice(0, 12)}\` · Base: \`${card.base?.slice(0, 12) ?? "awaiting review"}\`\nServer review: ${reviewed ? "clean" : "pending, stale, or has findings"}`;
     const releaseStatus = release ? `\nRelease: **${release.tag}** from \`${release.sha.slice(0, 12)}\`\nChanges since ${release.previous} are attached. This publishes the image and updates latest; deployment is a separate PR.${release.url ? `\nPublication: ${release.state ?? "requested"} — ${release.url}` : ""}` : "";
     return {
         content: `**${card.repository} #${card.pull}**\nhttps://github.com/${card.repository}/pull/${card.pull}\n${status}${releaseStatus}\n\nApprove uses the clicking person's linked GitHub account. GitHub decides whether that review counts. Merge and release require maintainer permission.`,
         allowedMentions: { parse: [] },
-        components: [new ActionRowBuilder().addComponents(button("approve", card.id, "Approve PR", Boolean(card.merged) || !reviewed), button("merge", card.id, "Merge PR", Boolean(card.merged) || !reviewed), button("release", card.id, release ? `Release ${release.tag}` : "Cut release", !release || card.attempts.some(attempt => attempt.action === "release")), button("refresh", card.id, "Refresh"), button("link", card.id, "Link GitHub"))],
+        components: [new ActionRowBuilder().addComponents(button("approve", card.id, "Approve PR", Boolean(card.closed || card.merged) || !reviewed), button("merge", card.id, "Merge PR", Boolean(card.closed || card.merged) || !reviewed), button("release", card.id, release ? `Release ${release.tag}` : "Cut release", Boolean(card.closed) || !release || card.attempts.some(attempt => attempt.action === "release")), button("refresh", card.id, "Refresh"), button("link", card.id, "Link GitHub"))],
         ...(release ? { files: [new AttachmentBuilder(Buffer.from(`# ${release.tag}\n\nCommit: ${release.sha}\nChanges since ${release.previous}:\n\n${release.notes}\n`), { name: "release-notes.md" })] } : {}),
     };
 }
-class DiscordGitHub {
+export class DiscordGitHub {
     auth;
     actions;
     timer;
@@ -111,8 +111,9 @@ class DiscordGitHub {
                     return;
                 }
                 const linked = this.auth.linked(context.userId);
-                await this.present(interaction.client, interactionSessionKey(interaction), context.guild, context.channel, context);
-                await interaction.editReply(linked ? `Linked as @${linked.login}. PR cards for this conversation have been refreshed.` : "You have not linked GitHub. Use /github link or the Link GitHub button. PR cards are available for this conversation's bot contributions.");
+                const failed = await this.present(interaction.client, interactionSessionKey(interaction), context.guild, context.channel, context);
+                const status = linked ? `Linked as @${linked.login}. Available PR cards have been refreshed.` : "You have not linked GitHub. Use /github link or the Link GitHub button. PR cards are available for this conversation's bot contributions.";
+                await interaction.editReply(status + (failed.length ? `\nCould not refresh: ${failed.join(", ")}. Use each card's Refresh button for details.` : ""));
                 return;
             }
             const [, action, id] = interaction.customId.split(":");
@@ -149,24 +150,32 @@ class DiscordGitHub {
     async present(client, session, guild, channelId, context) {
         const cards = this.actions.forConversation(session, guild, channelId);
         if (!cards.length)
-            return;
+            return [];
         const channel = await client.channels.fetch(channelId);
         if (!channel?.isTextBased() || !channel.isSendable() || channel.isDMBased() || channel.guildId !== guild)
-            return;
+            return [];
+        const failed = [];
         for (const card of cards) {
-            if (context && this.auth.linked(context.userId))
-                await this.actions.refresh(card.id, context);
-            const message = githubCardMessage(card, this.actions.reviewReady(card));
-            if (card.message) {
-                const existing = await channel.messages.fetch(card.message).catch(() => undefined);
-                if (existing && existing.author.id === client.user?.id) {
-                    await existing.edit({ ...message, attachments: [] });
-                    continue;
+            try {
+                if (context && this.auth.linked(context.userId))
+                    await this.actions.refresh(card.id, context);
+                const message = githubCardMessage(card, this.actions.reviewReady(card));
+                if (card.message) {
+                    const existing = await channel.messages.fetch(card.message).catch(() => undefined);
+                    if (existing && existing.author.id === client.user?.id) {
+                        await existing.edit({ ...message, attachments: [] });
+                        continue;
+                    }
                 }
+                const sent = await channel.send(message);
+                this.actions.setMessage(card, sent.id);
             }
-            const sent = await channel.send(message);
-            this.actions.setMessage(card, sent.id);
+            catch {
+                // A stale historical card must not hide later contributions in this thread.
+                failed.push(`${card.repository} #${card.pull}`);
+            }
         }
+        return failed;
     }
 }
 let configured;
