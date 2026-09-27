@@ -148,7 +148,7 @@ export function codexShellEnvironment(
 }
 
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions(temporaryDirectory?: string, artifacts?: ArtifactMcpConfig, rulesets?: RulesetMcpConfig, systemPrompt = secureSystemPrompt(providerSystemPrompt()), github?: GitHubContributionMcpConfig, sitesEnabled = configuredSitesEnabled()): CodexOptions {
+export function codexClientOptions(temporaryDirectory?: string, artifacts?: ArtifactMcpConfig, rulesets?: RulesetMcpConfig, systemPrompt = secureSystemPrompt(providerSystemPrompt()), github?: GitHubContributionMcpConfig, sitesEnabled = configuredSitesEnabled(), textTransport = false): CodexOptions {
   if (configuredSecurityMode() === "unrestricted") {
     return {
       ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
@@ -156,7 +156,7 @@ export function codexClientOptions(temporaryDirectory?: string, artifacts?: Arti
         : {}),
       ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
       ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
-      config: { developer_instructions: systemPrompt, ...(!sitesEnabled ? { apps: { [CODEX_SITES_CONNECTOR_ID]: { enabled: false } }, features: { plugins: false } } : {}) },
+      config: { developer_instructions: systemPrompt, ...(textTransport ? { apps: { [CODEX_SITES_CONNECTOR_ID]: { enabled: false } }, features: { plugins: false } } : {}) },
       ...(artifacts || rulesets || github ? { configOverrides: codexHostMcpOverrides(artifacts, rulesets, false, github) } : {}),
     };
   }
@@ -460,7 +460,7 @@ export class CodexProvider implements Provider {
       temporaryDirectory = createCodexSessionTemporaryDirectory();
       this.temporaryDirectories.set(key, temporaryDirectory);
     }
-    const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github, context.sitesEnabled));
+    const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github, context.sitesEnabled, Boolean(context.transportContext)));
     this.clients.set(key, { fingerprint, client });
     this.sessions.delete(key);
     return client;

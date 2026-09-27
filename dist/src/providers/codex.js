@@ -105,7 +105,7 @@ export function codexShellEnvironment(workingDirectory, childEnvironment) {
     return result;
 }
 /** Host-owned settings that Discord prompts and project config cannot relax. */
-export function codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt = secureSystemPrompt(providerSystemPrompt()), github, sitesEnabled = configuredSitesEnabled()) {
+export function codexClientOptions(temporaryDirectory, artifacts, rulesets, systemPrompt = secureSystemPrompt(providerSystemPrompt()), github, sitesEnabled = configuredSitesEnabled(), textTransport = false) {
     if (configuredSecurityMode() === "unrestricted") {
         return {
             ...(process.env.CODEX_EXECUTABLE_PATH?.trim()
@@ -113,7 +113,7 @@ export function codexClientOptions(temporaryDirectory, artifacts, rulesets, syst
                 : {}),
             ...(process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}),
             ...(process.env.OPENAI_BASE_URL ? { baseUrl: process.env.OPENAI_BASE_URL } : {}),
-            config: { developer_instructions: systemPrompt, ...(!sitesEnabled ? { apps: { [CODEX_SITES_CONNECTOR_ID]: { enabled: false } }, features: { plugins: false } } : {}) },
+            config: { developer_instructions: systemPrompt, ...(textTransport ? { apps: { [CODEX_SITES_CONNECTOR_ID]: { enabled: false } }, features: { plugins: false } } : {}) },
             ...(artifacts || rulesets || github ? { configOverrides: codexHostMcpOverrides(artifacts, rulesets, false, github) } : {}),
         };
     }
@@ -378,7 +378,7 @@ export class CodexProvider {
             temporaryDirectory = createCodexSessionTemporaryDirectory();
             this.temporaryDirectories.set(key, temporaryDirectory);
         }
-        const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github, context.sitesEnabled));
+        const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github, context.sitesEnabled, Boolean(context.transportContext)));
         this.clients.set(key, { fingerprint, client });
         this.sessions.delete(key);
         return client;

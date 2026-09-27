@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { ConversationService, FileTurnJournal, historyBlock, historyRange, retrieveHistory } from '../application/conversationService.js';
 import { TEXT_CAPABILITIES, sessionKey, type IncomingTurn, type TurnHandle, type ConversationRef, type HistoryPort, type HistoryPage, type HistoryRange } from '../core/conversation.js';
 import { createTextEngine, type TextEngine } from '../composition/textEngine.js';
@@ -108,9 +108,11 @@ function historyScope(resource: ConversationRef): string { return JSON.stringify
 /** Transport-independent Slack event normalization; Socket Mode is only an ingress. */
 export class SlackAdapter {
   private readonly fallbackContextIdentity = randomUUID();
+  private readonly sessions = new Set<string>();
   constructor(private readonly config: SlackConfig, private readonly api: SlackApi, private readonly historyApi: SlackApi,
-    private readonly engine: TextEngine, private readonly service: ConversationService) {
+    private readonly engine: TextEngine, private readonly service: ConversationService, private readonly maxSessions = 1000) {
     mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 });
+    for (const file of readdirSync(config.stateDirectory)) if (/^[a-f0-9]{64}\.json$/.test(file)) this.sessions.add(join(config.stateDirectory, file));
   }
   normalize(payload: Record<string,unknown>): IncomingTurn | undefined {
     if (payload.team_id !== this.config.teamId || typeof payload.event_id !== 'string') return;
@@ -149,7 +151,10 @@ export class SlackAdapter {
   private save(key: string, state: ContextState) {
     // Compact metadata now; discard the matching provider history before the next turn.
     if (contextOverBudget(state)) state = { resetRequired: true, represented: [], seen: {}, positions: {}, scopes: {} };
-    const p = this.stateFile(key); writeFileSync(p + '.tmp', JSON.stringify(state), { mode: 0o600 }); renameSync(p + '.tmp', p);
+    const p = this.stateFile(key);
+    if (!this.sessions.has(p) && this.sessions.size >= this.maxSessions) throw new Error('Slack session capacity reached; reconcile inactive context and provider mappings with the adapter stopped.');
+    writeFileSync(p + '.tmp', JSON.stringify(state), { mode: 0o600 }); renameSync(p + '.tmp', p);
+    this.sessions.add(p);
   }
   async receive(payload: Record<string,unknown>): Promise<TurnHandle | undefined> {
     const input = this.normalize(payload); if (!input) return;
@@ -195,6 +200,8 @@ export class SlackAdapter {
         const state = this.load(session);
         state.represented ??= [];
         state.scopes ??= {};
+        // Reserve a bounded persistent slot before any provider mapping can be created.
+        if (!this.sessions.has(this.stateFile(session))) this.save(session, state);
         const resource = input.conversation.threadId === input.sourceMessageId
           ? { ...input.conversation, kind: 'channel' as const, threadId: undefined } : input.conversation;
         const result = await retrieveHistory(port, input, resource, { kind: 'recent', count: 50 },

@@ -24,7 +24,7 @@ test('Slack service shutdown cancels active text-engine generation without deliv
   assert.equal(f.posts.length,0);
  } finally { await f.close(); }
 });
-function setup(){
+function setup(maxSessions=1000){
  const dir=mkdtempSync(join(tmpdir(),'slack-adapter-'));const journal=new MemoryTurnJournal();const service=new ConversationService(journal);const prompts:string[]=[],posts:Record<string,string>[]=[];let identity="provider-a/session-1";let reads=0,authorized=true,extra=false,resets=0;let history:Record<string,unknown>[]=[{ts:'1700000001.000000',user:'U',text:'<@BOT> question',thread_ts:'1700000001.000000'},{ts:'1700000002.000000',user:'FRIEND',text:'unmentioned clarification',thread_ts:'1700000001.000000'}];
  let historyUnavailable = false, audienceFailureAt = 0, audienceCalls = 0;
  let historyStarted: (() => void) | undefined;
@@ -44,7 +44,7 @@ function setup(){
  }};
  const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string,_files?:never,_options?:SendMessageOptions)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
  const excludedAuthors=new Set<string>();
- const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service);
+ const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service,maxSessions);
  return {dir,adapter,engine,service,prompts,posts,journal,blockAudience:(started:()=>void)=>{audienceStarted=started},blockHistory:(started:()=>void)=>{historyStarted=started},failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 
@@ -226,6 +226,21 @@ test('shared Slack prompt includes verified attribution for the current request'
  const f=setup();try{await (await f.adapter.receive(event('speaker','1700000003.000000','1700000001.000000')))!.completion;
  assert.match(f.prompts[0],/Current speaker \(host-verified\): {"platform":"slack","tenantId":"T","userId":"U"}/);
  }finally{await f.close()}
+});
+
+test('Slack caps new sessions before provider execution while existing sessions keep working', async () => {
+ const f=setup(2);
+ try {
+  for(let n=1;n<=3;n++) {
+   const turn=await f.adapter.receive(event('root-'+n,`170000000${n}.000000`));
+   assert.equal((await turn!.completion).state,n<=2?'delivered':'failed');
+  }
+  assert.equal(f.prompts.length,2);
+  assert.equal(readdirSync(f.dir).filter(name=>name.endsWith('.json')).length,2);
+  const resumed=await f.adapter.receive(event('existing','1700000004.000000','1700000001.000000'));
+  assert.equal((await resumed!.completion).state,'delivered');
+  assert.equal(f.prompts.length,3);
+ } finally {await f.close();}
 });
 
 test('Slack compacts context at its metadata budget and resets before reusing provider history', async () => {

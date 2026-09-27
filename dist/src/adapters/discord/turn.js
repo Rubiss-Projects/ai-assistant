@@ -49,11 +49,11 @@ export async function executeDiscordTurn(sessions, source, key, prompt, attachme
         resolveSession, coordinate,
         platform: 'discord', tenantId, installationId: 'default', audience: 'individual', legacySessionKey: key,
         capabilities: { ...TEXT_CAPABILITIES, attachments: true, history: true, messageLinks: true, memory: true, schedules: true, directMessages: true },
-        authorize: async () => {
+        authorize: async (_input, _stage, _output, signal) => {
             if (!options.rulesetContext)
                 return true; // Compatibility for isolated handler callers; bot ingress always supplies policy.
             const { access, requester } = options.rulesetContext;
-            const current = source.client ? await discordSubject(source.client, actor, source.guildId) : requester;
+            const current = source.client ? await discordSubject(source.client, actor, source.guildId, signal) : requester;
             return source.commandName ? canInvokeSlashCommand(access, actor, { commandName: source.commandName,
                 subcommand: source.options?.getSubcommand(false), hasWorkspace: Boolean(source.options?.getString('workspace', false)) }, current) : access.canMessage(actor, current);
         },

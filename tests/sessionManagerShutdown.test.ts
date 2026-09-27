@@ -2,6 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SessionManager } from "../src/sessionManager.js";
 import { discordConversations, executeDiscordTurn } from "../src/adapters/discord/turn.js";
+import type { Client } from 'discord.js';
+import { createAccessPolicy } from '../src/common/accessPolicy.js';
+
+for(const stage of ['execution','delivery']) test('Discord shutdown cancels a stalled ' + stage + ' authorization lookup', {timeout:2000}, async()=>{
+  let began!:()=>void;
+  const started=new Promise<void>(resolve=>{began=resolve});
+  let checks=0, generated=0;
+  const client={guilds:{fetch:async()=>({members:{fetch:async()=>{
+    if(++checks===(stage==='execution'?2:3)) {began();return new Promise<never>(()=>{});}
+    return {roles:{cache:new Map()}};
+  }}})}} as unknown as Client;
+  const sessions={sendMessage:async()=>{generated++;return {content:'answer',attachments:[]}}} as unknown as SessionManager;
+  const access=createAccessPolicy({DISCORD_ALLOWED_USERS:'user'});
+  const turn=executeDiscordTurn(sessions,{id:'authorization-'+stage,guildId:'guild',channelId:'channel',author:{id:'user'},client},'session','hello',undefined,
+    {rulesetContext:{access,requester:{userId:'user'}}},async()=>assert.fail('must not deliver'));
+  const rejected=assert.rejects(turn);
+  await started;
+  await discordConversations(sessions).shutdown();
+  await rejected;
+  assert.equal(generated,stage==='execution'?0:1);
+});
 
 test('Discord shutdown aborts ephemeral preparation before provider shutdown', { timeout: 2000 }, async () => {
   const manager = Object.create(SessionManager.prototype) as SessionManager;
