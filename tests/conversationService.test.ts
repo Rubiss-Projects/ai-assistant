@@ -55,6 +55,43 @@ test('durable ownership rejects second worker; restart flags ambiguous running t
  const restored=new FileTurnJournal(dir),s=new ConversationService(restored);assert.equal(restored.get(eventKey(i))?.state,'interrupted');await s.shutdown();
  }finally{rmSync(dir,{recursive:true,force:true})}
 });
+
+test('durable delivery keeps recovery payloads until success and deduplicates after payload removal', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'turn-payload-'));
+  const request = input();
+  const id = eventKey(request);
+  let journal = new FileTurnJournal(dir);
+  let service = new ConversationService(journal);
+  let generations = 0;
+  const adapter = host({
+    generate: async () => {
+      generations++;
+      return { content: 'attachment reply', attachments: [{ data: Buffer.alloc(4096, 7), displayName: 'result.bin' }] };
+    },
+    deliver: async output => {
+      assert.equal(journal.get(id)?.output?.attachments[0].data.length, 4096);
+      assert.equal(output.attachments[0].data.length, 4096);
+      return { messageIds: ['delivered-message'] };
+    },
+  });
+  try {
+    const result = await (await service.submit(request, adapter)).completion;
+    assert.equal(result.state, 'delivered');
+    assert.equal(journal.get(id)?.output, undefined);
+    assert.ok(JSON.stringify(journal.get(id)).length < 1024);
+    await service.shutdown();
+    journal = new FileTurnJournal(dir);
+    journal.put({ ...result, output: { content: 'legacy delivered payload', attachments: [{ data: Buffer.alloc(4096), displayName: 'old.bin' }] } });
+    service = new ConversationService(journal);
+    assert.equal(journal.get(id)?.output, undefined, 'startup also compacts older completed records');
+    const duplicate = await (await service.submit(request, adapter)).completion;
+    assert.deepEqual(duplicate.receipt, { messageIds: ['delivered-message'] });
+    assert.equal(generations, 1);
+  } finally {
+    await service.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 test('cancelled queued work and failed turns do not deadlock the queue',async()=>{
  const s=new ConversationService();const h=await s.submit(input(),host({generate:async()=>{throw Error('failure')}}));assert.equal((await h.completion).state,'failed');
  const next=await s.submit(input('2'),host());assert.equal((await next.completion).state,'delivered');await s.shutdown();

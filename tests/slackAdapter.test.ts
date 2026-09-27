@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SendMessageOptions } from '../src/providers/types.js';
+import type { TurnOutput } from '../src/core/conversation.js';
 import { SlackAdapter } from '../src/adapters/slack.js';
 import { ConversationService, MemoryTurnJournal } from '../src/application/conversationService.js';
 const event = (id:string,ts:string,thread?:string) => ({team_id:'T',event_id:id,event:{type:'app_mention',user:'U',channel:'C',text:'<@BOT> question',ts,...(thread?{thread_ts:thread}:{})}});
@@ -51,10 +52,12 @@ test('Slack duplicate events do not execute twice and revoked membership prevent
 });
 test('recovered generated output cannot cross a changed audience',async()=>{
  const f=setup();try{
+ const generate=f.engine.sendMessage;let output:TurnOutput|undefined;
+ f.engine.sendMessage=async(...args)=>{const result=await generate(...args);output=result;return result};
  const payload=event('recovery','1700000003.000000','1700000001.000000');const handle=await f.adapter.receive(payload);const delivered=await handle!.completion;
- assert.equal(delivered.state,'delivered');assert.ok(delivered.output?.audienceTag);
- f.journal.put({...delivered,state:'generated',receipt:undefined});f.changeAudience();
- const recovered=await f.adapter.receive(payload);assert.equal((await recovered!.completion).state,'interrupted');
+ assert.equal(delivered.state,'delivered');assert.ok(output?.audienceTag);
+ f.journal.put({...delivered,state:'generated',output,receipt:undefined});f.changeAudience();
+ await f.adapter.recover();assert.equal(f.journal.get(delivered.id)?.state,'interrupted');
  assert.equal(f.posts.length,1);assert.equal(f.prompts.length,1);
  }finally{await f.close()}
 });
