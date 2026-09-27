@@ -11,9 +11,9 @@ import { openCodeChildEnvironment } from "../src/providers/opencode.js";
 import { resolveSessionContext } from "../src/common/sessionContext.js";
 import { SessionStore } from "../src/common/sessionStore.js";
 
-for (const platform of ['slack', 'cli'] as const) test(platform + ' disables Sites in context and the actual Codex client', async t => {
+for (const mode of ['shared', 'unrestricted']) for (const platform of ['slack', 'cli'] as const) test(platform + ' disables Sites in ' + mode + ' context and the actual Codex client', async t => {
   const directory=mkdtempSync(join(tmpdir(),'text-sites-'));
-  const values={AI_ASSISTANT_SECURITY_MODE:'shared',AI_ASSISTANT_ENABLE_SITES:'true',AI_ASSISTANT_WORKSPACE_ROOT:directory};
+  const values={AI_ASSISTANT_SECURITY_MODE:mode,AI_ASSISTANT_ENABLE_SITES:'true',AI_ASSISTANT_WORKSPACE_ROOT:directory};
   const previous=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));
   t.after(()=>{for(const [key,value] of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value}});
   Object.assign(process.env,values);
@@ -27,7 +27,8 @@ for (const platform of ['slack', 'cli'] as const) test(platform + ' disables Sit
   let clients=0;
   const provider=new CodexProvider(options=>{
     clients++;
-    assert.doesNotMatch(JSON.stringify(options.config?.apps),/connector_20205bf7d4e99a89d7154bb849718324/);
+    if(mode==='shared') assert.doesNotMatch(JSON.stringify(options.config?.apps),/connector_20205bf7d4e99a89d7154bb849718324/);
+    else assert.match(JSON.stringify(options.config?.apps),/connector_20205bf7d4e99a89d7154bb849718324":\{"enabled":false\}/);
     assert.match(JSON.stringify(options.config?.features),/"plugins":false/);
     assert.doesNotMatch(options.configOverrides?.join('\n')??'',/mode="full"|sites-git|"\.openai\/\*\*"="write"/);
     return {startThread:()=>({id:'text-thread',run:async()=>({finalResponse:'ready',items:[],usage:null})}) as unknown as Thread,resumeThread:()=>{throw Error('unexpected resume')}};

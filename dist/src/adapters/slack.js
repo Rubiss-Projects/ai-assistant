@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { ConversationService, FileTurnJournal, historyBlock, historyRange, retrieveHistory } from '../application/conversationService.js';
 import { TEXT_CAPABILITIES, sessionKey } from '../core/conversation.js';
 import { createTextEngine } from '../composition/textEngine.js';
@@ -136,14 +136,20 @@ export class SlackAdapter {
     historyApi;
     engine;
     service;
+    maxSessions;
     fallbackContextIdentity = randomUUID();
-    constructor(config, api, historyApi, engine, service) {
+    sessions = new Set();
+    constructor(config, api, historyApi, engine, service, maxSessions = 1000) {
         this.config = config;
         this.api = api;
         this.historyApi = historyApi;
         this.engine = engine;
         this.service = service;
+        this.maxSessions = maxSessions;
         mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 });
+        for (const file of readdirSync(config.stateDirectory))
+            if (/^[a-f0-9]{64}\.json$/.test(file))
+                this.sessions.add(join(config.stateDirectory, file));
     }
     normalize(payload) {
         if (payload.team_id !== this.config.teamId || typeof payload.event_id !== 'string')
@@ -198,8 +204,11 @@ export class SlackAdapter {
         if (contextOverBudget(state))
             state = { resetRequired: true, represented: [], seen: {}, positions: {}, scopes: {} };
         const p = this.stateFile(key);
+        if (!this.sessions.has(p) && this.sessions.size >= this.maxSessions)
+            throw new Error('Slack session capacity reached; reconcile inactive context and provider mappings with the adapter stopped.');
         writeFileSync(p + '.tmp', JSON.stringify(state), { mode: 0o600 });
         renameSync(p + '.tmp', p);
+        this.sessions.add(p);
     }
     async receive(payload) {
         const input = this.normalize(payload);
@@ -251,6 +260,9 @@ export class SlackAdapter {
                 const state = this.load(session);
                 state.represented ??= [];
                 state.scopes ??= {};
+                // Reserve a bounded persistent slot before any provider mapping can be created.
+                if (!this.sessions.has(this.stateFile(session)))
+                    this.save(session, state);
                 const resource = input.conversation.threadId === input.sourceMessageId
                     ? { ...input.conversation, kind: 'channel', threadId: undefined } : input.conversation;
                 const result = await retrieveHistory(port, input, resource, { kind: 'recent', count: 50 }, AbortSignal.any([signal, AbortSignal.timeout(15_000)]), { messages: 50, characters: 8_000, pages: 10, scanned: 1000 }, Boolean(resource.threadId));
