@@ -241,7 +241,7 @@ Run `npx tsx scripts/evaluate-participation.ts jev` for a live check against syn
 
 Mentions and free-channel messages include nearby conversation. A reply mentioning the bot also includes the referenced message and its surroundings.
 
-Long tasks send periodic “still working” messages (every minute by default). Each provider has a one-hour hard timeout by default. At that limit, the bot cancels or terminates the run and waits up to five seconds for cancellation confirmation.
+Long tasks send periodic “still working” messages (every minute by default). Each provider has a one-hour hard timeout by default. The shared conversation service does not impose an additional fixed deadline: preparation time does not reduce the configured provider timeout, and increasing that timeout allows longer runs. At that limit, the bot cancels or terminates the run and waits up to five seconds for cancellation confirmation.
 
 To keep messages with links compact, set `DISCORD_SUPPRESS_EMBEDS=true` and restart the bot. This hides automatic link previews in text replies (including mentions, DMs, chat threads, and slash-command output) and scheduled messages while keeping URLs clickable. The default is `false`; existing messages are not changed, and uploaded files are still delivered.
 

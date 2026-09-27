@@ -86,7 +86,7 @@ for (const failProvider of [false, true]) {
     let imageKind = "";
     let inputBytes: Buffer | undefined;
     const reply = { id: "3", edit: async () => {}, reply: async () => {} };
-    const interaction = {
+    const interaction = { id: "fixture-interaction",
       guildId: "test", channelId: "thread", user: { id: "alice" }, client: { user: { id: "bot" } },
       options: { getString: (key: string) => key === "message" ? "Explain that chart" : null, getAttachment: () => failProvider ? attachment : null },
       channel: { isDMBased: () => false, isThread: () => true },

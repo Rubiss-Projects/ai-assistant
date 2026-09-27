@@ -6,13 +6,22 @@ import { TEXT_CAPABILITIES } from '../../core/conversation.js';
 import { discordSubject } from '../../common/discordAccess.js';
 import { canInvokeSlashCommand } from '../../common/accessPolicy.js';
 const services = new WeakMap();
+/** Production installs durable ownership before logging in; unit fixtures use isolated memory. */
 export function installDiscordConversations(sessions) {
     const existing = services.get(sessions);
-    if (existing) return existing;
+    if (existing)
+        return existing;
     const dir = process.env.AI_ASSISTANT_STATE_DIR ?? join(homedir(), '.config', 'ai-assistant', 'adapters');
-    const service = new ConversationService(new FileTurnJournal(join(dir, 'discord-turns')));
-    services.set(sessions, service);
-    return service;
+    const journal = new FileTurnJournal(join(dir, 'discord-turns'));
+    try {
+        const service = new ConversationService(journal);
+        services.set(sessions, service);
+        return service;
+    }
+    catch (error) {
+        journal.close();
+        throw error;
+    }
 }
 export function discordConversations(sessions) {
     let service = services.get(sessions);
@@ -27,71 +36,28 @@ export async function executeDiscordTurn(sessions, source, key, prompt, attachme
     const tenantId = source.guildId ?? 'direct';
     const service = discordConversations(sessions);
     let originalError;
-    const handle = await service.submit({
-        eventId: source.id,
-        sourceMessageId: source.id,
-        text: prompt,
-        actor: {
-            platform: 'discord',
-            tenantId,
-            userId: actor
-        },
-        receivedAt: new Date().toISOString(),
-        conversation: {
-            platform: 'discord',
-            tenantId,
-            installationId: 'default',
-            channelId: source.channelId,
-            kind: source.guildId ? 'channel' : 'direct'
-        }
+    const handle = await service.submit({ eventId: source.id, sourceMessageId: source.id, text: prompt,
+        actor: { platform: 'discord', tenantId, userId: actor }, receivedAt: new Date().toISOString(),
+        conversation: { platform: 'discord', tenantId, installationId: 'default', channelId: source.channelId, kind: source.guildId ? 'channel' : 'direct' },
     }, {
-        onError: (error)=>{
-            originalError = error;
-        },
-        resolveSession,
-        coordinate,
-        platform: 'discord',
-        tenantId,
-        installationId: 'default',
-        audience: 'individual',
-        legacySessionKey: key,
-        capabilities: {
-            ...TEXT_CAPABILITIES,
-            attachments: true,
-            history: true,
-            messageLinks: true,
-            memory: true,
-            schedules: true,
-            directMessages: true
-        },
-        authorize: async ()=>{
-            if (!options.rulesetContext) return true;
+        onError: error => { originalError = error; },
+        resolveSession, coordinate,
+        platform: 'discord', tenantId, installationId: 'default', audience: 'individual', legacySessionKey: key,
+        capabilities: { ...TEXT_CAPABILITIES, attachments: true, history: true, messageLinks: true, memory: true, schedules: true, directMessages: true },
+        authorize: async () => {
+            if (!options.rulesetContext)
+                return true; // Compatibility for isolated handler callers; bot ingress always supplies policy.
             const { access, requester } = options.rulesetContext;
             const current = source.client ? await discordSubject(source.client, actor, source.guildId) : requester;
-            return source.commandName ? canInvokeSlashCommand(access, actor, {
-                commandName: source.commandName,
-                subcommand: source.options?.getSubcommand(false),
-                hasWorkspace: Boolean(source.options?.getString('workspace', false))
-            }, current) : access.canMessage(actor, current);
+            return source.commandName ? canInvokeSlashCommand(access, actor, { commandName: source.commandName,
+                subcommand: source.options?.getSubcommand(false), hasWorkspace: Boolean(source.options?.getString('workspace', false)) }, current) : access.canMessage(actor, current);
         },
-        prepare: async (_input, session)=>prepare ? prepare(session) : {
-                prompt,
-                attachments
-            },
-        generate: (prepared, session, _signal, onProgress)=>sessions.sendMessage(session, prepared.prompt, prepared.attachments, {
-                ...options,
-                onProgress
-            }),
-        progress: async (update)=>{
-            await options.onProgress?.(update);
-        },
-        deliver: async (response, _id, session)=>{
-            await deliver(response, session);
-            return {
-                messageIds: []
-            };
-        }
+        prepare: async (_input, session) => prepare ? prepare(session) : ({ prompt, attachments }),
+        generate: (prepared, session, _signal, onProgress) => sessions.sendMessage(session, prepared.prompt, prepared.attachments, { ...options, onProgress }),
+        progress: async (update) => { await options.onProgress?.(update); },
+        deliver: async (response, _id, session) => { await deliver(response, session); return { messageIds: [] }; },
     });
     const result = await handle.completion;
-    if (result.state !== 'delivered') throw originalError ?? new Error(result.error ?? 'Conversation failed.');
+    if (result.state !== 'delivered')
+        throw originalError ?? new Error(result.error ?? 'Conversation failed.');
 }

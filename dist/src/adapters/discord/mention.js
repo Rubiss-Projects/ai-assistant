@@ -1,7 +1,6 @@
 import { executeDiscordTurn } from "./turn.js";
 import { channelHistoryResolver } from "../../utils/channelSummary.js";
-import { Message, Client } from "discord.js";
-import { SessionManager, runTimeoutMessage } from "../../sessionManager.js";
+import { runTimeoutMessage } from "../../sessionManager.js";
 import { chunkForDiscord } from "../../common/chunkForDiscord.js";
 import { resolveMessageLinks } from "../../utils/resolveMessageLinks.js";
 import { resolveDiscordContext } from "../../utils/resolveDiscordContext.js";
@@ -19,47 +18,50 @@ export async function deliverMentionResponse(sourceMessage, progressReply, respo
     if (progressReply) {
         try {
             await progressReply.edit(discordTextOptions(chunks[0]));
-        } catch (error) {
+        }
+        catch (error) {
             console.warn("[mention] Could not replace the progress message; sending a new reply:", error);
-            for(let index = 0; index < chunks.length; index++){
+            for (let index = 0; index < chunks.length; index++) {
                 await sourceMessage.reply(discordTextOptions(chunks[index]));
             }
-            await deliverDiscordAttachments((options)=>sourceMessage.reply(options), response.attachments);
+            await deliverDiscordAttachments((options) => sourceMessage.reply(options), response.attachments);
             return;
         }
-        for(let index = 1; index < chunks.length; index++){
+        for (let index = 1; index < chunks.length; index++) {
             try {
                 await progressReply.reply(discordTextOptions(chunks[index]));
-            } catch (error) {
+            }
+            catch (error) {
                 console.warn("[mention] Could not send an overflow reply; retrying the unsent remainder:", error);
-                for (const unsentChunk of chunks.slice(index)){
+                for (const unsentChunk of chunks.slice(index)) {
                     try {
                         await sourceMessage.reply(discordTextOptions(unsentChunk));
-                    } catch (fallbackError) {
+                    }
+                    catch (fallbackError) {
                         console.error("[mention] Could not deliver the remaining response:", fallbackError);
                         return;
                     }
                 }
-                await deliverDiscordAttachments((options)=>sourceMessage.reply(options), response.attachments);
+                await deliverDiscordAttachments((options) => sourceMessage.reply(options), response.attachments);
                 return;
             }
         }
-        await deliverDiscordAttachments((options)=>progressReply.reply(options), response.attachments);
+        await deliverDiscordAttachments((options) => progressReply.reply(options), response.attachments);
         return;
     }
-    for (const chunk of chunks){
+    for (const chunk of chunks) {
         await sourceMessage.reply(discordTextOptions(chunk));
     }
-    await deliverDiscordAttachments((options)=>sourceMessage.reply(options), response.attachments);
+    await deliverDiscordAttachments((options) => sourceMessage.reply(options), response.attachments);
 }
-export async function handleMention(message, client, sessions, sessionKey, canIncludeContextAuthor = ()=>true, options = {}) {
-    const mentionOptions = "context" in options ? {
-        participation: options
-    } : options;
+export async function handleMention(message, client, sessions, sessionKey, // defaults to a per-user, per-channel key; pass channelId for shared thread sessions
+canIncludeContextAuthor = () => true, options = {}) {
+    const mentionOptions = "context" in options ? { participation: options } : options;
+    // Strip all @mentions of the bot and trim
     const botMentionPattern = new RegExp(`<@!?${client.user.id}>`, "g");
     const prompt = message.content.replace(botMentionPattern, "").trim();
     const contextAttachments = [];
-    let cleanup = async ()=>{};
+    let cleanup = async () => { };
     let typingInterval;
     let progressReply;
     let progressUpdates = Promise.resolve();
@@ -69,70 +71,70 @@ export async function handleMention(message, client, sessions, sessionKey, canIn
             return;
         }
         const key = sessionKey ?? mentionSessionKey(message);
-        const basePrompt = prompt || (message.reference?.messageId ? "Respond using the replied-to conversation context." : "See the attached file(s).");
+        const basePrompt = prompt || (message.reference?.messageId
+            ? "Respond using the replied-to conversation context."
+            : "See the attached file(s).");
         await executeDiscordTurn(sessions, message, key, basePrompt, undefined, {
             rulesetContext: mentionOptions.rulesetContext,
-            userInstructionContext: {
-                guildId: message.guildId,
-                userId: message.author.id,
-                userDisplayName: message.author.displayName ?? message.author.username
-            },
+            userInstructionContext: { guildId: message.guildId, userId: message.author.id, userDisplayName: message.author.displayName ?? message.author.username },
             resolveChannelHistory: channelHistoryResolver(message, client, canIncludeContextAuthor),
             resolveArtifactMessage: artifactMessageResolver(client, message.author.id, canIncludeContextAuthor),
-            onProgress: ({ elapsedMs })=>{
-                progressUpdates = progressUpdates.catch(()=>{}).then(async ()=>{
+            onProgress: ({ elapsedMs }) => {
+                progressUpdates = progressUpdates.catch(() => { }).then(async () => {
                     const content = progressMessage(elapsedMs);
-                    if (progressReply) await progressReply.edit(content);
-                    else progressReply = await message.reply(content);
+                    if (progressReply)
+                        await progressReply.edit(content);
+                    else
+                        progressReply = await message.reply(content);
                 });
                 return progressUpdates;
-            }
-        }, async (response)=>{
-            await progressUpdates.catch(()=>{});
+            },
+        }, async (response) => {
+            await progressUpdates.catch(() => { });
             await deliverMentionResponse(message, progressReply, response);
-        }, async ()=>{
-            const knowledge = await enrichDiscordRequest(message, basePrompt, client, canIncludeContextAuthor, (internalPrompt)=>sessions.runEphemeral(key, internalPrompt));
+        }, async () => {
+            const knowledge = await enrichDiscordRequest(message, basePrompt, client, canIncludeContextAuthor, (internalPrompt) => sessions.runEphemeral(key, internalPrompt));
             const linkedPrompt = knowledge.isChannelSummary ? knowledge.prompt : await resolveMessageLinks(knowledge.prompt, client, message.author.id, contextAttachments, canIncludeContextAuthor, basePrompt);
             let enrichedPrompt = knowledge.isChannelSummary ? linkedPrompt : await resolveDiscordContext(message, linkedPrompt, message.mentions.has(client.user.id), canIncludeContextAuthor, contextAttachments);
-            if (!knowledge.isChannelSummary && mentionOptions.participation) enrichedPrompt = `${mentionOptions.participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
+            // Add ambient conversation only after host-side intent/link processing so
+            // background text cannot trigger memory writes, searches or link downloads.
+            if (!knowledge.isChannelSummary && mentionOptions.participation)
+                enrichedPrompt = `${mentionOptions.participation.context}\n\nCurrent speaker: ${message.author.id}\n${enrichedPrompt}`;
             const result = await downloadFileAttachments([
-                ...(knowledge.isChannelSummary ? [
-                    message
-                ] : mentionOptions.participation?.requests ?? [
-                    message
-                ]).flatMap((request)=>[
-                        ...request.attachments.values()
-                    ]),
+                ...(knowledge.isChannelSummary ? [message] : mentionOptions.participation?.requests ?? [message]).flatMap(request => [...request.attachments.values()]),
                 ...contextAttachments,
-                ...knowledge.isChannelSummary ? [] : mentionOptions.participation?.attachments ?? []
+                ...(knowledge.isChannelSummary ? [] : mentionOptions.participation?.attachments ?? []),
             ]);
             cleanup = result.cleanup;
             const prepared = await prepareDownloadedAttachments(result.attachments);
-            if (prepared.textContext) enrichedPrompt = `${enrichedPrompt}\n\n${prepared.textContext}`;
-            if (result.warnings.length) enrichedPrompt += `\n\n${result.warnings.map((warning)=>`[Input attachment unavailable: ${warning}]`).join("\n")}`;
+            if (prepared.textContext)
+                enrichedPrompt = `${enrichedPrompt}\n\n${prepared.textContext}`;
+            if (result.warnings.length)
+                enrichedPrompt += `\n\n${result.warnings.map((warning) => `[Input attachment unavailable: ${warning}]`).join("\n")}`;
+            // Keep typing indicator alive every 8s (Discord clears it after ~10s)
             if ("sendTyping" in message.channel) {
                 await message.channel.sendTyping();
-                typingInterval = setInterval(()=>{
+                typingInterval = setInterval(() => {
                     if ("sendTyping" in message.channel) {
-                        message.channel.sendTyping().catch(()=>{});
+                        message.channel.sendTyping().catch(() => { });
                     }
                 }, 8000);
             }
             const finish = cleanup;
-            cleanup = async ()=>{};
-            return {
-                prompt: enrichedPrompt,
-                attachments: prepared.fileAttachments.length ? prepared.fileAttachments : undefined,
-                cleanup: finish
-            };
+            cleanup = async () => { };
+            return { prompt: enrichedPrompt, attachments: prepared.fileAttachments.length ? prepared.fileAttachments : undefined, cleanup: finish };
         });
-    } catch (err) {
+    }
+    catch (err) {
         console.error("[mention] Error:", err);
         const failure = userVisibleErrorMessage(err) ?? runTimeoutMessage(err) ?? "❌ Something went wrong talking to the AI. Please try again.";
-        await progressUpdates.catch(()=>{});
-        if (progressReply) await progressReply.edit(failure).catch(()=>message.reply(failure).then(()=>{}));
-        else await message.reply(failure);
-    } finally{
+        await progressUpdates.catch(() => { });
+        if (progressReply)
+            await progressReply.edit(failure).catch(() => message.reply(failure).then(() => { }));
+        else
+            await message.reply(failure);
+    }
+    finally {
         clearInterval(typingInterval);
         await cleanup();
     }

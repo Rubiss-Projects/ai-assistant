@@ -113,3 +113,56 @@ test('Discord coordinates a newly resolved thread through preparation and delive
  assert.deepEqual(order,['resolve','enter','prepare','generate','deliver','leave']);
  }finally{await discordConversations(sessions).shutdown()}
 });
+
+test('default service leaves preparation and generation deadlines to the provider', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const s = new ConversationService();
+  const preparing = deferred(), prepared = deferred(), generated = deferred();
+  let delivered = false;
+  const turn = await s.submit(input(), host({
+    prepare: async () => { preparing.resolve(); await prepared.promise; return { prompt: 'slow preparation' }; },
+    generate: async () => { await generated.promise; return { content: 'valid late answer', attachments: [] }; },
+    deliver: async output => { assert.equal(output.content, 'valid late answer'); delivered = true; return { messageIds: ['late'] }; },
+  }));
+  await preparing.promise;
+  t.mock.timers.tick(3_600_001);
+  prepared.resolve();
+  // Yield to the turn without blocking on generation if the old deadline cancelled preparation.
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  generated.resolve();
+  const result = await turn.completion;
+  assert.equal(result.state, 'delivered');
+  assert.equal(delivered, true);
+  await s.shutdown();
+});
+
+test('explicit service deadlines still cancel an overlong generation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const s = new ConversationService(new MemoryTurnJournal(), 100, 10);
+  const started = deferred(), finish = deferred();
+  let delivered = false;
+  const turn = await s.submit(input(), host({
+    generate: async () => { started.resolve(); await finish.promise; return { content: 'late', attachments: [] }; },
+    deliver: async () => { delivered = true; return { messageIds: [] }; },
+  }));
+  await started.promise;
+  t.mock.timers.tick(11);
+  finish.resolve();
+  assert.equal((await turn.completion).state, 'cancelled');
+  assert.equal(delivered, false);
+  await s.shutdown();
+});
+
+test('a provider result after one hour is delivered when no host deadline was requested', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const s = new ConversationService();
+  const started = deferred(), finish = deferred();
+  const turn = await s.submit(input(), host({
+    generate: async () => { started.resolve(); await finish.promise; return { content: 'long configured run', attachments: [] }; },
+  }));
+  await started.promise;
+  t.mock.timers.tick(3_600_001);
+  finish.resolve();
+  assert.equal((await turn.completion).state, 'delivered');
+  await s.shutdown();
+});

@@ -75,9 +75,9 @@ for (const mode of ["ask", "chat DM", "chat thread", "chat new thread"]) {
   test(`${mode} suppresses all response chunks and preserves attachment delivery`, async () => {
     process.env.DISCORD_SUPPRESS_EMBEDS = "true";
     const { sent, message } = deliveryMock();
-    const thread = { id: "thread", send: message.reply, toString: () => "<#thread>" };
+    const thread = { id: "thread", isThread: () => true, send: message.reply, toString: () => "<#thread>" };
     let loading = false;
-    const interaction = {
+    const interaction = { id: "fixture-interaction", guildId: mode === "chat DM" ? null : "guild",
       user: { id: "user", send: async () => message }, client: { user: { id: "bot" } }, channelId: "channel",
       channel: { isDMBased: () => mode === "chat DM", isThread: () => mode === "chat thread" },
       options: { getString: (key: string) => key === "workspace" ? null : "Tell me about these sites", getAttachment: () => null },
