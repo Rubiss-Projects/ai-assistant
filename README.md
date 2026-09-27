@@ -106,7 +106,7 @@ docker compose run --rm assistant codex login
 docker compose run --rm assistant opencode auth login
 ```
 
-For the Discord adapter, the entrypoint registers the current slash commands on each container start unless `REGISTER_COMMANDS_ON_START=false`. Slack always skips Discord registration, regardless of that flag. The included Compose file reads the flag from its service `env_file` without overriding it. Releases publish `ghcr.io/rubiss-projects/ai-assistant:<version>`; the included Compose file uses `latest`.
+For the Discord adapter, the entrypoint registers the current slash commands on each container start unless `REGISTER_COMMANDS_ON_START=false`. Slack always skips Discord registration, regardless of that flag. The included Compose file uses `${REGISTER_COMMANDS_ON_START:-true}`: a value supplied through Compose interpolation (for example, the project `.env` or `--env-file`) overrides the default. A separate service `env_file` does not override an explicit `environment` value. Releases publish `ghcr.io/rubiss-projects/ai-assistant:<version>`; the included Compose file uses `latest`.
 
 Compose loads the project's host-side `.env` and passes its tokens and API keys into the container environment. Persisted CLI logins, session state, and retained agent files live in the Docker-managed `assistant-data` volume; provider workspaces are under `/data/workspaces`. The container runs as an unprivileged user with a read-only image filesystem, dropped Linux capabilities, and no host bind mounts. See [Container isolation](#container-isolation) for the boundary this provides.
 
