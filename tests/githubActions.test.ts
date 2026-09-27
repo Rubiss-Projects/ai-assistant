@@ -109,6 +109,27 @@ test("refresh is single-flight and revoked Discord permission prevents the GitHu
   assert.equal(writes, 0);
 });
 
+test("Finish linking retries identity lookup without exchanging a consumed device code again", async t => {
+  const root = directory(t);
+  let now = Date.now(), exchanges = 0, identityFailure = true;
+  const auth = new GitHubUserAuth("Iv1.test-client-id", root, async input => {
+    const url = String(input);
+    if (url.endsWith("device/code")) return Response.json({ device_code: "device", user_code: "ABCD-EFGH", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 1 });
+    if (url.endsWith("access_token")) {
+      assert.equal(++exchanges, 1, "the one-time device grant must not be exchanged twice");
+      return Response.json({ access_token: "ghu_1", refresh_token: "ghr_1", expires_in: 28800, refresh_token_expires_in: 15897600 });
+    }
+    return identityFailure ? new Response(null, { status: 503 }) : Response.json({ id: 1, login: "ben" });
+  }, () => now);
+  const pending = await auth.begin("111", AbortSignal.timeout(1000)); now += 1100;
+  await assert.rejects(auth.finish("111", pending.id, AbortSignal.timeout(1000)), /503/);
+  assert.equal(auth.linked("111"), undefined);
+  await assert.rejects(auth.client("111", AbortSignal.timeout(1000), async () => {}), /Link your own/);
+  identityFailure = false; now += 1100;
+  assert.deepEqual(await auth.finish("111", pending.id, AbortSignal.timeout(1000)), { id: 1, login: "ben" });
+  assert.equal(exchanges, 1);
+});
+
 test("rotated credentials survive failed identity lookup and restart without permitting an unverified write", async t => {
   const root = directory(t);
   let now = Date.now(), refreshes = 0, identityFailure = false, identityId = 1, writes = 0;
@@ -161,7 +182,7 @@ function fixture(t: TestContext) {
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } };
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
-  let lost = false, denial = false, unsent = false, mergeDenied = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged;
+  let lost = false, denial = false, unsent = false, mergeDenied = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged, runConclusion = "success";
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
       await authorize(); calls.push({ user, method, endpoint, body: raw });
@@ -186,7 +207,7 @@ function fixture(t: TestContext) {
       else if (endpoint.includes("/ci.yml/runs")) result = { workflow_runs: [{ path: ".github/workflows/ci.yml", head_sha: merged, status: "completed", conclusion: ci }] };
       else if (endpoint.endsWith("/dispatches")) { if (lost) throw new Error("connection lost"); result = emptyReceipt ? undefined : { workflow_run_id: 123 }; }
       else if (endpoint.includes("/release.yml/runs")) result = { workflow_runs: [{ id: 123, display_title: `Release v1.9.1 @${merged}`, actor: { id: 1 }, head_sha: merged, created_at: new Date().toISOString() }] };
-      else if (endpoint.endsWith("/actions/runs/123")) result = { path: ".github/workflows/release.yml", status: "completed", conclusion: "success", head_sha: runHead };
+      else if (endpoint.endsWith("/actions/runs/123")) result = { path: ".github/workflows/release.yml", status: "completed", conclusion: runConclusion, head_sha: runHead };
       else if (endpoint.includes("/releases/tags/")) result = { draft: false, tag_name: "v1.9.1" };
       else if (endpoint.includes("/git/ref/tags/")) result = { object: { type: "commit", sha: merged } };
       else result = { archived: false, permissions: { push: user === "ben" } };
@@ -199,7 +220,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { root, service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; } };
+  return { root, service, card, pull, target, calls, context, make, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -410,6 +431,17 @@ test("lost dispatch receipts reconcile by version, commit, actor, and time witho
   const { card } = await restored.refresh(f.card.id, f.context());
   assert.equal(card.release?.state, "success");
   assert.equal(f.calls.filter(call => call.endpoint.endsWith("/dispatches")).length, 1);
+});
+
+test("a release startup failure is terminal across restarts", async t => {
+  const f = fixture(t); f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged };
+  await f.service.refresh(f.card.id, f.context());
+  await f.service.act(f.card.id, "release", f.context());
+  f.setRunConclusion("startup_failure");
+  await f.service.refresh(f.card.id, f.context());
+  assert.equal(f.card.release?.state, "startup_failure");
+  assert.deepEqual(f.service.pendingReleases(), []);
+  assert.deepEqual(f.make().pendingReleases(), []);
 });
 
 test("merge and release rights do not inherit open chat or legacy admin access", () => {
