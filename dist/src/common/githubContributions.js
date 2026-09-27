@@ -259,6 +259,13 @@ export class GitHubContributions {
             pull_request_url: record.pull ? `https://github.com/${record.repository}/pull/${record.pull}` : undefined,
         }));
     }
+    /** Host-only Discord cards; no credentials or maintainer mutations enter the model bridge. */
+    actionTargets(session, guild) {
+        return this.records.filter(record => record.session === session && record.guild === guild && record.pull && record.published).map(record => ({
+            id: record.id, repository: this.repository(record.repository), pull: record.pull, branch: record.branch,
+            baseBranch: record.baseBranch, head: record.headSha, publisher: this.config.publisherBotLogin, review: this.autoReviewStatus(record.id),
+        }));
+    }
     /** Reconcile an already-authorized publish before advertising a head for the next edit. */
     async refresh(caller, record) {
         const pull = record.published || record.pendingSha ? await this.currentPull(caller, record) : undefined;

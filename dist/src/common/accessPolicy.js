@@ -5,7 +5,7 @@ import { configuredUserInstructionMode } from "./userInstructionStore.js";
 import { githubContributionAccess } from "./githubContributionConfig.js";
 export const CAPABILITIES = [
     "chat.use", "ask.use", "session.configure", "workspace.manage", "mcp.manage", "bot.manage",
-    "ruleset.manage", "github.contribute", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
+    "ruleset.manage", "github.contribute", "github.merge", "github.release", "schedule.message.create", "schedule.ai.create", "schedule.manage.own", "schedule.manage.guild",
 ];
 const PRESETS = {
     member: ["chat.use"],
@@ -78,6 +78,9 @@ export function createAccessPolicy(env = process.env) {
             if (capability === "github.contribute")
                 return explicitAdmin(s) || granted(s, capability)
                     || (contributionAccess === "chat" && (legacyMessage(s.userId) || legacyAdmin(s.userId) || granted(s, "chat.use")));
+            // Privileged GitHub actions never inherit the legacy open-admin fallback.
+            if (capability === "github.merge" || capability === "github.release")
+                return Boolean(s.guildId) && (explicitAdmin(s) || granted(s, capability));
             if (capability.startsWith("schedule.")) {
                 if (!s.guildId)
                     return false;
@@ -91,6 +94,10 @@ export function createAccessPolicy(env = process.env) {
     };
 }
 export function slashCommandCapability({ commandName: command, subcommand: sub, hasWorkspace }) {
+    if (command === "github" && ["link", "status"].includes(sub ?? ""))
+        return "github.contribute";
+    if (command === "github" && sub === "unlink")
+        return "chat.use";
     if (["ask", "chat"].includes(command) && !sub)
         return hasWorkspace ? "workspace.manage" : "chat.use";
     if (["reset", "history", "compact"].includes(command) && !sub)
