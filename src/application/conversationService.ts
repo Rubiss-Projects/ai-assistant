@@ -48,7 +48,7 @@ export class ConversationService {
   private active = new Map<string, TurnHandle>();
   private stopped = false;
   private pending = 0;
-  constructor(private readonly journal: TurnJournal = new MemoryTurnJournal(), private readonly maxPending = 100, private readonly timeoutMs = 3_600_000) {
+  constructor(private readonly journal: TurnJournal = new MemoryTurnJournal(), private readonly maxPending = 100, private readonly timeoutMs?: number) {
     for (const record of journal.all()) {
       if (['accepted', 'running', 'delivering'].includes(record.state)) {
         this.save({ ...record, state: 'interrupted', error: 'Process stopped before completion; execution or delivery may have occurred. Submit a new request explicitly.' });
@@ -76,8 +76,11 @@ export class ConversationService {
     this.pending++;
     const execute = async (executionKey: string): Promise<TurnRecord> => {
       let prepared: P | undefined;
-      const timer = setTimeout(() => controller.abort(new Error('Turn deadline exceeded.')), this.timeoutMs);
-      timer.unref();
+      // Providers own their configured generation deadlines. Only an explicit host
+      // deadline may also bound preparation/delivery; never impose a hidden hour cap.
+      const timer = this.timeoutMs === undefined ? undefined
+        : setTimeout(() => controller.abort(new Error('Turn deadline exceeded.')), this.timeoutMs);
+      timer?.unref();
       try {
         controller.signal.throwIfAborted();
         if (!await host.authorize(input, "execution")) throw new Error('Conversation access denied.');

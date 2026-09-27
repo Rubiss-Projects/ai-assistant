@@ -21,7 +21,7 @@ function harness() {
   const runs: string[] = [];
   const sent: unknown[] = [];
   const message = { edit: async (value: unknown) => { sent.push(value); }, reply: async () => {} };
-  const thread = { id: "thread", send: async (value: unknown) => { sent.push(value); }, toString: () => "<#thread>" };
+  const thread = { id: "thread", isThread: () => true, send: async (value: unknown) => { sent.push(value); }, toString: () => "<#thread>" };
   const sessions = {
     sendMessage: async (key: string) => { runs.push(key); return { content: "answer", attachments: [] }; },
     resetSession: async () => {}, activeProviderDisplayName: () => "Test",
@@ -31,10 +31,10 @@ function harness() {
     const replies: { content: string }[] = [];
     let dmCount = 0;
     return {
-      commandName, guildId, replies, get dmCount() { return dmCount; },
+      id: `${commandName}-${guildId}-${userId}`, commandName, guildId, replies, get dmCount() { return dmCount; },
       isChatInputCommand: () => true,
       user: { id: userId, send: async () => { dmCount++; return message; } },
-      client: { user: { id: "bot" } }, channelId: "channel",
+      client: { user: { id: "bot" }, guilds: { fetch: async () => ({ members: { fetch: async () => ({ roles: { cache: new Map() } }) } }) } }, channelId: "channel",
       channel: { isDMBased: () => !guildId, isThread: () => false },
       options: { getSubcommand: () => null, getString: (key: string) => key === "workspace" ? null : "hello", getAttachment: () => null },
       reply: async (value: { content: string }) => { replies.push(value); },

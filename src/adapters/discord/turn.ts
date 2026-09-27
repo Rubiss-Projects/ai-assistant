@@ -13,8 +13,14 @@ const services = new WeakMap<object, ConversationService>();
 export function installDiscordConversations(sessions: SessionManager): ConversationService {
   const existing = services.get(sessions); if (existing) return existing;
   const dir = process.env.AI_ASSISTANT_STATE_DIR ?? join(homedir(), '.config', 'ai-assistant', 'adapters');
-  const service = new ConversationService(new FileTurnJournal(join(dir, 'discord-turns')));
-  services.set(sessions, service); return service;
+  const journal = new FileTurnJournal(join(dir, 'discord-turns'));
+  try {
+    const service = new ConversationService(journal);
+    services.set(sessions, service); return service;
+  } catch (error) {
+    journal.close();
+    throw error;
+  }
 }
 export function discordConversations(sessions: SessionManager): ConversationService {
   let service = services.get(sessions); if (!service) { service = new ConversationService(); services.set(sessions, service); } return service;

@@ -7,30 +7,48 @@ import { reportProviderSecurityConfiguration } from "../common/providerSecurity.
 import { contributionReviewsEnabled } from "../common/githubContributionReviewWorker.js";
 import { githubContributionService } from "../common/githubContributions.js";
 import { discordSubject } from "../common/discordAccess.js";
+import { DiscordRuntime } from "./discordLifecycle.js";
 reportProviderSecurityConfiguration();
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
     console.error("❌ DISCORD_TOKEN is not set in .env");
     process.exit(1);
 }
-const sessions = new SessionManager();
-const conversations = installDiscordConversations(sessions);
-const client = createBot(sessions);
+let reviewsStarted = false;
+const runtime = new DiscordRuntime({
+    createSessions: () => new SessionManager(),
+    installConversations: installDiscordConversations,
+    createClient: createBot,
+    startReviews: client => {
+        if (contributionReviewsEnabled()) {
+            reviewsStarted = true;
+            githubContributionService().startReviews((user, guild) => discordSubject(client, user, guild));
+        }
+    },
+    stopReviews: async () => { if (reviewsStarted)
+        await githubContributionService().stopReviews(); },
+});
 async function shutdown(signal) {
     console.log(`\n${signal} received — shutting down...`);
     try {
-        await client.stopScheduler();
-        if (contributionReviewsEnabled()) await githubContributionService().stopReviews();
-        client.destroy();
-        await conversations.shutdown();
-        await sessions.shutdown();
+        await runtime.stop();
         console.log("✅ Shutdown complete.");
-    } catch (err) {
-        console.error("Error during shutdown:", err);
+        process.exit(0);
     }
-    process.exit(0);
+    catch (err) {
+        console.error("Error during shutdown:", err);
+        process.exit(1);
+    }
 }
-process.on("SIGINT", ()=>shutdown("SIGINT"));
-process.on("SIGTERM", ()=>shutdown("SIGTERM"));
-await client.login(token);
-if (contributionReviewsEnabled()) githubContributionService().startReviews((user, guild)=>discordSubject(client, user, guild));
+const onInterrupt = () => { void shutdown("SIGINT"); };
+const onTerminate = () => { void shutdown("SIGTERM"); };
+process.on("SIGINT", onInterrupt);
+process.on("SIGTERM", onTerminate);
+try {
+    await runtime.start(token);
+}
+catch (error) {
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+    throw error;
+}
