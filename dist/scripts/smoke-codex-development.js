@@ -45,7 +45,7 @@ try {
     }
   `);
     fs.mkdirSync(checkout);
-    for (const name of ["src", "scripts", "tests", "package.json", "package-lock.json", "patch-deps.cjs", "tsconfig.json"])
+    for (const name of ["src", "scripts", "tests", ".agents/skills/babysit-contribution", "package.json", "package-lock.json", "patch-deps.cjs", "tsconfig.json"])
         fs.cpSync(path.join(source, name), path.join(checkout, name), { recursive: true });
     prepareCodexWorkingDirectory(workspace);
     fs.writeFileSync(path.join(workspace, ".env"), "DENIED_FIXTURE=not-a-credential");
