@@ -391,7 +391,7 @@ test("status presents current cards even when an older card cannot refresh", asy
     isTextBased: () => true, isSendable: () => true, isDMBased: () => false, guildId: "guild",
     send: async (message: { content: string }) => { sent.push(message); return { id: "message" }; },
   }) } } as unknown as Client;
-  const failed = await adapter.present(client, "session", "guild", "channel", f.context());
+  const failed = await adapter.present(client, "session", "guild", "channel", f.context(), "all");
   assert.deepEqual(failed, ["Rubiss-Projects/ai-assistant #42"]);
   assert.equal(sent.length, 1); assert.match(sent[0].content, /#43/);
   assert.equal(saved.mock.callCount(), 1);
@@ -812,4 +812,33 @@ test("a new presentation waits for an already-running card edit", async t => {
   finally { release(); await Promise.all([older, fresh]); }
   assert.deepEqual(order, ["old", "new"]);
   assert.match(f.edited[0].content, /cccccccccccc/);
+});
+
+test("automatic delivery shows only the latest of three different PRs; status can show all", async t => {
+  const f = adapterFixture(t);
+  const targets = [96, 101, 104].map(pull => ({ ...f.target, id: `contribution-${pull}`, pull }));
+  t.mock.method(f.service as any, "targets", () => targets);
+  await f.adapter.present(f.client, "session", "guild", "channel");
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].content, /#104/);
+  assert.doesNotMatch(f.sent[0].content, /#96|#101/);
+  await f.adapter.present(f.client, "session", "guild", "channel");
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.edited.length, 1);
+  await f.adapter.present(f.client, "session", "guild", "channel", undefined, "all");
+  assert.equal(f.sent.length, 3);
+  assert.match(f.sent[1].content, /#96/);
+  assert.match(f.sent[2].content, /#101/);
+  assert.equal(f.edited.length, 2);
+});
+
+test("failure presenting the latest PR does not fall back to posting older PRs", async t => {
+  const f = adapterFixture(t);
+  const targets = [96, 101, 104].map(pull => ({ ...f.target, id: `contribution-${pull}`, pull }));
+  t.mock.method(f.service as any, "targets", () => targets);
+  const attempted: string[] = [];
+  t.mock.method(f.channel, "send", async (value: any) => { attempted.push(value.content); throw new Error("Discord unavailable"); });
+  const failed = await f.adapter.present(f.client, "session", "guild", "channel");
+  assert.deepEqual(failed, ["Rubiss-Projects/ai-assistant #104"]);
+  assert.equal(attempted.length, 1); assert.match(attempted[0], /#104/);
 });

@@ -158,7 +158,7 @@ export class DiscordGitHub {
                     return;
                 }
                 const linked = this.auth.linked(context.userId);
-                const failed = await this.present(interaction.client, interactionSessionKey(interaction), context.guild, context.channel, context);
+                const failed = await this.present(interaction.client, interactionSessionKey(interaction), context.guild, context.channel, context, "all");
                 const status = linked ? `Linked as @${linked.login}. Available PR cards have been refreshed.` : "You have not linked GitHub. Use /github link or the Link GitHub button. PR cards are available for this conversation's bot contributions.";
                 await interaction.editReply(status + (failed.length ? `\nCould not refresh: ${failed.join(", ")}. Use each card's Refresh button for details.` : ""));
                 return;
@@ -201,11 +201,11 @@ export class DiscordGitHub {
             await interaction.editReply(error instanceof GitHubActionError ? error.message : "GitHub action could not complete. Refresh to check its state before trying again.").catch(() => { });
         }
     }
-    async present(client, session, guild, channelId, context) {
-        return this.serial(`cards:${guild}:${channelId}`, () => this.presentCards(client, session, guild, channelId, context));
+    async present(client, session, guild, channelId, context, scope = "latest") {
+        return this.serial(`cards:${guild}:${channelId}`, () => this.presentCards(client, session, guild, channelId, context, scope));
     }
-    async presentCards(client, session, guild, channelId, context) {
-        const cards = this.actions.forConversation(session, guild, channelId);
+    async presentCards(client, session, guild, channelId, context, scope = "latest") {
+        const cards = this.actions.forConversation(session, guild, channelId, scope === "latest" ? 1 : 5);
         if (!cards.length)
             return [];
         const channel = await client.channels.fetch(channelId);

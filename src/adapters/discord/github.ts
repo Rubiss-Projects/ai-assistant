@@ -150,7 +150,7 @@ export class DiscordGitHub {
       if (interaction.isChatInputCommand()) {
         if (interaction.options.getSubcommand() === "link") { await this.link(interaction, context); return; }
         const linked = this.auth.linked(context.userId);
-        const failed = await this.present(interaction.client, interactionSessionKey(interaction), context.guild, context.channel, context);
+        const failed = await this.present(interaction.client, interactionSessionKey(interaction), context.guild, context.channel, context, "all");
         const status = linked ? `Linked as @${linked.login}. Available PR cards have been refreshed.` : "You have not linked GitHub. Use /github link or the Link GitHub button. PR cards are available for this conversation's bot contributions.";
         await interaction.editReply(status + (failed.length ? `\nCould not refresh: ${failed.join(", ")}. Use each card's Refresh button for details.` : ""));
         return;
@@ -182,11 +182,11 @@ export class DiscordGitHub {
       await interaction.editReply(error instanceof GitHubActionError ? error.message : "GitHub action could not complete. Refresh to check its state before trying again.").catch(() => {});
     }
   }
-  async present(client: Client, session: string, guild: string, channelId: string, context?: ActionContext) {
-    return this.serial(`cards:${guild}:${channelId}`, () => this.presentCards(client, session, guild, channelId, context));
+  async present(client: Client, session: string, guild: string, channelId: string, context?: ActionContext, scope: "latest" | "all" = "latest") {
+    return this.serial(`cards:${guild}:${channelId}`, () => this.presentCards(client, session, guild, channelId, context, scope));
   }
-  private async presentCards(client: Client, session: string, guild: string, channelId: string, context?: ActionContext) {
-    const cards = this.actions.forConversation(session, guild, channelId);
+  private async presentCards(client: Client, session: string, guild: string, channelId: string, context?: ActionContext, scope: "latest" | "all" = "latest") {
+    const cards = this.actions.forConversation(session, guild, channelId, scope === "latest" ? 1 : 5);
     if (!cards.length) return [];
     const channel = await client.channels.fetch(channelId);
     if (!channel?.isTextBased() || !channel.isSendable() || channel.isDMBased() || channel.guildId !== guild) return [];

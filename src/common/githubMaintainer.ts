@@ -108,10 +108,10 @@ export class GitHubMaintainer {
     if (!card) throw new GitHubActionError("This action card expired or belongs to another conversation. Use /github status.");
     this.target(card); return card;
   }
-  forConversation(session: string, guild: string, channel: string): ContributionCard[] {
+  forConversation(session: string, guild: string, channel: string, limit: 1 | 5 = 5): ContributionCard[] {
     const targets = this.targets(session, guild);
     const result: ContributionCard[] = [];
-    for (const target of targets.slice(-5)) {
+    for (const target of targets.slice(-limit)) {
       const reviewedBase = "base_sha" in target.review ? target.review.base_sha : undefined;
       let card = this.cards.find(card => card.contribution === target.id && card.guild === guild && card.channel === channel && card.head === target.head && (card.merged || card.base === reviewedBase));
       if (!card) {

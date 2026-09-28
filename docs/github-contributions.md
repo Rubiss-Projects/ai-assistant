@@ -209,7 +209,7 @@ and the legacy open-admin fallback do not grant these capabilities. For example:
 {"grants":[{"guildId":"123","roleId":"456","capabilities":["github.merge","github.release"]}]}
 ```
 
-A single card per PR appears after the final Discord response, once the turn has finished. Later revisions and review results update that message instead of posting another card. Concurrent deliveries are serialized; temporary Discord fetch failures never create replacement cards. They bind
+Only the latest contribution’s PR card appears automatically after the final Discord response, once the turn has finished. Older PRs are not replayed alongside it; `/github status` explicitly shows up to five recent contributions. Later revisions and review results update that message instead of posting another card. Concurrent deliveries are serialized; temporary Discord fetch failures never create replacement cards. They bind
 the repository, PR, contribution, conversation, head and reviewed base. Every
 click refreshes membership/rights and GitHub state. Approve and merge require a
 completed clean server review, successful checks, and resolved threads; large
