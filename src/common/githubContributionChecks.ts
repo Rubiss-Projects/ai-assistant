@@ -23,8 +23,8 @@ export async function readContributionChecks(repository: string, head: string, s
     const failed = checks.some(check => check.status === "completed" && !["success", "neutral", "skipped"].includes(check.conclusion ?? ""))
       || statuses.statuses.some(status => ["failure", "error"].includes(status.state));
     const pending = checks.some(check => check.status !== "completed") || statuses.statuses.some(status => status.state !== "success");
-    const passed = checks.some(check => check.conclusion === "success") || statuses.statuses.some(status => status.state === "success");
-    const state = failed ? "failure" : !complete || !passed && !pending ? "unknown" : pending ? "pending" : "success";
+    const empty = checks.length === 0 && statuses.statuses.length === 0;
+    const state = failed ? "failure" : !complete || empty ? "unknown" : pending ? "pending" : "success";
     return { head_sha: head, state, complete, checks, statuses: statuses.statuses };
   } catch (error) {
     signal.throwIfAborted();

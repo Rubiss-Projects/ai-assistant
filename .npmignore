@@ -3,6 +3,7 @@
 /scripts/
 .github/
 *.md
+!dist/.agents/skills/babysit-contribution/SKILL.md
 !README.md
 .env*
 tsconfig.json
