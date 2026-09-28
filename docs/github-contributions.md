@@ -211,13 +211,27 @@ and the legacy open-admin fallback do not grant these capabilities. For example:
 
 Cards appear after Discord turns that have published bot contributions. They bind
 the repository, PR, contribution, conversation, head and reviewed base. Every
-click refreshes membership/rights and GitHub state. Approve and merge require a
+click refreshes membership/rights and GitHub state. Ready for review, approve, and merge require a
 completed clean server review, successful checks, and resolved threads; large
 review histories fail closed. A changed revision requires a new card and review.
 Merge checks repository write access and GitHub merge requirements and uses rebase
 with the expected head SHA. If GitHub does not require approval, the authorized
 maintainer must personally approve that revision first. The model never receives
 these mutation tools or credentials.
+
+Use **Ready for review** on a PR card or `/github ready repository:<repository> pull:<number>`
+to take a draft PR out of draft without approving or merging it. This requires
+`github.contribute` and repository write access through the user's linked GitHub
+account. The command only accepts available bot contributions in the current
+conversation. Repeated requests reconcile the current state without repeating an
+uncertain mutation.
+
+Successful PR actions post a public confirmation in the same conversation naming
+the Discord user and linking the PR, such as “@user approved PR #123 ✅” or
+“@user updated PR #123 ready for review 👍”. Release confirmations report that a
+release was requested; the card tracks publication separately. Linking, account
+status, errors, and refresh acknowledgments remain private. If public delivery
+fails, a private response reports the GitHub result and the delivery failure.
 
 After merging an AI Assistant PR, **Refresh** prepares the next patch version and
 attaches a summary of all commits since the latest stable release. **Cut release**
@@ -262,3 +276,4 @@ the Apps' selected repository grants or suspend their installations to revoke
 GitHub access immediately. Existing PRs remain for human review. Preserve the
 state file and keys for an intentional re-enable; do not reset ownership while
 old bot branches/PRs remain in use. This feature does not migrate session storage.
+

@@ -8,6 +8,9 @@ import { interactionSessionKey } from "../../common/discordSessionKey.js";
 export const githubCommand = new SlashCommandBuilder().setName("github").setDescription("Link your GitHub account and manage PRs in this conversation")
     .addSubcommand(sub => sub.setName("link").setDescription("Privately link your own GitHub identity"))
     .addSubcommand(sub => sub.setName("unlink").setDescription("Remove your GitHub authorization from this bot"))
+    .addSubcommand(sub => sub.setName("ready").setDescription("Mark a conversation PR ready for review")
+    .addStringOption(opt => opt.setName("repository").setDescription("Repository").setRequired(true).addChoices({ name: "ai-assistant", value: "Rubiss-Projects/ai-assistant" }, { name: "docker", value: "Rubiss-Projects/docker" }))
+    .addIntegerOption(opt => opt.setName("pull").setDescription("Pull request number").setRequired(true).setMinValue(1)))
     .addSubcommand(sub => sub.setName("status").setDescription("Show your linked account and refresh this conversation's PR buttons"));
 function button(action, id, label, disabled = false) {
     return new ButtonBuilder().setCustomId(`gh:${action}:${id}`).setLabel(label).setStyle(action === "merge" || action === "release" ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(disabled);
@@ -19,7 +22,7 @@ export function githubCardMessage(card, reviewed) {
     return {
         content: `**${card.repository} #${card.pull}**\nhttps://github.com/${card.repository}/pull/${card.pull}\n${status}${releaseStatus}\n\nApprove uses the clicking person's linked GitHub account. GitHub decides whether that review counts. Merge and release require maintainer permission.`,
         allowedMentions: { parse: [] },
-        components: [new ActionRowBuilder().addComponents(button("approve", card.id, "Approve PR", Boolean(card.closed || card.merged) || !reviewed), button("merge", card.id, "Merge PR", Boolean(card.closed || card.merged) || !reviewed), button("release", card.id, release ? `Release ${release.tag}` : "Cut release", Boolean(card.closed) || !release || card.attempts.some(attempt => attempt.action === "release")), button("refresh", card.id, "Refresh"), button("link", card.id, "Link GitHub"))],
+        components: [new ActionRowBuilder().addComponents(button("approve", card.id, "Approve PR", Boolean(card.closed || card.merged) || !reviewed), button("merge", card.id, "Merge PR", Boolean(card.closed || card.merged) || !reviewed), button("release", card.id, release ? `Release ${release.tag}` : "Cut release", Boolean(card.closed) || !release || card.attempts.some(attempt => attempt.action === "release")), button("ready", card.id, "Ready for review", Boolean(card.closed || card.merged) || card.draft === false || !reviewed)), new ActionRowBuilder().addComponents(button("refresh", card.id, "Refresh"), button("link", card.id, "Link GitHub"))],
         ...(release ? { files: [new AttachmentBuilder(Buffer.from(`# ${release.tag}\n\nCommit: ${release.sha}\nChanges since ${release.previous}:\n\n${release.notes}\n`), { name: "release-notes.md" })] } : {}),
     };
 }
@@ -94,6 +97,25 @@ export class DiscordGitHub {
         await interaction.editReply({ content: `Link **your own** GitHub account at https://github.com/login/device using code **${pending.code}**.\nOnly authorize a code you requested yourself. After authorizing, click Finish linking. Linking does not approve, merge, or release anything.`,
             components: [new ActionRowBuilder().addComponents(button("finish", pending.id, "Finish linking"))], allowedMentions: { parse: [] } });
     }
+    async announce(interaction, card, action, result) {
+        const pr = `[PR #${card.pull}](https://github.com/${card.repository}/pull/${card.pull})`;
+        const summary = result.startsWith("Approval submitted") ? `approved ${pr} ✅`
+            : result.startsWith("Marked ready") ? `updated ${pr} ready for review 👍`
+                : result.startsWith("Merged as") ? `merged ${pr} ✅`
+                    : action === "release" ? `requested a release for ${pr} 🚀`
+                        : `checked ${pr}`;
+        // Complete the ephemeral deferred response first: Discord otherwise treats
+        // the first follow-up as that response and preserves its private visibility.
+        try {
+            await interaction.editReply(result);
+            await interaction.followUp({ content: `<@${interaction.user.id}> ${summary}\n${result}`, flags: [], allowedMentions: { parse: [] } });
+        }
+        catch {
+            await interaction.editReply(`${result}\nCould not post the confirmation to this conversation.`).catch(() => { });
+            return;
+        }
+        await interaction.deleteReply().catch(() => { });
+    }
     async handle(interaction) {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         try {
@@ -108,6 +130,18 @@ export class DiscordGitHub {
             if (interaction.isChatInputCommand()) {
                 if (interaction.options.getSubcommand() === "link") {
                     await this.link(interaction, context);
+                    return;
+                }
+                if (interaction.options.getSubcommand() === "ready") {
+                    const repository = interaction.options.getString("repository", true);
+                    const pull = interaction.options.getInteger("pull", true);
+                    const card = this.actions.forConversation(interactionSessionKey(interaction), context.guild, context.channel)
+                        .find(card => card.repository === repository && card.pull === pull);
+                    if (!card)
+                        throw new GitHubActionError("That PR is not an available bot contribution in this conversation. Use /github status.");
+                    const result = await this.actions.act(card.id, "ready", context);
+                    await this.announce(interaction, card, "ready", result);
+                    await this.present(interaction.client, interactionSessionKey(interaction), context.guild, context.channel).catch(() => { });
                     return;
                 }
                 const linked = this.auth.linked(context.userId);
@@ -135,10 +169,10 @@ export class DiscordGitHub {
                 await interaction.editReply(`Refreshed using @${result.actor}. Each action will recheck GitHub before proceeding.`);
                 return;
             }
-            if (action !== "approve" && action !== "merge" && action !== "release")
+            if (action !== "approve" && action !== "merge" && action !== "release" && action !== "ready")
                 throw new GitHubActionError("Unknown GitHub action.");
             const result = await this.actions.act(id, action, context);
-            await interaction.editReply(result);
+            await this.announce(interaction, card, action, result);
             // A failed public-card update must not turn a successful GitHub mutation into a failure reply.
             await interaction.message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] }).catch(() => { });
         }

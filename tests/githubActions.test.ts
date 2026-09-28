@@ -192,7 +192,7 @@ function fixture(t: TestContext) {
       let result: unknown;
       if (endpoint === "/graphql") {
         const body = raw as { query: string };
-        if (body.query.startsWith("mutation")) { pull.isDraft = false; result = { data: { markPullRequestReadyForReview: { pullRequest: { id: pull.id } } } }; }
+        if (body.query.startsWith("mutation")) { pull.isDraft = false; if (lost) throw new Error("connection lost"); result = { data: { markPullRequestReadyForReview: { pullRequest: { id: pull.id } } } }; }
         else result = { data: { repository: { databaseId: 1, nameWithOwner: target.repository.upstream, defaultBranchRef: { name: "main" }, pullRequest: structuredClone(pull) } } };
       } else if (endpoint.endsWith("/reviews")) {
         if (denial) throw new GitHubActionError("denied", 403);
@@ -245,7 +245,7 @@ test("Discord permission cannot substitute for GitHub repository write permissio
   assert.ok(!f.calls.some(call => call.endpoint.endsWith("/merge")));
 });
 
-test("contributors can approve a draft, and a maintainer makes it ready only during merge", async t => {
+test("contributors can approve a draft, and merge still makes it ready when needed", async t => {
   const f = fixture(t); f.pull.isDraft = true;
   await f.service.act(f.card.id, "approve", f.context("contributor"));
   await f.service.act(f.card.id, "approve", f.context());
@@ -515,4 +515,98 @@ test("enabled GitHub actions require enabled contributions and server reviews at
 
 test("version selection orders numbers and excludes prereleases", () => {
   assert.equal(nextReleaseTag(["v1.9.10", "v1.10.1", "v2.0.0-beta.1"]), "v1.10.2");
+});
+
+
+test("ready uses the linked writer, confirms state, and repeated clicks do not mutate again", async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context("contributor")), /write access/);
+  assert.match(await f.service.act(f.card.id, "ready", f.context()), /Marked ready/);
+  assert.equal(f.card.draft, false);
+  assert.equal(f.card.attempts[0].state, "done");
+  assert.match(await f.service.act(f.card.id, "ready", f.context()), /already ready/);
+  const mutations = f.calls.filter(call => call.endpoint === "/graphql" && (call.body as { query: string }).query.startsWith("mutation"));
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].user, "ben");
+  assert.equal(githubCardMessage(f.card, true).components[0].toJSON().components[3].disabled, true);
+});
+
+test("ready rejects stale review, failing checks, changed heads, and closed PRs", async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  f.target.review = { ...f.target.review, state: "queued" } as typeof f.target.review;
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /clean server review/);
+  f.target.review = { ...f.target.review, state: "completed" } as typeof f.target.review;
+  f.pull.commits.nodes[0].commit.statusCheckRollup!.state = "PENDING";
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /checks/);
+  f.pull.commits.nodes[0].commit.statusCheckRollup!.state = "SUCCESS";
+  f.pull.headRefOid = merged;
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /PR changed/);
+  f.pull.headRefOid = head; f.pull.state = "CLOSED";
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /no longer open/);
+  assert.equal(f.card.attempts.length, 0);
+});
+
+function discordFixture(t: TestContext, action = "approve") {
+  const f = fixture(t);
+  const replies: unknown[] = [], publicMessages: any[] = [];
+  let deleted = 0, failDelivery = false;
+  const adapter = Object.create(DiscordGitHub.prototype) as DiscordGitHub;
+  Object.assign(adapter, { actions: f.service, auth: { linked: () => ({ login: "ben" }) }, context: () => f.context(), present: async () => [] });
+  f.card.message = "message";
+  const interaction = {
+    user: { id: "123" }, customId: `gh:${action}:${f.card.id}`,
+    client: { user: { id: "bot" } },
+    message: { id: "message", author: { id: "bot" }, edit: async () => {} },
+    isChatInputCommand: () => false,
+    deferReply: async (options: unknown) => { replies.push(options); },
+    editReply: async (reply: unknown) => { replies.push(reply); },
+    followUp: async (message: unknown) => { assert.equal(typeof replies.at(-1), "string", "finish the private deferred response before a public follow-up"); if (failDelivery) throw Error("Discord unavailable"); publicMessages.push(message); },
+    deleteReply: async () => { deleted++; },
+  };
+  return { ...f, adapter, interaction, replies, publicMessages, deleted: () => deleted, failDelivery: () => { failDelivery = true; } };
+}
+
+test("successful buttons announce the Discord actor publicly and remove the private acknowledgement", async t => {
+  const f = discordFixture(t);
+  await f.adapter.handle(f.interaction as any);
+  assert.equal(f.publicMessages.length, 1);
+  assert.match(f.publicMessages[0].content, /<@123> approved \[PR #42\].*✅/);
+  assert.deepEqual(f.publicMessages[0].flags, []);
+  assert.deepEqual(f.publicMessages[0].allowedMentions, { parse: [] });
+  assert.equal(f.deleted(), 1);
+});
+
+test("ready slash command selects only a matching conversation contribution and announces success", async t => {
+  const f = discordFixture(t, "ready"); f.pull.isDraft = true;
+  Object.assign(f.interaction, { guildId: "guild", channelId: "channel", channel: { isThread: () => true },
+    isChatInputCommand: () => true,
+    options: { getSubcommand: () => "ready", getString: () => f.card.repository, getInteger: () => 42 } });
+  await f.adapter.handle(f.interaction as any);
+  assert.match(f.publicMessages[0]?.content ?? "", /<@123> updated \[PR #42\].*ready for review 👍/);
+  f.interaction.options.getInteger = () => 999;
+  await f.adapter.handle(f.interaction as any);
+  assert.equal(f.publicMessages.length, 1);
+  assert.match(String(f.replies.at(-1)), /not an available bot contribution/);
+});
+
+test("failed public delivery preserves the successful result privately; rejected actions never announce success", async t => {
+  const f = discordFixture(t); f.failDelivery();
+  await f.adapter.handle(f.interaction as any);
+  assert.match(String(f.replies.at(-1)), /Approval submitted.*\nCould not post/);
+  assert.equal(f.deleted(), 0);
+  assert.equal(f.card.attempts[0].state, "done");
+  f.pull.state = "CLOSED";
+  await f.adapter.handle(f.interaction as any);
+  assert.match(String(f.replies.at(-1)), /no longer open/);
+  assert.equal(f.publicMessages.length, 0);
+});
+
+test("a lost ready response reconciles after restart without repeating the mutation", async t => {
+  const f = fixture(t); f.pull.isDraft = true; f.setLost(true);
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /connection lost/);
+  assert.equal(f.card.attempts[0].state, "pending");
+  const restored = f.make();
+  assert.match(await restored.act(f.card.id, "ready", f.context()), /already ready/);
+  assert.equal(restored.get(f.card.id, f.context()).attempts[0].state, "done");
+  assert.equal(f.calls.filter(call => call.endpoint === "/graphql" && (call.body as { query: string }).query.startsWith("mutation")).length, 1);
 });
