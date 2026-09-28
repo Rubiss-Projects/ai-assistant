@@ -733,7 +733,7 @@ test("CI tools pin the owned head, recheck after reads, and return live mergeabi
   const fetcher = t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const url = String(input);
     return Response.json(url.includes("check-runs?")
-      ? { total_count: 1, check_runs: [{ name: "build", head_sha: published.head_sha, status: "completed", conclusion: "success", html_url: "https://github.com/check/1", output: { title: "Passed", summary: null } }] }
+      ? { total_count: 2, check_runs: ["build", "container-runtime"].map(name => ({ name, head_sha: published.head_sha, status: "completed", conclusion: "success", html_url: "https://github.com/check/1", output: { title: "Passed", summary: null } })) }
       : { sha: published.head_sha, total_count: 0, statuses: [] });
   });
   const run = new GitHubContributionRun(caller.session, { rulesetContext: { requester: caller.requester, access: caller.access } }, () => service);
