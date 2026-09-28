@@ -14,6 +14,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
+COPY .agents/skills/babysit-contribution ./.agents/skills/babysit-contribution
 RUN npm run build && npm prune --omit=dev
 
 # Relocate the complete native Codex bundle to a stable system path. The CLI

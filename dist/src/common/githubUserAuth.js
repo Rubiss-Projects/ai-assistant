@@ -198,7 +198,10 @@ export class GitHubUserAuth {
         }
     }
     api(token, method, endpoint, signal, body) {
-        if (!/^\/(?:user$|repos\/|graphql$)/.test(endpoint) || endpoint.includes("..") || endpoint.includes("\\"))
+        // Compare endpoints contain "base...head". Reject traversal segments, not dots within a ref.
+        const pathname = decodeURIComponent(endpoint.split("?")[0]);
+        if (!/^\/(?:user$|repos\/|graphql$)/.test(endpoint) || pathname.includes("\\") || endpoint.includes("#")
+            || pathname.split("/").some(segment => segment === "." || segment === ".."))
             throw new Error("Invalid host GitHub endpoint.");
         return githubJson(this.fetcher, `https://api.github.com${endpoint}`, { method,
             headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "content-type": "application/json", "x-github-api-version": "2026-03-10" },

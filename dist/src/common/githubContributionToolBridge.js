@@ -63,6 +63,7 @@ export class GitHubContributionRun {
                     case "github_contribution_begin": return service.begin(caller, text("repository"));
                     case "github_contribution_read": return service.read(caller, text("contribution_id"), text("path"));
                     case "github_contribution_status": return service.status(caller, text("contribution_id"));
+                    case "github_contribution_checks": return service.checks(caller, text("contribution_id"), text("expected_head_sha"));
                     case "github_contribution_review": {
                         if (args.retry !== undefined && typeof args.retry !== "boolean")
                             throw new Error("retry must be a boolean.");
