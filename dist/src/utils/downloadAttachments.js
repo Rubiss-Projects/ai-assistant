@@ -67,7 +67,7 @@ function isTextFile(contentType, name) {
  * Enforces per-file size and count limits, and a per-fetch timeout.
  * Returns the prepared downloads and a cleanup function for any temp files.
  */
-export async function downloadFileAttachments(attachments, signal) {
+export async function downloadFileAttachments(attachments, signal, options = {}) {
     const downloaded = [];
     const warnings = [];
     const maxBytes = inputByteLimit();
@@ -91,7 +91,8 @@ export async function downloadFileAttachments(attachments, signal) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
         try {
-            const response = await fetch(attachment.url, { signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal });
+            const downloadSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+            const response = await (options.fetch ? options.fetch(attachment.url, downloadSignal) : fetch(attachment.url, { signal: downloadSignal }));
             if (!response.ok) {
                 await response.body?.cancel();
                 warnings.push(`${attachment.name}: download failed (HTTP ${response.status}).`);
@@ -128,7 +129,7 @@ export async function downloadFileAttachments(attachments, signal) {
             const imageExt = detectedImageExtension(normalized.data);
             const isImage = imageExt !== undefined;
             const binary = !isImage && !isTextFile(attachment.contentType, attachment.name);
-            const textMode = (process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() === "text";
+            const textMode = (options.mode ?? process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() === "text";
             if (textMode && !isImage) {
                 if (binary) {
                     warnings.push(`${attachment.name}: binary media requires DISCORD_ATTACHMENT_MODE=native.`);

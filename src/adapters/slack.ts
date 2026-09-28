@@ -1,3 +1,4 @@
+import { fetchSlackFile, prepareSlackFiles } from './slackAttachments.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7,10 +8,11 @@ import { TEXT_CAPABILITIES, sessionKey, type IncomingTurn, type TurnHandle, type
 import { createTextEngine, type TextEngine } from '../composition/textEngine.js';
 import { configuredSecurityMode } from '../common/providerSecurity.js';
 export interface SlackResponse { ok: boolean; error?: string; [key: string]: unknown }
-export interface SlackApi { call(method: string, args?: Record<string, string>, signal?: AbortSignal): Promise<SlackResponse> }
+export interface SlackApi { downloadFile?(url: string, signal: AbortSignal): Promise<Response>; call(method: string, args?: Record<string, string>, signal?: AbortSignal): Promise<SlackResponse> }
 /** Credentials remain in this host client, never in provider context or persisted turns. */
 export class SlackWebApi implements SlackApi {
   constructor(private readonly token: string) {}
+  downloadFile(url: string, signal: AbortSignal): Promise<Response> { return fetchSlackFile(this.token, url, signal); }
   async call(method: string, args: Record<string,string> = {}, signal?: AbortSignal): Promise<SlackResponse> {
     const response = await fetch('https://slack.com/api/' + method, {
       method: 'POST', headers: { authorization: 'Bearer ' + this.token, 'content-type': 'application/x-www-form-urlencoded' },
@@ -117,7 +119,7 @@ export class SlackAdapter {
   normalize(payload: Record<string,unknown>): IncomingTurn | undefined {
     if (payload.team_id !== this.config.teamId || typeof payload.event_id !== 'string') return;
     const e = payload.event as Record<string,unknown> | undefined;
-    if (!e || e.type !== 'app_mention' || e.bot_id || e.subtype || e.user === this.config.botUserId
+    if (!e || e.type !== 'app_mention' || e.bot_id || (e.subtype && e.subtype !== 'file_share') || e.user === this.config.botUserId
       || typeof e.user !== 'string' || typeof e.channel !== 'string' || !this.config.channels.has(e.channel)
       || !this.config.users.has(e.user) || typeof e.text !== 'string' || !e.text.includes('<@' + this.config.botUserId + '>')) return;
     const ts = slackPosition(e.ts), thread = e.thread_ts ? slackPosition(e.thread_ts) : ts;
@@ -159,7 +161,7 @@ export class SlackAdapter {
   async receive(payload: Record<string,unknown>): Promise<TurnHandle | undefined> {
     const input = this.normalize(payload); if (!input) return;
     const source = payload.event as Record<string, unknown>;
-    return this.submit(input, fingerprint({ authorId: input.actor.userId, text: String(source.text), revision: JSON.stringify(source.edited ?? null) }));
+    return this.submit(input, fingerprint({ authorId: input.actor.userId, text: String(source.text), revision: JSON.stringify(source.edited ?? null) }), source.files ?? (source.subtype === 'file_share' ? null : undefined));
   }
   /** Replay only generated output: acknowledged Socket Mode events need not return. */
   async recover(signal?: AbortSignal): Promise<void> {
@@ -174,7 +176,7 @@ export class SlackAdapter {
       if (result.state !== 'delivered') console.error('[slack] Recovered delivery ' + result.state + ': ' + result.error);
     }
   }
-  private submit(input: IncomingTurn, sourceFingerprint?: string): Promise<TurnHandle> {
+  private submit(input: IncomingTurn, sourceFingerprint?: string, files?: unknown): Promise<TurnHandle> {
     const key = sessionKey(input, 'shared');
     let audience: string | undefined;
     const authorized = async (signal?: AbortSignal) => {
@@ -184,7 +186,7 @@ export class SlackAdapter {
     const port = new SlackHistory(this.historyApi, input.conversation, authorized, this.config.excludedAuthors);
     return this.service.submit(input, {
       platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
-      audience: 'shared', capabilities: { ...TEXT_CAPABILITIES, history: true, progress: false },
+      audience: 'shared', capabilities: { ...TEXT_CAPABILITIES, history: true, attachments: true, progress: false },
       retryGeneratedDelivery: true,
       authorize: async (_i, stage, output, signal) => {
         if (stage === 'ingress') return true;
@@ -220,11 +222,14 @@ export class SlackAdapter {
         // Commit inclusion only after provider success. Failed turns may require explicit reset.
         const next: ContextState = { exclusionPolicy, represented: [...state.represented, input.sourceMessageId!], audience, seen: { ...state.seen, ...fingerprints }, positions: { ...state.positions, ...Object.fromEntries(result.messages.map(m => [m.id,m.position])) }, scopes: { ...state.scopes, ...Object.fromEntries(result.messages.map(m => [m.id, historyScope(resource)])) } };
         const prompt = historyBlock({ ...result, messages: fresh, coverage: { ...result.coverage, included: fresh.length, reasons: [...result.coverage.reasons, ...(fresh.length !== result.messages.length ? ['Previously supplied records retained in this provider session.'] : [])] } }) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
-        return { prompt, next, coverage: result.coverage, history: result, scope: historyScope(resource) };
+        const uploads = await prepareSlackFiles(files, this.api, signal);
+        const attachmentWarning = uploads.warnings.length ? '\n\n[Slack attachment warnings: ' + uploads.warnings.join('; ') + ']' : '';
+        return { prompt: prompt + attachmentWarning, next, coverage: result.coverage, history: result, scope: historyScope(resource), uploads, attachmentWarning, cleanup: uploads.cleanup };
       },
       generate: async (prepared, session, signal, onProgress) => {
         if (!sourceFingerprint) throw new Error('Recovered turns may only deliver persisted output.');
-        const response = await this.engine.sendMessage(session, prepared.prompt, undefined, {
+        if (prepared.uploads.fileAttachments.length && !await authorized(signal)) throw new Error('Conversation access denied.');
+        const response = await this.engine.sendMessage(session, prepared.prompt, prepared.uploads.fileAttachments.length ? prepared.uploads.fileAttachments : undefined, {
           transportContext: { platform: 'slack', history: true }, signal, onProgress,
           onSessionRecovery: () => {
             signal.throwIfAborted();
@@ -232,7 +237,7 @@ export class SlackAdapter {
             prepared.next.seen = Object.fromEntries(prepared.history.messages.map(m => [m.id, fingerprint(m)]));
             prepared.next.positions = Object.fromEntries(prepared.history.messages.map(m => [m.id, m.position]));
             prepared.next.scopes = Object.fromEntries(prepared.history.messages.map(m => [m.id, prepared.scope]));
-            return historyBlock(prepared.history) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text;
+            return historyBlock(prepared.history) + '\n\nCurrent speaker (host-verified): ' + JSON.stringify(input.actor) + '\nCurrent request:\n' + input.text + prepared.attachmentWarning;
           },
           resolveChannelHistory: async (args, signal) => {
             if (args.scope && !['channel','thread'].includes(String(args.scope))) throw new Error('Unsupported history scope.');
@@ -255,6 +260,7 @@ export class SlackAdapter {
         prepared.next.contextIdentity = this.engine.contextIdentity?.(session) ?? this.fallbackContextIdentity;
         this.save(session, prepared.next);
         response.audienceTag = audience;
+        response.content += prepared.attachmentWarning;
         if (prepared.coverage.status === 'partial' || prepared.coverage.status === 'unavailable') response.content += '\n\n[Surrounding discussion context is ' + prepared.coverage.status + ': ' + prepared.coverage.reasons.join('; ') + ']';
         return response;
       },
@@ -366,3 +372,4 @@ export async function startSlack(signal?: AbortSignal): Promise<{ stop(): Promis
     throw error;
   }
 }
+
