@@ -184,12 +184,14 @@ function fixture(t: TestContext) {
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
   const tag = { object: { type: "commit", sha: merged } };
   const tagObjects = new Map<string, typeof tag>();
+  let ambiguousBeforeMutation = false;
   let graphqlResponse: unknown;
   let lost = false, denial = false, unsent = false, mergeDenied = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged, runConclusion = "success";
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
       await authorize(); calls.push({ user, method, endpoint, body: raw });
       if (unsent && /\/(reviews|merge|dispatches)$/.test(endpoint)) throw new GitHubRequestNotSentError("Permission was revoked before transport.");
+      if (ambiguousBeforeMutation && (endpoint.endsWith("/merge") || (endpoint === "/graphql" && (raw as any)?.query?.startsWith("mutation")))) throw new Error("connection lost before mutation");
       let result: unknown;
       if (endpoint === "/graphql") {
         const body = raw as { query: string };
@@ -229,7 +231,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { root, service, card, pull, target, calls, context, make, tag, tagObjects, setGraphqlResponse: (value: unknown) => { graphqlResponse = value; }, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
+  return { root, service, card, pull, target, calls, context, make, tag, tagObjects, setAmbiguousBeforeMutation: (value: boolean) => { ambiguousBeforeMutation = value; }, setGraphqlResponse: (value: unknown) => { graphqlResponse = value; }, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -841,4 +843,36 @@ test("failure presenting the latest PR does not fall back to posting older PRs",
   const failed = await f.adapter.present(f.client, "session", "guild", "channel");
   assert.deepEqual(failed, ["Rubiss-Projects/ai-assistant #104"]);
   assert.equal(attempted.length, 1); assert.match(attempted[0], /#104/);
+});
+
+for (const action of ["ready", "merge"] as const) test(`reconciling ${action} after an ambiguous request does not attribute an external transition`, async t => {
+  const f = fixture(t);
+  if (action === "ready") f.pull.isDraft = true;
+  else await f.service.act(f.card.id, "approve", f.context());
+  f.setAmbiguousBeforeMutation(true);
+  await assert.rejects(f.service.act(f.card.id, action, f.context()), /connection lost/);
+  const attempt = f.card.attempts.find(item => item.action === action)!;
+  assert.equal(attempt.state, "pending"); assert.equal(attempt.notification, undefined);
+  // Someone else now performs the transition directly on GitHub.
+  f.pull.isDraft = false;
+  if (action === "merge") { f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged }; }
+  f.setAmbiguousBeforeMutation(false);
+  const restored = f.make();
+  const { card } = await restored.refresh(f.card.id, f.context());
+  const receipt = card.attempts.find(item => item.action === action)!;
+  assert.equal(receipt.state, "done");
+  assert.match(receipt.notification!.content, action === "ready" ? /marked ready for review/ : /merged/);
+  assert.doesNotMatch(receipt.notification!.content, /by @ben/);
+  const notification = structuredClone(receipt.notification);
+  await restored.refresh(f.card.id, f.context());
+  assert.deepEqual(receipt.notification, notification);
+});
+
+test("refresh preserves verified attribution already recorded after a successful write", async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  await f.service.act(f.card.id, "ready", f.context());
+  await f.service.act(f.card.id, "approve", f.context());
+  await f.service.act(f.card.id, "merge", f.context());
+  await f.service.refresh(f.card.id, f.context());
+  for (const attempt of f.card.attempts) assert.match(attempt.notification!.content, /by @ben/);
 });

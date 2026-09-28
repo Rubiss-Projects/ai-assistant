@@ -79,17 +79,17 @@ export class GitHubMaintainer {
     const notification = card.attempts.find(attempt => attempt.notification?.id === id)?.notification;
     if (notification) { notification.message = message; this.save(); }
   }
-  private complete(card: ContributionCard, attempt: Attempt, description: string) {
+  private complete(card: ContributionCard, attempt: Attempt, description: string, attributeActor = true) {
     attempt.state = "done";
-    attempt.notification ??= { id: randomUUID(), content: `**${card.repository} #${card.pull}** ${description}${attempt.login ? ` by @${attempt.login}` : ""}.\nhttps://github.com/${card.repository}/pull/${card.pull}` };
+    attempt.notification ??= { id: randomUUID(), content: `**${card.repository} #${card.pull}** ${description}${attributeActor && attempt.login ? ` by @${attempt.login}` : ""}.\nhttps://github.com/${card.repository}/pull/${card.pull}` };
     this.save();
   }
   private reconcile(card: ContributionCard, pull: PullSnapshot) {
     card.draft = pull.isDraft;
     for (const attempt of card.attempts) {
-      if (attempt.action === "ready" && !pull.isDraft) this.complete(card, attempt, "marked ready for review");
+      if (attempt.action === "ready" && !pull.isDraft) this.complete(card, attempt, "marked ready for review", false);
       if (attempt.action === "approve" && attempt.login && this.approvedBy(pull, attempt.login)) this.complete(card, attempt, `approved revision \`${card.head.slice(0, 12)}\``);
-      if (attempt.action === "merge" && pull.state === "MERGED") this.complete(card, attempt, "merged");
+      if (attempt.action === "merge" && pull.state === "MERGED") this.complete(card, attempt, "merged", false);
     }
   }
   private serial<T>(id: string, action: () => Promise<T>): Promise<T> {

@@ -63,20 +63,20 @@ export class GitHubMaintainer {
             this.save();
         }
     }
-    complete(card, attempt, description) {
+    complete(card, attempt, description, attributeActor = true) {
         attempt.state = "done";
-        attempt.notification ??= { id: randomUUID(), content: `**${card.repository} #${card.pull}** ${description}${attempt.login ? ` by @${attempt.login}` : ""}.\nhttps://github.com/${card.repository}/pull/${card.pull}` };
+        attempt.notification ??= { id: randomUUID(), content: `**${card.repository} #${card.pull}** ${description}${attributeActor && attempt.login ? ` by @${attempt.login}` : ""}.\nhttps://github.com/${card.repository}/pull/${card.pull}` };
         this.save();
     }
     reconcile(card, pull) {
         card.draft = pull.isDraft;
         for (const attempt of card.attempts) {
             if (attempt.action === "ready" && !pull.isDraft)
-                this.complete(card, attempt, "marked ready for review");
+                this.complete(card, attempt, "marked ready for review", false);
             if (attempt.action === "approve" && attempt.login && this.approvedBy(pull, attempt.login))
                 this.complete(card, attempt, `approved revision \`${card.head.slice(0, 12)}\``);
             if (attempt.action === "merge" && pull.state === "MERGED")
-                this.complete(card, attempt, "merged");
+                this.complete(card, attempt, "merged", false);
         }
     }
     serial(id, action) {
