@@ -633,3 +633,16 @@ test("uncertain GraphQL ready errors retain receipts across refresh and restart"
   await restored.refresh(f.card.id, f.context());
   await assert.rejects(restored.act(f.card.id, "ready", f.context()), /already sent/);
 });
+
+test("a confirmed ready transition can be repeated when the same PR returns to draft", async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  await f.service.act(f.card.id, "ready", f.context());
+  f.pull.isDraft = true;
+  const restored = f.make();
+  await restored.refresh(f.card.id, f.context());
+  const card = restored.get(f.card.id, f.context());
+  assert.equal(githubCardMessage(card, true).components[0].toJSON().components[3].disabled, false);
+  assert.match(await restored.act(card.id, "ready", f.context()), /Marked ready/);
+  assert.equal(card.attempts.filter(attempt => attempt.action === "ready" && attempt.state === "done").length, 2);
+  assert.equal(f.calls.filter(call => call.endpoint === "/graphql" && (call.body as { query: string }).query.startsWith("mutation")).length, 2);
+});
