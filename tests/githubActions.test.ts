@@ -773,3 +773,43 @@ for (const action of ["ready", "merge"] as const) test(`${action} can make a PR 
   assert.equal(f.calls.filter(call => (call.body as any)?.query?.startsWith("mutation")).length, 2);
   assert.equal(f.pull.isDraft, false);
 });
+
+for (const action of ["approve", "refresh"] as const) test(`a delayed ${action} handler cannot overwrite a newer revision's shared card`, async t => {
+  const f = adapterFixture(t);
+  await f.adapter.present(f.client, "session", "guild", "channel");
+  t.mock.method(f.adapter.auth, "linked", () => ({ id: 1, login: "ben" }));
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  t.mock.method(f.adapter, "notify", async () => { entered(); await gate; });
+  const interaction = { client: f.client, user: { id: "ben" }, guildId: "guild", channelId: "channel",
+    customId: `gh:${action}:${f.card.id}`, deferReply: async () => {}, isChatInputCommand: () => false,
+    editReply: async () => {}, message: { id: "one-message", author: { id: "bot" }, edit: async (value: unknown) => { f.edited.push(value); } } };
+  const older = f.adapter.handle(interaction as never);
+  await started;
+  try {
+    f.target.head = merged;
+    await f.adapter.present(f.client, "session", "guild", "channel");
+    assert.equal(f.edited.length, 1);
+    assert.match(f.edited[0].content, /cccccccccccc/);
+  } finally { release(); await older; }
+  assert.equal(f.edited.length, 1, "the superseded handler must not edit the shared message");
+  assert.equal(f.sent.length, 1);
+});
+
+test("a new presentation waits for an already-running card edit", async t => {
+  const f = adapterFixture(t);
+  await f.adapter.present(f.client, "session", "guild", "channel");
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const order: string[] = [];
+  const older = (f.adapter as any).editCard(f.card, async () => { entered(); await gate; order.push("old"); });
+  await started;
+  f.target.head = merged;
+  const fresh = f.adapter.present(f.client, "session", "guild", "channel").then(() => { order.push("new"); });
+  try { await new Promise(resolve => setImmediate(resolve)); assert.equal(f.edited.length, 0); }
+  finally { release(); await Promise.all([older, fresh]); }
+  assert.deepEqual(order, ["old", "new"]);
+  assert.match(f.edited[0].content, /cccccccccccc/);
+});

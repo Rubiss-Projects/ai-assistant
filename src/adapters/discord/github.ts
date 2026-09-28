@@ -51,6 +51,13 @@ export class DiscordGitHub {
     void pending.finally(() => { if (this.deliveries.get(key) === pending) this.deliveries.delete(key); }).catch(() => {});
     return pending;
   }
+  private editCard(card: ContributionCard, edit: () => Promise<unknown>): Promise<void> {
+    return this.serial(`cards:${card.guild}:${card.channel}`, async () => {
+      // A handler can finish after a later revision has reused this message.
+      // Check inside the presentation queue so stale buttons never overwrite it.
+      if (this.actions.isCurrent(card)) await edit();
+    });
+  }
   private readonly shutdown = new AbortController();
   constructor() {
     const directory = githubActionDirectory();
@@ -84,7 +91,7 @@ export class DiscordGitHub {
         const member = channel.guild.members.cache.get(attempt.discordUser);
         if (!member || !channel.permissionsFor(member)?.has(["ViewChannel", "ReadMessageHistory"])) continue;
         const message = await channel.messages.fetch(card.message);
-        if (message.author.id === client.user?.id) await message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] });
+        if (message.author.id === client.user?.id) await this.editCard(card, () => message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] }));
       } catch { /* Durable receipts are retried on the next poll, without repeating the mutation. */ }
     }
     for (const card of this.actions.pendingNotifications()) {
@@ -160,7 +167,7 @@ export class DiscordGitHub {
       if (action === "refresh") {
         const result = await this.actions.refresh(id, context);
         await this.notify(interaction.client, result.card).catch(() => {});
-        await interaction.message.edit({ ...githubCardMessage(result.card, this.actions.reviewReady(result.card)), attachments: [] });
+        await this.editCard(result.card, () => interaction.message.edit({ ...githubCardMessage(result.card, this.actions.reviewReady(result.card)), attachments: [] }));
         await interaction.editReply(`Refreshed using @${result.actor}. Each action will recheck GitHub before proceeding.`); return;
       }
       if (action !== "ready" && action !== "approve" && action !== "merge" && action !== "release") throw new GitHubActionError("Unknown GitHub action.");
@@ -169,7 +176,7 @@ export class DiscordGitHub {
       finally { await this.notify(interaction.client, card).catch(() => {}); }
       await interaction.editReply(result);
       // A failed public-card update must not turn a successful GitHub mutation into a failure reply.
-      await interaction.message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] }).catch(() => {});
+      await this.editCard(card, () => interaction.message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] })).catch(() => {});
     } catch (error) {
       // Never log OAuth payloads, tokens, or transport errors carrying credential-bearing request data.
       await interaction.editReply(error instanceof GitHubActionError ? error.message : "GitHub action could not complete. Refresh to check its state before trying again.").catch(() => {});

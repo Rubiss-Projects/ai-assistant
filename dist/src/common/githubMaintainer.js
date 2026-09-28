@@ -120,6 +120,11 @@ export class GitHubMaintainer {
         return result;
     }
     setMessage(card, message) { card.message = message; this.save(); }
+    isCurrent(card) {
+        const target = this.target(card);
+        const reviewedBase = "base_sha" in target.review ? target.review.base_sha : undefined;
+        return card.head === target.head && Boolean(card.merged || card.base === reviewedBase);
+    }
     reviewReady(card) {
         const review = this.target(card).review;
         return "head_sha" in review && review.state === "completed" && review.head_sha === card.head && review.base_sha === card.base && review.result?.findings.length === 0;
