@@ -142,6 +142,7 @@ Slack is opt-in: set `AI_ASSISTANT_ADAPTER=slack` to run one Slack Socket Mode c
 | Bot scope | Used for |
 | --- | --- |
 | `app_mentions:read` | Receiving explicit mentions. |
+| `files:read` | Authenticated downloads of files attached to a mention; reinstall the app after adding this scope. |
 | `chat:write` | [Posting replies](https://docs.slack.dev/reference/methods/chat.postMessage/) in the originating thread. |
 | `channels:read` | Public-channel metadata and [membership checks](https://docs.slack.dev/reference/methods/conversations.members/). |
 | `channels:history` | Public-channel history and replies, subject to token access. |
@@ -189,11 +190,14 @@ Automatic context is bounded to 50 messages and 8,000 serialized characters. Exp
 
 For a smoke check, mention the app, add an unmentioned detail in its reply thread, then mention it again asking about that detail. Also request a thread summary and verify source links and coverage. Confirm an unallowed user or channel does not start a turn. These checks exercise real Slack/provider access; the automated suite uses fixtures.
 
-DMs, group DMs, externally shared and organization-shared channels are rejected. Slack currently has text replies and history; file transfer, progress UI, persistent memory, scheduling, proactive participation and Discord slash-command parity are not implemented. Discord participation and rights settings do not configure Slack; use the Slack allowlists.
+DMs, group DMs, externally shared and organization-shared channels are rejected. Slack supports incoming files on explicit mentions in channels and thread replies, plus text replies and history; outgoing file delivery, progress UI, persistent memory, scheduling, proactive participation and Discord slash-command parity are not implemented. Discord participation and rights settings do not configure Slack; use the Slack allowlists.
+
+Files attached to the current explicit mention (images, Markdown, CSV, PDF, DOCX, XLSX and other native files) are downloaded with the bot token after channel access checks and supplied as local provider inputs alongside the text. Incoming files use native mode independently of `DISCORD_ATTACHMENT_MODE`, with the shared five-file and `AI_INPUT_ATTACHMENT_MAX_BYTES` limits (and a 30-second download deadline per file). Download failures and limits appear in the response; private file URLs and tokens are never passed to the provider. Only Slack-hosted private downloads are accepted; external integrations need to be uploaded to Slack first. Files from historical messages are not downloaded. Provider/tool support determines which document formats can be interpreted. Editing an input does not enable Slack output-file delivery.
 
 ### Slack operations and troubleshooting
 
 - **No replies:** check Socket Mode, `app_mention` subscription, token/workspace match, both allowlists, channel membership and host logs. Private channels need the corresponding scopes and invitations. Shared/external channels are unsupported.
+- **Attachment download failed:** add `files:read` to the bot token, reinstall the app, and confirm it can access the uploaded file. The history token is not used for file downloads. Check the per-file size limit and the warning returned in the thread.
 - **History unavailable:** check the history credential's access and scopes for both history APIs. Slack rate limits vary by app distribution; this adapter bounds retrieval and reports failure rather than guaranteeing a complete transcript.
 - **State ownership error:** one worker per adapter journal is enforced by an exclusive SQLite transaction in `owner.sqlite`. The OS releases ownership after process termination or a host crash, and the next worker automatically recovers its `owner.lock` marker. Never delete `owner.sqlite` or an active worker's marker. An old release's marker has no crash-safe ownership protocol: stop all workers and archive only that legacy `owner.lock` before upgrading if it survived a crash. A clean shutdown needs no migration. Keep the journal on local storage with working filesystem locks; network filesystems and multiple hosts sharing state are unsupported.
 - Persist `slack-turns`, `slack-context` and `slack-provider-state` under `AI_ASSISTANT_STATE_DIR` across restarts. Keep `SLACK_INSTALLATION_ID` stable. SIGINT/SIGTERM drain the adapter, but an active provider may take until completion or its timeout to stop.
@@ -1032,3 +1036,4 @@ Each request scans at most 1,000 messages, in pages of up to 100, and includes a
 Both requester and bot need View Channel and Read Message History; private threads also require verified membership or Manage Threads. Existing context-author rules apply, bot messages are omitted, and attachments are counted without downloading or interpreting their contents. Summary records are untrusted quoted data; links inside retrieved history do not trigger additional link expansion. No new slash-command registration or configuration is needed.
 
 The shared session-context registry includes the durable summary instructions and static capability contract for conversation and one-shot (`/ask`) profiles. After deployment, existing conversations refresh through the provider's context lifecycle on their next turn. Changes to policy, retrieval limits, or the explicit behavior revision change the fingerprint; request-specific messages, identities, timestamps, and anchors do not. Scheduled and internal ephemeral profiles do not advertise this host enrichment.
+

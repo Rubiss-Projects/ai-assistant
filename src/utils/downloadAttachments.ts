@@ -88,6 +88,7 @@ export interface DownloadResult {
 export async function downloadFileAttachments(
   attachments: Iterable<{ url: string; contentType: string | null; name: string; size?: number }>,
   signal?: AbortSignal,
+  options: { mode?: "native" | "text"; fetch?: (url: string, signal: AbortSignal) => Promise<Response> } = {},
 ): Promise<DownloadResult> {
   const downloaded: DownloadedAttachment[] = [];
   const warnings: string[] = [];
@@ -113,7 +114,8 @@ export async function downloadFileAttachments(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      const response = await fetch(attachment.url, { signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal });
+      const downloadSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      const response = await (options.fetch ? options.fetch(attachment.url, downloadSignal) : fetch(attachment.url, { signal: downloadSignal }));
 
       if (!response.ok) {
         await response.body?.cancel();
@@ -148,7 +150,7 @@ export async function downloadFileAttachments(
       const imageExt = detectedImageExtension(normalized.data);
       const isImage = imageExt !== undefined;
       const binary = !isImage && !isTextFile(attachment.contentType, attachment.name);
-      const textMode = (process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() === "text";
+      const textMode = (options.mode ?? process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() === "text";
       if (textMode && !isImage) {
         if (binary) {
           warnings.push(`${attachment.name}: binary media requires DISCORD_ATTACHMENT_MODE=native.`);
@@ -259,3 +261,4 @@ function detectedImageExtension(buffer: Buffer): string | undefined {
     && buffer.subarray(8, 12).toString("ascii") === "WEBP") return ".webp";
   return undefined;
 }
+

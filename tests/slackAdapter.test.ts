@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { SendMessageOptions } from '../src/providers/types.js';
+import type { SendMessageOptions, SendAttachment } from '../src/providers/types.js';
 import type { TurnOutput } from '../src/core/conversation.js';
-import { SlackAdapter } from '../src/adapters/slack.js';
+import { SlackAdapter, type SlackApi } from '../src/adapters/slack.js';
 import { ConversationService, MemoryTurnJournal } from '../src/application/conversationService.js';
 const event = (id:string,ts:string,thread?:string) => ({team_id:'T',event_id:id,event:{type:'app_mention',user:'U',channel:'C',text:'<@BOT> question',ts,...(thread?{thread_ts:thread}:{})}});
 test('Slack service shutdown cancels active text-engine generation without delivering', { timeout: 2000 }, async () => {
@@ -29,7 +29,7 @@ function setup(maxSessions=1000){
  let historyUnavailable = false, audienceFailureAt = 0, audienceCalls = 0;
  let historyStarted: (() => void) | undefined;
  let audienceStarted: (() => void) | undefined;
- const api={call:async(method:string,args?:Record<string,string>,signal?:AbortSignal)=>{
+ const api: SlackApi={call:async(method:string,args?:Record<string,string>,signal?:AbortSignal)=>{
   if(method==='conversations.members' && audienceStarted) await new Promise<void>((_resolve,reject)=>{assert.ok(signal);signal.addEventListener('abort',()=>reject(signal.reason),{once:true});audienceStarted!();});
   if(method==='conversations.members' && ++audienceCalls === audienceFailureAt) throw new Error('Slack temporarily unavailable');
   if(method==='conversations.info')return {ok:true,channel:{is_member:true}};
@@ -42,10 +42,10 @@ function setup(maxSessions=1000){
   }
   throw Error(method);
  }};
- const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string,_files?:never,_options?:SendMessageOptions)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
+ const engine={contextIdentity:()=>identity,sendMessage:async(_key:string,prompt:string,_files?:SendAttachment[],_options?:SendMessageOptions)=>{prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
  const excludedAuthors=new Set<string>();
  const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service,maxSessions);
- return {dir,adapter,engine,service,prompts,posts,journal,blockAudience:(started:()=>void)=>{audienceStarted=started},blockHistory:(started:()=>void)=>{historyStarted=started},failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
+ return {dir,api,adapter,engine,service,prompts,posts,journal,blockAudience:(started:()=>void)=>{audienceStarted=started},blockHistory:(started:()=>void)=>{historyStarted=started},failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 
 test('Slack shutdown aborts audience membership retrieval before generation', { timeout: 2000 }, async () => {
@@ -264,4 +264,95 @@ test('Slack compacts context at its metadata budget and resets before reusing pr
   assert.equal(f.resets(),resets+1);
   assert.match(f.prompts[2],/unmentioned clarification/);
  } finally {await f.close();}
+});
+
+
+const uploadSamples = [
+ { name: 'pixel.png', mime: 'image/png', kind: 'image', binary: false, data: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64') },
+ { name: 'notes.md', mime: 'text/markdown', kind: 'file', binary: false, data: Buffer.from('# Notes\nInspect this attachment.') },
+ { name: 'report.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', kind: 'file', binary: true, data: Buffer.from('PK\x03\x04document fixture') },
+ { name: 'report.pdf', mime: 'application/pdf', kind: 'file', binary: true, data: Buffer.from('%PDF-1.4\ntransport fixture\n%%EOF') },
+ { name: 'sheet.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', kind: 'file', binary: true, data: Buffer.from('PK\x03\x04spreadsheet fixture') },
+ { name: 'rows.csv', mime: 'text/csv', kind: 'file', binary: false, data: Buffer.from('name,value\none,1\n') },
+];
+function withFiles(files: unknown, thread?: string, text = '<@BOT> inspect these files') {
+ const payload=event('upload','1700000003.000000',thread);
+ return {...payload,event:{...payload.event,text,subtype:'file_share',files}};
+}
+function fileMetadata(sample=uploadSamples[0], id='F123') {
+ return {id,name:sample.name,mimetype:sample.mime,size:sample.data.length,url_private:'https://files.slack.com/files-pri/T-'+id+'/'+sample.name};
+}
+for (const thread of [undefined, '1700000001.000000']) for (const sample of uploadSamples) {
+ test('Slack ingests '+sample.name+' in '+(thread?'thread reply':'channel mention')+' with text and cleans up', async () => {
+  const f=setup();let paths:string[]=[];let downloads=0;let recovered='';
+  const previousMode=process.env.DISCORD_ATTACHMENT_MODE;process.env.DISCORD_ATTACHMENT_MODE='text';
+  try {
+   f.api.downloadFile=async(url,signal)=>{assert.equal(url,fileMetadata(sample).url_private);assert.equal(signal.aborted,false);downloads++;return new Response(sample.data,{headers:{'content-type':sample.mime}})};
+   f.engine.sendMessage=async(_key,prompt,files,options)=>{
+    assert.match(prompt,/inspect these files/);assert.doesNotMatch(prompt,/files\.slack\.com|Bearer/);
+    assert.equal(files?.length,1);const file=files![0];paths.push(file.path);
+    assert.equal(file.displayName,sample.name);assert.equal(file.kind,sample.kind);assert.equal(Boolean(file.binary),sample.binary);
+    assert.deepEqual(readFileSync(file.path),sample.data);recovered=options!.onSessionRecovery!();assert.match(recovered,/inspect these files/);
+    return {content:'inspected',attachments:[]};
+   };
+   const payload=withFiles([fileMetadata(sample)],thread);
+   const result=await (await f.adapter.receive(payload))!.completion;assert.equal(result.state,'delivered');
+   assert.equal(f.posts[0].thread_ts,thread??'1700000003.000000');assert.equal(f.posts[0].text,'inspected');
+   assert.equal(downloads,1);assert.ok(paths.every(p=>!existsSync(p)));
+   await (await f.adapter.receive(payload))!.completion;assert.equal(downloads,1);
+   assert.doesNotMatch(JSON.stringify(f.journal.all()),/files\.slack\.com/);
+  } finally { if(previousMode===undefined)delete process.env.DISCORD_ATTACHMENT_MODE;else process.env.DISCORD_ATTACHMENT_MODE=previousMode;await f.close(); }
+ });
+}
+test('Slack passes multiple attachments with a mention-only request',async()=>{
+ const f=setup();try{
+  const samples=uploadSamples.slice(0,3);let count=0;
+  f.api.downloadFile=async()=>new Response(samples[count++].data);
+  f.engine.sendMessage=async(_key,_prompt,files)=>{assert.equal(files?.length,3);return {content:'inspected all',attachments:[]}};
+  assert.equal((await (await f.adapter.receive(withFiles(samples.map((s,i)=>fileMetadata(s,'F'+i)),undefined,'<@BOT>')))!.completion).state,'delivered');
+  assert.equal(count,3);
+ }finally{await f.close()}
+});
+test('Slack resolves incomplete event file metadata using bot files.info',async()=>{
+ const f=setup();const original=f.api.call;let lookedUp=false;
+ try {
+  f.api.call=async(method,args,signal)=>{if(method==='files.info'){assert.equal(args?.file,'F123');lookedUp=true;return {ok:true,file:fileMetadata()}}return original(method,args,signal)};
+  f.api.downloadFile=async()=>new Response(uploadSamples[0].data);
+  f.engine.sendMessage=async(_k,_p,files)=>{assert.equal(files?.length,1);return {content:'ok',attachments:[]}};
+  assert.equal((await (await f.adapter.receive(withFiles([{id:'F123'}])))!.completion).state,'delivered');assert.equal(lookedUp,true);
+ }finally{await f.close()}
+});
+for(const thread of [undefined,'1700000001.000000']) test('Slack download failure warns the provider and user in '+(thread?'thread':'channel'),async()=>{
+ const f=setup();try{
+  f.api.downloadFile=async()=>new Response('denied',{status:403});
+  f.engine.sendMessage=async(_key,prompt,files,options)=>{assert.match(prompt,/pixel.png: download failed \(HTTP 403\)/);assert.match(options!.onSessionRecovery!(),/download failed/);assert.equal(files,undefined);return {content:'Could not inspect the file.',attachments:[]}};
+  assert.equal((await (await f.adapter.receive(withFiles([fileMetadata()],thread)))!.completion).state,'delivered');assert.match(f.posts[0].text,/pixel.png: download failed/);
+ }finally{await f.close()}
+});
+test('Slack rejects unauthorized uploads before any file I/O',async()=>{
+ const f=setup();try{
+  f.api.downloadFile=async()=>{throw Error('must not download')};f.revoke();
+  assert.equal((await (await f.adapter.receive(withFiles([fileMetadata()])))!.completion).state,'failed');assert.equal(f.prompts.length,0);assert.equal(f.posts.length,0);
+ }finally{await f.close()}
+});
+test('Slack membership loss during a download prevents provider access and cleans up',async()=>{
+ const f=setup();try{
+  f.api.downloadFile=async()=>{f.revoke();return new Response(uploadSamples[0].data)};
+  assert.equal((await (await f.adapter.receive(withFiles([fileMetadata()])))!.completion).state,'failed');assert.equal(f.prompts.length,0);assert.equal(f.posts.length,0);
+ }finally{await f.close()}
+});
+test('Slack cancellation aborts file download without generation or delivery', {timeout:2000},async()=>{
+ const f=setup();let began!:()=>void;const started=new Promise<void>(r=>{began=r});let downloadSignal:AbortSignal|undefined;
+ try{
+  f.api.downloadFile=async(_url,signal)=>{downloadSignal=signal;return new Promise((_r,reject)=>{signal.addEventListener('abort',()=>reject(signal.reason),{once:true});began()})};
+  const turn=await f.adapter.receive(withFiles([fileMetadata()]));await started;await f.service.shutdown();
+  assert.equal((await turn!.completion).state,'cancelled');assert.equal(downloadSignal!.aborted,true);assert.equal(f.prompts.length,0);assert.equal(f.posts.length,0);
+ }finally{await f.close()}
+});
+test('Slack successful downloads are cleaned after provider failure',async()=>{
+ const f=setup();let path='';try{
+  f.api.downloadFile=async()=>new Response(uploadSamples[0].data);
+  f.engine.sendMessage=async(_k,_p,files)=>{path=files![0].path;assert.ok(existsSync(path));throw Error('provider failed')};
+  assert.equal((await (await f.adapter.receive(withFiles([fileMetadata()])))!.completion).state,'failed');assert.ok(path);assert.equal(existsSync(path),false);
+ }finally{await f.close()}
 });

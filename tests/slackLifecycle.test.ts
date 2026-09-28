@@ -122,3 +122,39 @@ test('compiled Slack startup handles SIGTERM while Socket Mode connection is pen
   const reopened = new FileTurnJournal(join(directory, 'slack-turns'));
   reopened.close();
 });
+
+
+for (const thread of [undefined, '1700000001.000000']) test('Socket Mode file event uses authenticated host download in '+(thread?'thread':'channel'), {timeout:5000}, async t => {
+ const directory=mkdtempSync(join(tmpdir(),'slack-file-socket-'));configure(t,directory);
+ let socket:EventTarget|undefined;const acknowledgements:string[]=[];
+ class FakeSocket extends EventTarget {
+  constructor(_url:string|URL){super();socket=this}
+  send(value:string){acknowledgements.push(value)}
+  close(){}
+ }
+ const originalSocket=globalThis.WebSocket;
+ globalThis.WebSocket=FakeSocket as unknown as typeof WebSocket;
+ t.after(()=>{globalThis.WebSocket=originalSocket});
+ let downloaded=false;let posted!:()=>void;const delivered=new Promise<void>(r=>{posted=r});
+ t.mock.method(globalThis,'fetch',async(input:string|URL|Request,options?:RequestInit)=>{
+  const url=String(input);
+  if(url.startsWith('https://files.slack.com/')){
+   assert.equal(new Headers(options?.headers).get('authorization'),'Bearer test-bot');assert.equal(options?.redirect,'manual');downloaded=true;return new Response('# uploaded markdown');
+  }
+  const method=url.split('/').at(-1);
+  if(method==='auth.test')return Response.json({ok:true,team_id:'T',user_id:'BOT'});
+  if(method==='apps.connections.open')return Response.json({ok:true,url:'wss://socket.slack.com/test'});
+  if(method==='conversations.info')return Response.json({ok:true,channel:{is_member:true}});
+  if(method==='conversations.members')return Response.json({ok:true,members:['BOT','U']});
+  if(method==='conversations.history'||method==='conversations.replies')return Response.json({ok:true,messages:[]});
+  if(method==='chat.postMessage'){
+   assert.equal(downloaded,true);const args=new URLSearchParams(String(options?.body));assert.equal(args.get('thread_ts'),thread??'1700000003.000000');posted();return Response.json({ok:true,ts:'1700000004.000000'});
+  }
+  throw Error('Unexpected API '+method);
+ });
+ const runtime=await startSlack();
+ try{
+  socket!.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'events_api',envelope_id:'socket-upload',payload:{team_id:'T',event_id:'file-event',event:{type:'app_mention',subtype:'file_share',user:'U',channel:'C',text:'<@BOT> inspect file',ts:'1700000003.000000',...(thread?{thread_ts:thread}:{}),files:[{id:'F1',name:'notes.md',mimetype:'text/markdown',url_private:'https://files.slack.com/files-pri/T-F1/notes.md'}]}}})}));
+  await delivered;assert.ok(acknowledgements.some(a=>JSON.parse(a).envelope_id==='socket-upload'));
+ }finally{await runtime.stop()}
+});

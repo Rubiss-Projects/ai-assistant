@@ -2,11 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TurnOutput } from '../core/conversation.js';
-import type { SendMessageOptions } from '../providers/types.js';
+import type { SendMessageOptions, SendAttachment } from '../providers/types.js';
 import { SessionStore } from '../common/sessionStore.js';
 export interface TextEngine {
   contextIdentity?(key: string): string;
-  sendMessage(key: string, prompt: string, attachments?: never, options?: SendMessageOptions): Promise<TurnOutput>;
+  sendMessage(key: string, prompt: string, attachments?: SendAttachment[], options?: SendMessageOptions): Promise<TurnOutput>;
   resetSession(key: string): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -47,3 +47,4 @@ export async function createTextEngine(name: string, directory: string): Promise
     async shutdown() {},
   };
 }
+
