@@ -98,7 +98,7 @@ export function canUseGitHubActions(access, subject) {
     return access.can(subject, "github.contribute") || access.can(subject, "github.merge") || access.can(subject, "github.release");
 }
 export function slashCommandCapability({ commandName: command, subcommand: sub, hasWorkspace }) {
-    if (command === "github" && ["link", "status"].includes(sub ?? ""))
+    if (command === "github" && ["link", "status", "ready"].includes(sub ?? ""))
         return "github.contribute";
     if (command === "github" && sub === "unlink")
         return "chat.use";

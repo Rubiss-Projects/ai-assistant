@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { GitHubUserAuth, GitHubActionError, GitHubRequestNotSentError, githubActionsEnabled, type UserGitHubClient } from "../src/common/githubUserAuth.js";
 import { GitHubMaintainer, nextReleaseTag, type ActionTarget, type PullSnapshot, type ActionContext } from "../src/common/githubMaintainer.js";
-import { canInvokeSlashCommand, canUseGitHubActions, createAccessPolicy } from "../src/common/accessPolicy.js";
+import { canInvokeSlashCommand, canUseGitHubActions, createAccessPolicy, slashCommandCapability } from "../src/common/accessPolicy.js";
 import { DiscordGitHub, githubCardMessage } from "../src/adapters/discord/github.js";
 import type { Client } from "discord.js";
 
@@ -501,6 +501,7 @@ test("merge-only and release-only grants admit linking without granting approval
     const subject = { userId: "111", guildId: "123", roleIds: ["456"] };
     assert.equal(canUseGitHubActions(access, subject), true);
     assert.equal(access.can(subject, "github.contribute"), false);
+    assert.equal(canInvokeSlashCommand(access, subject.userId, { commandName: "github", subcommand: "ready" }, subject), false);
     assert.equal(canInvokeSlashCommand(access, subject.userId, { commandName: "github", subcommand: "link" }, subject), true);
     assert.equal(canUseGitHubActions(access, { ...subject, roleIds: [] }), false);
     assert.equal(canUseGitHubActions(access, { ...subject, guildId: "789" }), false);
@@ -645,4 +646,18 @@ test("a confirmed ready transition can be repeated when the same PR returns to d
   assert.match(await restored.act(card.id, "ready", f.context()), /Marked ready/);
   assert.equal(card.attempts.filter(attempt => attempt.action === "ready" && attempt.state === "done").length, 2);
   assert.equal(f.calls.filter(call => call.endpoint === "/graphql" && (call.body as { query: string }).query.startsWith("mutation")).length, 2);
+});
+
+
+
+test("ready slash command maps to contribution permission and admits authorized contributors", t => {
+  const root = directory(t), rights = path.join(root, "rights.json");
+  fs.writeFileSync(rights, JSON.stringify({ grants: [{ guildId: "123", roleId: "456", capabilities: ["github.contribute"] }] }));
+  const access = createAccessPolicy({ DISCORD_RIGHTS_FILE: rights, GITHUB_CONTRIBUTIONS_ACCESS: "granted", DISCORD_ADMIN_USERS: "999" });
+  const request = { commandName: "github", subcommand: "ready" };
+  const subject = { userId: "111", guildId: "123", roleIds: ["456"] };
+  assert.equal(slashCommandCapability(request), "github.contribute");
+  assert.equal(canInvokeSlashCommand(access, subject.userId, request, subject), true);
+  assert.equal(canInvokeSlashCommand(access, subject.userId, request, { ...subject, roleIds: [] }), false);
+  assert.equal(canInvokeSlashCommand(access, subject.userId, request, { ...subject, guildId: "789" }), false);
 });
