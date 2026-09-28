@@ -3,6 +3,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { GitHubActionError, GitHubRequestNotSentError, writeGitHubState } from "./githubUserAuth.js";
 import { hostOnlyGitHubPath } from "./githubContributionConfig.js";
+/** A structured client rejection confirms that the mutation did not run. */
+class GitHubMutationRejectedError extends GitHubActionError {
+}
 const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) {
   repository(owner:$owner,name:$name) { databaseId nameWithOwner defaultBranchRef { name } pullRequest(number:$number) {
     id title state isDraft headRefOid baseRefOid baseRefName headRefName author { __typename login } headRepository { databaseId }
@@ -123,8 +126,17 @@ export class GitHubMaintainer {
     }
     async graphql(api, query, variables) {
         const result = await api.request("POST", "/graphql", { query, variables });
-        if (result.errors?.length || !result.data)
+        if (result.errors?.length || !result.data) {
+            // GraphQL client rejections use HTTP 200. Only recognized rejection types
+            // with no mutation payload are safe to retry; unknown/partial errors may
+            // follow a write and must retain their receipt for reconciliation.
+            const rejected = query.startsWith("mutation") && (!result.data || Object.values(result.data).every(value => value === null))
+                && result.errors?.length && result.errors.every(error => error && typeof error === "object" && "type" in error
+                && ["FORBIDDEN", "UNAUTHORIZED", "NOT_FOUND", "UNPROCESSABLE"].includes(String(error.type)));
+            if (rejected)
+                throw new GitHubMutationRejectedError("GitHub rejected this action. Check your linked account's permissions, then retry.");
             throw new GitHubActionError("GitHub could not verify this action. Refresh the card.");
+        }
         return result.data;
     }
     async snapshot(api, card) {
@@ -176,7 +188,7 @@ export class GitHubMaintainer {
         catch (error) {
             // A documented client rejection did not mutate GitHub. Network/5xx failures
             // are ambiguous and retain the durable receipt until reconciled.
-            if (error instanceof GitHubRequestNotSentError || (error instanceof GitHubActionError && [400, 401, 403, 404, 405, 409, 422, 429].includes(error.status ?? 0))) {
+            if (error instanceof GitHubMutationRejectedError || error instanceof GitHubRequestNotSentError || (error instanceof GitHubActionError && [400, 401, 403, 404, 405, 409, 422, 429].includes(error.status ?? 0))) {
                 card.attempts = card.attempts.filter(item => item !== attempt);
                 this.save();
             }

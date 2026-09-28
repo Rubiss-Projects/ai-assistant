@@ -184,6 +184,7 @@ function fixture(t: TestContext) {
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
   const tag = { object: { type: "commit", sha: merged } };
   const tagObjects = new Map<string, typeof tag>();
+  let graphqlResponse: unknown;
   let lost = false, denial = false, unsent = false, mergeDenied = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged, runConclusion = "success";
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
@@ -193,6 +194,7 @@ function fixture(t: TestContext) {
       if (endpoint === "/graphql") {
         const body = raw as { query: string };
         if (body.query.startsWith("mutation")) {
+          if (graphqlResponse) return graphqlResponse as T;
           if (unsent) throw new GitHubRequestNotSentError("not sent");
           if (denial) throw new GitHubActionError("denied", 403);
           pull.isDraft = false;
@@ -227,7 +229,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { root, service, card, pull, target, calls, context, make, tag, tagObjects, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
+  return { root, service, card, pull, target, calls, context, make, tag, tagObjects, setGraphqlResponse: (value: unknown) => { graphqlResponse = value; }, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -718,4 +720,31 @@ test("Discord cards are presented only after generation and final response deliv
   assert.deepEqual(events, ["generating"]);
   release(); await turn;
   assert.deepEqual(events, ["generating", "final response", "card"]);
+});
+
+for (const action of ["ready", "merge"] as const) test(`${action} retries a definitive HTTP 200 GraphQL rejection after permissions are corrected`, async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  if (action === "merge") await f.service.act(f.card.id, "approve", f.context());
+  f.setGraphqlResponse({ data: { markPullRequestReadyForReview: null }, errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }] });
+  await assert.rejects(f.service.act(f.card.id, action, f.context()), /GitHub rejected/);
+  assert.ok(!f.make().get(f.card.id, f.context()).attempts.some(attempt => attempt.action === "ready"));
+  assert.equal(f.pull.isDraft, true);
+  assert.ok(!f.card.attempts.some(attempt => attempt.notification?.content.includes("marked ready")));
+  f.setGraphqlResponse(undefined);
+  await f.service.act(f.card.id, action, f.context());
+  assert.equal(f.pull.isDraft, false);
+  assert.equal(f.pull.state, action === "merge" ? "MERGED" : "OPEN");
+});
+
+for (const response of [
+  { errors: [{ type: "INTERNAL", message: "Unexpected failure" }] },
+  { data: { markPullRequestReadyForReview: { pullRequest: { id: "PR_42" } } }, errors: [{ type: "FORBIDDEN" }] },
+]) test("ambiguous or partial GraphQL errors retain the ready receipt", async t => {
+  const f = fixture(t); f.pull.isDraft = true; f.setGraphqlResponse(response);
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /could not verify/);
+  assert.ok(f.make().get(f.card.id, f.context()).attempts.some(attempt => attempt.action === "ready"));
+  f.setGraphqlResponse(undefined);
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /already sent/);
+  assert.equal(f.calls.filter(call => (call.body as any)?.query?.startsWith("mutation")).length, 1);
+  assert.deepEqual(f.service.pendingNotifications(), []);
 });
