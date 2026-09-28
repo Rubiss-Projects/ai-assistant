@@ -209,12 +209,12 @@ and the legacy open-admin fallback do not grant these capabilities. For example:
 {"grants":[{"guildId":"123","roleId":"456","capabilities":["github.merge","github.release"]}]}
 ```
 
-Cards appear after Discord turns that have published bot contributions. They bind
+A single card per PR appears after the final Discord response, once the turn has finished. Later revisions and review results update that message instead of posting another card. Concurrent deliveries are serialized; temporary Discord fetch failures never create replacement cards. They bind
 the repository, PR, contribution, conversation, head and reviewed base. Every
 click refreshes membership/rights and GitHub state. Approve and merge require a
 completed clean server review, successful checks, and resolved threads; large
-review histories fail closed. A changed revision requires a new card and review.
-Merge checks repository write access and GitHub merge requirements and uses rebase
+review histories fail closed. A changed revision requires fresh buttons and review on the same message.
+**Ready for review** uses `github.merge` permission and the linked account’s repository write access. Like approve/merge, it requires a clean current review, passing checks, and resolved threads. It marks the draft ready without approving or merging it. Merge checks repository write access and GitHub merge requirements and uses rebase
 with the expected head SHA. If GitHub does not require approval, the authorized
 maintainer must personally approve that revision first. The model never receives
 these mutation tools or credentials.
@@ -228,6 +228,8 @@ deploy the running installation; the Docker promotion PR is separate. Manual
 workflow dispatch now requires both `tag` and `expected_sha`; tag-push releases
 continue to work. The workflow independently validates the selected commit and
 refuses to rebuild an already published release.
+
+Successful ready-for-review, approval, and merge actions also post a message in the originating thread. Release success is announced only after the workflow and published tag/commit are verified, not when dispatch is accepted. Notification receipts survive restarts and retry failed Discord delivery independently of GitHub mutations; duplicate clicks do not announce the same action again. Discord nonces deduplicate recent uncertain sends, but a process crash after delivery and before saving the receipt can still repeat a notification after Discord’s nonce window expires.
 
 The host persists action receipts before writes, reconciles lost approval/merge
 responses, and polls release runs across restarts. Ambiguous writes are never

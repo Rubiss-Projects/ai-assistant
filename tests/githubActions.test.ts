@@ -192,7 +192,11 @@ function fixture(t: TestContext) {
       let result: unknown;
       if (endpoint === "/graphql") {
         const body = raw as { query: string };
-        if (body.query.startsWith("mutation")) { pull.isDraft = false; result = { data: { markPullRequestReadyForReview: { pullRequest: { id: pull.id } } } }; }
+        if (body.query.startsWith("mutation")) {
+          if (unsent) throw new GitHubRequestNotSentError("not sent");
+          if (denial) throw new GitHubActionError("denied", 403);
+          pull.isDraft = false;
+          if (lost) throw new Error("connection lost"); result = { data: { markPullRequestReadyForReview: { pullRequest: { id: pull.id } } } }; }
         else result = { data: { repository: { databaseId: 1, nameWithOwner: target.repository.upstream, defaultBranchRef: { name: "main" }, pullRequest: structuredClone(pull) } } };
       } else if (endpoint.endsWith("/reviews")) {
         if (denial) throw new GitHubActionError("denied", 403);
@@ -218,7 +222,7 @@ function fixture(t: TestContext) {
     },
   }) };
   const context = (user = "ben"): ActionContext => ({ userId: user, guild: "guild", channel: "channel", signal: AbortSignal.timeout(10_000), authorize: async action => {
-    if (user !== "ben" && (action === "merge" || action === "release")) throw new GitHubActionError("maintainer permission required");
+    if (user !== "ben" && (action === "ready" || action === "merge" || action === "release")) throw new GitHubActionError("maintainer permission required");
   } });
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
@@ -515,4 +519,203 @@ test("enabled GitHub actions require enabled contributions and server reviews at
 
 test("version selection orders numbers and excludes prereleases", () => {
   assert.equal(nextReleaseTag(["v1.9.10", "v1.10.1", "v2.0.0-beta.1"]), "v1.10.2");
+});
+
+test("new revisions and review bases reuse one public card message", async t => {
+  const f = fixture(t);
+  f.service.setMessage(f.card, "one-message");
+  f.target.head = merged;
+  const revised = f.service.forConversation("session", "guild", "channel")[0];
+  assert.notEqual(revised.id, f.card.id);
+  assert.equal(revised.message, "one-message");
+  assert.deepEqual(revised.attempts, []);
+  assert.ok("base_sha" in f.target.review);
+  f.target.review.base_sha = merged;
+  const reviewed = f.service.forConversation("session", "guild", "channel")[0];
+  assert.equal(reviewed.message, "one-message");
+  assert.equal(f.make().forConversation("session", "guild", "channel")[0].id, reviewed.id);
+  await assert.rejects(f.service.act(f.card.id, "approve", f.context()), /PR changed/);
+});
+
+function adapterFixture(t: TestContext) {
+  const f = fixture(t);
+  const values = { GITHUB_ACTIONS_STATE_DIR: f.root, GITHUB_USER_APP_CLIENT_ID: "Iv1.test-client-id",
+    AI_ASSISTANT_ENABLE_GITHUB_ACTIONS: "true", AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "true", AI_ASSISTANT_ENABLE_CODEX_REVIEWS: "true", DISCORD_ADMIN_USERS: "ben" };
+  for (const [key, value] of Object.entries(values)) {
+    const previous = process.env[key]; process.env[key] = value;
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
+  const adapter = new DiscordGitHub();
+  Object.defineProperty(adapter, "actions", { value: f.service });
+  const sent: any[] = [], edited: any[] = [];
+  const member = { roles: { cache: new Map() } };
+  const guild = { members: { cache: new Map([["ben", member]]), fetch: async () => member } };
+  const existing = { id: "one-message", author: { id: "bot" }, edit: async (value: unknown) => { edited.push(value); } };
+  const channel = { isTextBased: () => true, isSendable: () => true, isDMBased: () => false, guildId: "guild", guild,
+    permissionsFor: () => ({ has: () => true }), messages: { fetch: async () => existing },
+    send: async (value: unknown) => { sent.push(value); return { id: "one-message" }; } };
+  const client = { user: { id: "bot" }, guilds: { fetch: async () => guild }, channels: { fetch: async () => channel } } as unknown as Client;
+  return { ...f, adapter, client, sent, edited, channel };
+}
+
+test("simultaneous presentation and later revisions send one card, then edit it", async t => {
+  const f = adapterFixture(t);
+  await Promise.all(Array.from({ length: 3 }, () => f.adapter.present(f.client, "session", "guild", "channel")));
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.edited.length, 2);
+  f.target.head = merged;
+  await f.adapter.present(f.client, "session", "guild", "channel");
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.edited.length, 3);
+});
+
+test("transient card fetch errors never send duplicates; deleted cards are replaced", async t => {
+  const f = adapterFixture(t); f.service.setMessage(f.card, "old-message");
+  let error: unknown = new Error("Discord temporarily unavailable");
+  t.mock.method(f.channel.messages, "fetch", async () => { throw error; });
+  assert.equal((await f.adapter.present(f.client, "session", "guild", "channel")).length, 1);
+  assert.equal(f.sent.length, 0);
+  error = { code: 50001 }; // Missing Access
+  await f.adapter.present(f.client, "session", "guild", "channel");
+  assert.equal(f.sent.length, 0);
+  error = { code: 10008 }; // Unknown Message
+  await f.adapter.present(f.client, "session", "guild", "channel");
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.card.message, "one-message");
+});
+
+test("ready for review requires maintainer and GitHub write access, review and checks", async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context("contributor")), /maintainer/);
+  await assert.rejects(f.service.act(f.card.id, "ready", { ...f.context("contributor"), authorize: async () => {} }), /write access/);
+  f.pull.commits.nodes[0].commit.statusCheckRollup!.state = "PENDING";
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /checks/);
+  f.pull.commits.nodes[0].commit.statusCheckRollup!.state = "SUCCESS";
+  const results = await Promise.all([f.service.act(f.card.id, "ready", f.context()), f.service.act(f.card.id, "ready", f.context())]);
+  assert.match(results[0], /Marked ready for review/); assert.match(results[1], /already ready/);
+  assert.equal(f.pull.isDraft, false);
+  assert.equal(f.pull.state, "OPEN");
+  assert.equal(f.calls.filter(call => (call.body as any)?.query?.startsWith("mutation")).length, 1);
+  assert.equal(f.card.attempts[0].notification?.content.includes("marked ready for review"), true);
+  const buttons = githubCardMessage(f.card, true).components.flatMap(row => row.toJSON().components);
+  assert.equal(buttons.find(button => button.custom_id?.startsWith("gh:ready:"))?.disabled, true);
+  assert.ok(githubCardMessage(f.card, true).components.every(row => row.toJSON().components.length <= 5));
+});
+
+test("a lost ready response reconciles after restart without another mutation", async t => {
+  const f = fixture(t); f.pull.isDraft = true; f.setLost(true);
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /connection lost/);
+  f.setLost(false);
+  const restored = f.make();
+  await restored.refresh(f.card.id, f.context());
+  assert.match(await restored.act(f.card.id, "ready", f.context()), /already ready/);
+  assert.equal(f.calls.filter(call => (call.body as any)?.query?.startsWith("mutation")).length, 1);
+  assert.equal(restored.pendingNotifications().length, 1);
+});
+
+test("success notifications survive restarts and Discord failures without repeating actions", async t => {
+  const f = adapterFixture(t); f.pull.isDraft = true;
+  await f.service.act(f.card.id, "ready", f.context());
+  await f.service.act(f.card.id, "approve", f.context());
+  await f.service.act(f.card.id, "merge", f.context());
+  let fail = true;
+  t.mock.method(f.channel, "send", async (value: unknown) => {
+    if (fail) throw new Error("Discord unavailable");
+    f.sent.push(value); return { id: String(f.sent.length) };
+  });
+  await assert.rejects(f.adapter.notify(f.client, f.card), /Discord unavailable/);
+  assert.equal(f.service.pendingNotifications().length, 1);
+  fail = false;
+  const restored = f.make(); Object.defineProperty(f.adapter, "actions", { value: restored });
+  const card = restored.get(f.card.id, f.context());
+  await Promise.all([f.adapter.notify(f.client, card), f.adapter.notify(f.client, card)]);
+  assert.equal(f.sent.length, 3);
+  assert.match(f.sent[0].content, /marked ready for review/);
+  assert.match(f.sent[1].content, /approved revision/);
+  assert.match(f.sent[2].content, /merged/);
+  for (const sent of f.sent) { assert.equal(sent.enforceNonce, true); assert.deepEqual(sent.allowedMentions, { parse: [] }); }
+  assert.equal(f.make().pendingNotifications().length, 0);
+});
+
+test("release notification waits for verified publication and retries after terminal success", async t => {
+  const f = adapterFixture(t); f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged };
+  await f.service.refresh(f.card.id, f.context());
+  await f.service.act(f.card.id, "release", f.context());
+  await f.adapter.notify(f.client, f.card);
+  assert.equal(f.sent.length, 0);
+  f.setRunConclusion("failure"); await f.service.refresh(f.card.id, f.context());
+  assert.equal(f.service.pendingNotifications().length, 0);
+  f.setRunConclusion("success"); await f.service.refresh(f.card.id, f.context());
+  assert.equal(f.service.pendingReleases().length, 0);
+  assert.equal(f.make().pendingNotifications().length, 1);
+  await f.adapter.notify(f.client, f.card);
+  assert.equal(f.sent.length, 1); assert.match(f.sent[0].content, /released as \*\*v1.9.1\*\*/);
+  await f.service.refresh(f.card.id, f.context());
+  await f.adapter.notify(f.client, f.card);
+  assert.equal(f.sent.length, 1);
+});
+
+test("button clicks announce success publicly even if the card edit fails", async t => {
+  const f = adapterFixture(t); f.pull.isDraft = true; f.service.setMessage(f.card, "one-message");
+  t.mock.method(f.adapter.auth, "linked", () => ({ id: 1, login: "ben" }));
+  const replies: any[] = [];
+  const interaction = { client: f.client, user: { id: "ben" }, guildId: "guild", channelId: "channel",
+    customId: `gh:ready:${f.card.id}`, deferReply: async () => {}, isChatInputCommand: () => false,
+    editReply: async (message: unknown) => { replies.push(message); },
+    message: { id: "one-message", author: { id: "bot" }, edit: async () => { throw new Error("edit failed"); } } };
+  await f.adapter.handle(interaction as never);
+  assert.equal(f.sent.length, 1); assert.match(f.sent[0].content, /marked ready for review/);
+  assert.match(replies[0], /Marked ready for review as @ben/);
+  await f.adapter.handle(interaction as never);
+  assert.equal(f.sent.length, 1); assert.match(replies[1], /already ready/);
+});
+
+test("background polling delivers release success without a card message and retries notifications", async t => {
+  const f = adapterFixture(t); f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged };
+  await f.service.refresh(f.card.id, f.context());
+  await f.service.act(f.card.id, "release", f.context());
+  let fail = true;
+  t.mock.method(f.channel, "send", async (value: unknown) => {
+    if (fail) throw new Error("temporary send error");
+    f.sent.push(value); return { id: "notification" };
+  });
+  await (f.adapter as any).poll(f.client);
+  assert.equal(f.card.release?.state, "success");
+  assert.equal(f.sent.length, 0);
+  fail = false;
+  await (f.adapter as any).poll(f.client);
+  await (f.adapter as any).poll(f.client);
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].content, /released as/);
+});
+
+test("ready failures before transport remain retryable and never announce success", async t => {
+  const f = fixture(t); f.pull.isDraft = true; f.setUnsent(true);
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), GitHubRequestNotSentError);
+  assert.deepEqual(f.card.attempts, []); assert.deepEqual(f.service.pendingNotifications(), []);
+  f.setUnsent(false); f.setDenial(true);
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /denied/);
+  assert.deepEqual(f.card.attempts, []);
+  f.setDenial(false);
+  await f.service.act(f.card.id, "ready", f.context());
+  assert.equal(f.service.pendingNotifications().length, 1);
+});
+
+test("Discord cards are presented only after generation and final response delivery", async t => {
+  const f = adapterFixture(t);
+  const { discordGitHub } = await import("../src/adapters/discord/github.js");
+  const { executeDiscordTurn } = await import("../src/adapters/discord/turn.js");
+  const events: string[] = [];
+  t.mock.method(discordGitHub()!, "present", async () => { events.push("card"); return []; });
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  const sessions = { sendMessage: async () => { events.push("generating"); started(); await blocked; return { content: "Finished" }; } };
+  const source = { id: "turn", guildId: "guild", channelId: "channel", author: { id: "ben" }, client: f.client };
+  const turn = executeDiscordTurn(sessions as never, source, "session", "work", undefined, {}, async () => { events.push("final response"); });
+  await entered;
+  assert.deepEqual(events, ["generating"]);
+  release(); await turn;
+  assert.deepEqual(events, ["generating", "final response", "card"]);
 });

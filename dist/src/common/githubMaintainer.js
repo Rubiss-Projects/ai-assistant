@@ -50,6 +50,32 @@ export class GitHubMaintainer {
         this.releasePollOffset = start + batch.length;
         return batch;
     }
+    pendingNotifications() {
+        return this.cards.filter(card => card.attempts.some(attempt => attempt.notification && !attempt.notification.message));
+    }
+    notificationSent(card, id, message) {
+        const notification = card.attempts.find(attempt => attempt.notification?.id === id)?.notification;
+        if (notification) {
+            notification.message = message;
+            this.save();
+        }
+    }
+    complete(card, attempt, description) {
+        attempt.state = "done";
+        attempt.notification ??= { id: randomUUID(), content: `**${card.repository} #${card.pull}** ${description}${attempt.login ? ` by @${attempt.login}` : ""}.\nhttps://github.com/${card.repository}/pull/${card.pull}` };
+        this.save();
+    }
+    reconcile(card, pull) {
+        card.draft = pull.isDraft;
+        for (const attempt of card.attempts) {
+            if (attempt.action === "ready" && !pull.isDraft)
+                this.complete(card, attempt, "marked ready for review");
+            if (attempt.action === "approve" && attempt.login && this.approvedBy(pull, attempt.login))
+                this.complete(card, attempt, `approved revision \`${card.head.slice(0, 12)}\``);
+            if (attempt.action === "merge" && pull.state === "MERGED")
+                this.complete(card, attempt, "merged");
+        }
+    }
     serial(id, action) {
         const pending = (this.queues.get(id) ?? Promise.resolve()).catch(() => { }).then(action);
         this.queues.set(id, pending);
@@ -79,7 +105,9 @@ export class GitHubMaintainer {
             if (!card) {
                 if (this.cards.length >= 1000)
                     throw new GitHubActionError("GitHub action history is full. Operator maintenance is required.");
-                card = { id: randomUUID(), contribution: target.id, session, guild, channel, repository: target.repository.upstream, pull: target.pull,
+                // New buttons bind the new revision, but keep the PR's one public message.
+                const previous = this.cards.filter(item => item.contribution === target.id && item.guild === guild && item.channel === channel).at(-1);
+                card = { message: previous?.message, id: randomUUID(), contribution: target.id, session, guild, channel, repository: target.repository.upstream, pull: target.pull,
                     head: target.head, base: reviewedBase, created: Date.now(), attempts: [] };
                 this.cards.push(card);
                 this.save();
@@ -130,13 +158,13 @@ export class GitHubMaintainer {
         if (pull.commits.nodes.at(-1)?.commit.statusCheckRollup?.state !== "SUCCESS")
             throw new GitHubActionError("The PR's checks are pending or failing. Refresh after they pass.");
     }
-    attempt(card, action, user, discordUser) {
+    attempt(card, action, user, discordUser, login) {
         const previous = card.attempts.find(attempt => attempt.action === action && (action !== "approve" || attempt.user === user));
         if (previous)
             throw new GitHubActionError("This action was already sent. Refresh to reconcile its outcome; it will not be sent twice.");
         if (card.attempts.length >= 100)
             throw new GitHubActionError("This PR has reached its action limit.");
-        const attempt = { action, user, discordUser, state: "pending", at: Date.now() };
+        const attempt = { action, user, discordUser, login, state: "pending", at: Date.now() };
         card.attempts.push(attempt);
         this.save();
         return attempt;
@@ -170,6 +198,7 @@ export class GitHubMaintainer {
             const card = this.get(id, context);
             const api = await this.auth.client(context.userId, context.signal, () => context.authorize(action));
             let pull = await this.snapshot(api, card);
+            this.reconcile(card, pull);
             if (action === "release")
                 return this.release(api, card, pull, context.userId);
             if (action === "merge" && pull.state === "MERGED") {
@@ -178,14 +207,20 @@ export class GitHubMaintainer {
                 return "This PR is already merged. Refresh to prepare its release.";
             }
             this.reviewed(card, pull);
+            if (action === "ready") {
+                await this.canWrite(api, card);
+                if (!pull.isDraft)
+                    return "This PR is already ready for review.";
+                await this.markReady(api, card, pull, context.userId);
+                return `Marked ready for review as @${api.user.login}.`;
+            }
             if (action === "approve") {
                 if (this.approvedBy(pull, api.user.login))
                     return `@${api.user.login} already approved this revision. GitHub determines whether it satisfies required reviews.`;
-                const attempt = this.attempt(card, action, api.user.id, context.userId);
+                const attempt = this.attempt(card, action, api.user.id, context.userId, api.user.login);
                 await this.send(card, attempt, () => api.request("POST", `/repos/${card.repository}/pulls/${card.pull}/reviews`, { event: "APPROVE", commit_id: card.head,
                     body: `Approved by @${api.user.login} through their linked Discord account. Revision: ${card.head}.` }));
-                attempt.state = "done";
-                this.save();
+                this.complete(card, attempt, `approved revision \`${card.head.slice(0, 12)}\``);
                 return `Approval submitted as @${api.user.login}. GitHub determines whether it satisfies required reviews. This does not authorize merging or releasing.`;
             }
             await this.canWrite(api, card);
@@ -196,13 +231,13 @@ export class GitHubMaintainer {
             if (pull.reviewDecision === "CHANGES_REQUESTED" || pull.reviewDecision === "REVIEW_REQUIRED")
                 throw new GitHubActionError("GitHub's required reviews are not satisfied.");
             if (pull.isDraft) {
-                await this.graphql(api, "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}", { id: pull.id });
+                await this.markReady(api, card, pull, context.userId);
                 pull = await this.snapshot(api, card);
                 this.reviewed(card, pull);
             }
             if (pull.mergeable !== "MERGEABLE" || pull.mergeStateStatus !== "CLEAN")
                 throw new GitHubActionError("GitHub is not ready to merge this PR. Refresh once all repository requirements pass.");
-            const attempt = this.attempt(card, action, api.user.id, context.userId);
+            const attempt = this.attempt(card, action, api.user.id, context.userId, api.user.login);
             const result = await this.send(card, attempt, () => api.request("PUT", `/repos/${card.repository}/pulls/${card.pull}/merge`, { sha: card.head, merge_method: "rebase" }));
             if (result.merged === false) {
                 card.attempts = card.attempts.filter(item => item !== attempt);
@@ -212,10 +247,18 @@ export class GitHubMaintainer {
             if (result.merged !== true)
                 throw new GitHubActionError("GitHub did not confirm the merge. Refresh to check its outcome.");
             card.merged = commit(result.sha);
-            attempt.state = "done";
-            this.save();
+            this.complete(card, attempt, "merged");
             return `Merged as @${api.user.login}. Refresh to check the merged commit and prepare a release.`;
         });
+    }
+    async markReady(api, card, pull, discordUser) {
+        const attempt = this.attempt(card, "ready", api.user.id, discordUser, api.user.login);
+        await this.send(card, attempt, () => this.graphql(api, "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}", { id: pull.id }));
+        const current = await this.snapshot(api, card);
+        if (current.isDraft)
+            throw new GitHubActionError("GitHub did not confirm ready for review. Refresh to check its outcome.");
+        card.draft = false;
+        this.complete(card, attempt, "marked ready for review");
     }
     async refresh(id, context) {
         return this.serial(id, async () => {
@@ -223,6 +266,7 @@ export class GitHubMaintainer {
             const card = this.get(id, context);
             const api = await this.auth.client(context.userId, context.signal, () => context.authorize("read"));
             const pull = await this.snapshot(api, card);
+            this.reconcile(card, pull);
             card.closed = pull.state === "CLOSED";
             if (pull.state === "MERGED") {
                 card.merged = commit(pull.mergeCommit.oid);
@@ -288,6 +332,10 @@ export class GitHubMaintainer {
         }
         release.state = state;
         release.url = url;
+        if (state === "success") {
+            const attempt = card.attempts.find(attempt => attempt.action === "release");
+            this.complete(card, attempt, `released as **${release.tag}** (${url})`);
+        }
     }
     async release(api, card, pull, discordUser) {
         if (card.repository !== "Rubiss-Projects/ai-assistant" || pull.state !== "MERGED" || !card.release || card.release.sha !== pull.mergeCommit?.oid)
@@ -305,7 +353,7 @@ export class GitHubMaintainer {
         const run = ci.workflow_runs[0];
         if (!run || run.path !== ".github/workflows/ci.yml" || run.head_sha !== release.sha || run.status !== "completed" || run.conclusion !== "success")
             throw new GitHubActionError("The merged commit's CI must pass before releasing. Refresh after it completes.");
-        const attempt = this.attempt(card, "release", api.user.id, discordUser);
+        const attempt = this.attempt(card, "release", api.user.id, discordUser, api.user.login);
         // API version 2026-03-10 returns run details by default. Reconcile an empty successful response too.
         const result = await this.send(card, attempt, () => api.request("POST", `/repos/${card.repository}/actions/workflows/release.yml/dispatches`, {
             ref: "main", inputs: { tag: release.tag, expected_sha: release.sha },

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, MessageFlags, SlashCommandBuilder,
   type ButtonInteraction, type ChatInputCommandInteraction, type Client, type MessageCreateOptions,
@@ -23,12 +24,14 @@ export function githubCardMessage(card: ContributionCard, reviewed: boolean) {
   const status = card.closed ? "Closed without merging." : card.merged ? `Merged: \`${card.merged.slice(0, 12)}\`` : `Revision: \`${card.head.slice(0, 12)}\` · Base: \`${card.base?.slice(0, 12) ?? "awaiting review"}\`\nServer review: ${reviewed ? "clean" : "pending, stale, or has findings"}`;
   const releaseStatus = release ? `\nRelease: **${release.tag}** from \`${release.sha.slice(0, 12)}\`\nChanges since ${release.previous} are attached. This publishes the image and updates latest; deployment is a separate PR.${release.url ? `\nPublication: ${release.state ?? "requested"} — ${release.url}` : ""}` : "";
   return {
-    content: `**${card.repository} #${card.pull}**\nhttps://github.com/${card.repository}/pull/${card.pull}\n${status}${releaseStatus}\n\nApprove uses the clicking person's linked GitHub account. GitHub decides whether that review counts. Merge and release require maintainer permission.`,
+    content: `**${card.repository} #${card.pull}**\nhttps://github.com/${card.repository}/pull/${card.pull}\n${status}${releaseStatus}\n\nApprove uses the clicking person's linked GitHub account. GitHub decides whether that review counts. Ready for review, merge, and release require maintainer permission.`,
     allowedMentions: { parse: [] },
     components: [new ActionRowBuilder<ButtonBuilder>().addComponents(
       button("approve", card.id, "Approve PR", Boolean(card.closed || card.merged) || !reviewed),
       button("merge", card.id, "Merge PR", Boolean(card.closed || card.merged) || !reviewed),
       button("release", card.id, release ? `Release ${release.tag}` : "Cut release", Boolean(card.closed) || !release || card.attempts.some(attempt => attempt.action === "release")),
+      button("ready", card.id, "Ready for review", Boolean(card.closed || card.merged) || card.draft === false || !reviewed),
+    ), new ActionRowBuilder<ButtonBuilder>().addComponents(
       button("refresh", card.id, "Refresh"),
       button("link", card.id, "Link GitHub"),
     )],
@@ -41,6 +44,13 @@ export class DiscordGitHub {
   readonly actions: GitHubMaintainer;
   private timer?: NodeJS.Timeout;
   private polling?: Promise<void>;
+  private readonly deliveries = new Map<string, Promise<unknown>>();
+  private serial<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const pending = (this.deliveries.get(key) ?? Promise.resolve()).catch(() => {}).then(run);
+    this.deliveries.set(key, pending);
+    void pending.finally(() => { if (this.deliveries.get(key) === pending) this.deliveries.delete(key); }).catch(() => {});
+    return pending;
+  }
   private readonly shutdown = new AbortController();
   constructor() {
     const directory = githubActionDirectory();
@@ -77,6 +87,31 @@ export class DiscordGitHub {
         if (message.author.id === client.user?.id) await message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] });
       } catch { /* Durable receipts are retried on the next poll, without repeating the mutation. */ }
     }
+    for (const card of this.actions.pendingNotifications()) {
+      await this.notify(client, card).catch(() => {});
+    }
+  }
+  /** Durable success notifications are independent of card edits and GitHub writes. */
+  async notify(client: Client, card: ContributionCard) {
+    return this.serial(`notifications:${card.id}`, async () => {
+      for (const attempt of card.attempts) {
+        const notification = attempt.notification;
+        if (!notification || notification.message) continue;
+        if (!githubActionsEnabled()) return;
+        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(60_000)]);
+        const subject = await discordSubject(client, attempt.discordUser, card.guild, signal);
+        const capability = (attempt.action === "ready" || attempt.action === "merge") ? "github.merge" : attempt.action === "release" ? "github.release" : "github.contribute";
+        if (!createAccessPolicy().can(subject, capability)) continue;
+        const channel = await client.channels.fetch(card.channel);
+        if (!channel?.isTextBased() || !channel.isSendable() || channel.isDMBased() || channel.guildId !== card.guild) continue;
+        const member = channel.guild.members.cache.get(attempt.discordUser);
+        if (!member || !channel.permissionsFor(member)?.has(["ViewChannel", "ReadMessageHistory"])) continue;
+        signal.throwIfAborted();
+        const sent = await channel.send({ content: notification.content, allowedMentions: { parse: [] },
+          nonce: createHash("sha256").update(notification.id).digest("hex").slice(0, 24), enforceNonce: true });
+        this.actions.notificationSent(card, notification.id, sent.id);
+      }
+    });
   }
   private context(interaction: ButtonInteraction | ChatInputCommandInteraction): ActionContext {
     const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(100_000)]);
@@ -84,7 +119,7 @@ export class DiscordGitHub {
       if (!githubActionsEnabled() || !interaction.guildId) throw new GitHubActionError("GitHub actions are available only in server conversations.");
       const subject = await discordSubject(interaction.client, interaction.user.id, interaction.guildId, signal);
       const access = createAccessPolicy();
-      const capability = action === "merge" ? "github.merge" : action === "release" ? "github.release" : "github.contribute";
+      const capability = (action === "ready" || action === "merge") ? "github.merge" : action === "release" ? "github.release" : "github.contribute";
       if (!(action === "read" ? canUseGitHubActions(access, subject) : access.can(subject, capability))) throw new GitHubActionError(`You do not have permission to ${action === "read" ? "use GitHub actions" : action} through this bot.`);
       signal.throwIfAborted();
     };
@@ -124,11 +159,14 @@ export class DiscordGitHub {
       if (action === "link" || !this.auth.linked(context.userId)) { await this.link(interaction, context); return; }
       if (action === "refresh") {
         const result = await this.actions.refresh(id, context);
+        await this.notify(interaction.client, result.card).catch(() => {});
         await interaction.message.edit({ ...githubCardMessage(result.card, this.actions.reviewReady(result.card)), attachments: [] });
         await interaction.editReply(`Refreshed using @${result.actor}. Each action will recheck GitHub before proceeding.`); return;
       }
-      if (action !== "approve" && action !== "merge" && action !== "release") throw new GitHubActionError("Unknown GitHub action.");
-      const result = await this.actions.act(id, action, context);
+      if (action !== "ready" && action !== "approve" && action !== "merge" && action !== "release") throw new GitHubActionError("Unknown GitHub action.");
+      let result: string;
+      try { result = await this.actions.act(id, action, context); }
+      finally { await this.notify(interaction.client, card).catch(() => {}); }
       await interaction.editReply(result);
       // A failed public-card update must not turn a successful GitHub mutation into a failure reply.
       await interaction.message.edit({ ...githubCardMessage(card, this.actions.reviewReady(card)), attachments: [] }).catch(() => {});
@@ -138,6 +176,9 @@ export class DiscordGitHub {
     }
   }
   async present(client: Client, session: string, guild: string, channelId: string, context?: ActionContext) {
+    return this.serial(`cards:${guild}:${channelId}`, () => this.presentCards(client, session, guild, channelId, context));
+  }
+  private async presentCards(client: Client, session: string, guild: string, channelId: string, context?: ActionContext) {
     const cards = this.actions.forConversation(session, guild, channelId);
     if (!cards.length) return [];
     const channel = await client.channels.fetch(channelId);
@@ -148,10 +189,16 @@ export class DiscordGitHub {
         if (context && this.auth.linked(context.userId)) await this.actions.refresh(card.id, context);
         const message = githubCardMessage(card, this.actions.reviewReady(card));
         if (card.message) {
-          const existing = await channel.messages.fetch(card.message).catch(() => undefined);
+          const existing = await channel.messages.fetch(card.message).catch((error: unknown) => {
+            // Only a confirmed deleted message permits replacement. Transient failures
+            // and missing access must never create a second card.
+            if (error && typeof error === "object" && "code" in error && error.code === 10008) return undefined;
+            throw error;
+          });
           if (existing && existing.author.id === client.user?.id) { await existing.edit({ ...message, attachments: [] }); continue; }
         }
-        const sent = await channel.send(message);
+        const sent = await channel.send({ ...message,
+          nonce: createHash("sha256").update(`card:${card.id}:${card.message ?? "new"}`).digest("hex").slice(0, 24), enforceNonce: true });
         this.actions.setMessage(card, sent.id);
       } catch {
         // A stale historical card must not hide later contributions in this thread.
