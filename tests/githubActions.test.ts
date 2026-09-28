@@ -748,3 +748,28 @@ for (const response of [
   assert.equal(f.calls.filter(call => (call.body as any)?.query?.startsWith("mutation")).length, 1);
   assert.deepEqual(f.service.pendingNotifications(), []);
 });
+
+for (const action of ["ready", "merge"] as const) test(`${action} can make a PR ready again after a completed transition is reverted to draft`, async t => {
+  const f = adapterFixture(t); f.pull.isDraft = true;
+  await f.service.act(f.card.id, "ready", f.context());
+  await f.adapter.notify(f.client, f.card);
+  const first = f.card.attempts.find(attempt => attempt.action === "ready")!;
+  const originalNotification = structuredClone(first.notification);
+  f.pull.isDraft = true; // A maintainer deliberately converts it back on GitHub.
+  const restored = f.make(); Object.defineProperty(f.adapter, "actions", { value: restored });
+  const card = restored.get(f.card.id, f.context());
+  await restored.refresh(card.id, f.context());
+  if (action === "merge") await restored.act(card.id, "approve", f.context());
+  await restored.act(card.id, action, f.context());
+  await f.adapter.notify(f.client, card);
+  await restored.act(card.id, action, f.context());
+  await f.adapter.notify(f.client, card);
+  const attempts = card.attempts.filter(attempt => attempt.action === "ready");
+  assert.equal(attempts.length, 2);
+  assert.ok(attempts.every(attempt => attempt.state === "done"));
+  assert.deepEqual(attempts[0].notification, originalNotification);
+  assert.notEqual(attempts[0].notification!.id, attempts[1].notification!.id);
+  assert.equal(f.sent.filter(message => message.content.includes("marked ready for review")).length, 2);
+  assert.equal(f.calls.filter(call => (call.body as any)?.query?.startsWith("mutation")).length, 2);
+  assert.equal(f.pull.isDraft, false);
+});

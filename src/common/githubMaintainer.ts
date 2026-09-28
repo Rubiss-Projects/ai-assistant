@@ -168,7 +168,10 @@ export class GitHubMaintainer {
     if (pull.commits.nodes.at(-1)?.commit.statusCheckRollup?.state !== "SUCCESS") throw new GitHubActionError("The PR's checks are pending or failing. Refresh after they pass.");
   }
   private attempt(card: ContributionCard, action: MaintainerAction, user: number, discordUser: string, login: string): Attempt {
-    const previous = card.attempts.find(attempt => attempt.action === action && (action !== "approve" || attempt.user === user));
+    // A fresh draft snapshot may represent a deliberate reversal of a completed
+    // ready transition. Preserve its notification receipt, but allow a new one.
+    const previous = card.attempts.find(attempt => attempt.action === action
+      && (action !== "approve" || attempt.user === user) && (action !== "ready" || attempt.state !== "done"));
     if (previous) throw new GitHubActionError("This action was already sent. Refresh to reconcile its outcome; it will not be sent twice.");
     if (card.attempts.length >= 100) throw new GitHubActionError("This PR has reached its action limit.");
     const attempt: Attempt = { action, user, discordUser, login, state: "pending", at: Date.now() }; card.attempts.push(attempt); this.save(); return attempt;

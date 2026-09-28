@@ -171,7 +171,10 @@ export class GitHubMaintainer {
             throw new GitHubActionError("The PR's checks are pending or failing. Refresh after they pass.");
     }
     attempt(card, action, user, discordUser, login) {
-        const previous = card.attempts.find(attempt => attempt.action === action && (action !== "approve" || attempt.user === user));
+        // A fresh draft snapshot may represent a deliberate reversal of a completed
+        // ready transition. Preserve its notification receipt, but allow a new one.
+        const previous = card.attempts.find(attempt => attempt.action === action
+            && (action !== "approve" || attempt.user === user) && (action !== "ready" || attempt.state !== "done"));
         if (previous)
             throw new GitHubActionError("This action was already sent. Refresh to reconcile its outcome; it will not be sent twice.");
         if (card.attempts.length >= 100)
