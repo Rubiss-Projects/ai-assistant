@@ -16,6 +16,11 @@ test("public CI reads combine current checks and statuses without credentials", 
   };
   const read = () => readContributionChecks(repository, head, AbortSignal.timeout(1000), fetcher);
   assert.equal((await read()).state, "success");
+  for (const conclusion of ["neutral", "skipped"]) {
+    check.conclusion = conclusion;
+    assert.equal((await read()).state, "success");
+  }
+  check.conclusion = "success";
   statuses.statuses.push({ context: "external", state: "pending", target_url: "https://example.com/check", description: "Running" }); statuses.total_count = 1;
   assert.equal((await read()).state, "pending");
   statuses.statuses[0].state = "failure";
