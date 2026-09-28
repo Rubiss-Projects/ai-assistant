@@ -98,7 +98,7 @@ export function canUseGitHubActions(access: AccessPolicy, subject: AccessSubject
 }
 export interface SlashCommandRequest { commandName: string; subcommand?: string | null; hasWorkspace?: boolean }
 export function slashCommandCapability({ commandName: command, subcommand: sub, hasWorkspace }: SlashCommandRequest): Capability | undefined {
-  if (command === "github" && ["link", "status"].includes(sub ?? "")) return "github.contribute";
+  if (command === "github" && ["link", "status", "ready"].includes(sub ?? "")) return "github.contribute";
   if (command === "github" && sub === "unlink") return "chat.use";
   if (["ask", "chat"].includes(command) && !sub) return hasWorkspace ? "workspace.manage" : "chat.use";
   if (["reset", "history", "compact"].includes(command) && !sub) return "chat.use";
@@ -128,3 +128,4 @@ export function canInvokeSlashCommand(access: AccessPolicy, userId: string, requ
   // Preserve legacy unknown-command classification; the dispatcher never executes unmapped commands.
   return capability ? access.can(subject, capability) : access.canUseAdminCommands(userId);
 }
+
