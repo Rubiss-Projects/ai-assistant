@@ -145,6 +145,23 @@ reply with what changed, and resolve the threads you fixed.” The original
 requester's contribution access is required, including for reading feedback.
 Existing PRs can use these tools without recreating the contribution.
 
+Contribution sessions receive the bundled
+[`babysit-contribution` skill](../.agents/skills/babysit-contribution/SKILL.md),
+adapted from OpenAI's `babysit-pr`. It follows feedback through fix, validation,
+publish, reply, refreshed thread version, and confirmed resolution, then checks
+the new head's review and CI. It hands off for the human buttons once ready,
+or reports a specific blocker/budget limit. It does not run an indefinite watcher
+inside a Discord turn or claim monitoring continues after the turn ends.
+
+`github_contribution_checks` provides ten reads per turn of check runs and commit
+statuses for the owned PR's exact published head, plus live base and mergeability.
+These use public read-only GitHub endpoints, leaving App permissions unchanged.
+Public rate limits, missing checks, and truncated responses are reported as
+unavailable/unknown, never passing. Check summaries and links support diagnosis;
+private job logs and Actions reruns still require a human. CI success and a clean
+server review are separate requirements. The human action buttons independently
+recheck their own authorization and merge/release requirements.
+
 - Reviews returns 25 threads per page and a `next_cursor` for the next page.
   Each thread includes its published comments, resolution state, and
   `thread_version`. Pending reviews are excluded. Threads with more than 100

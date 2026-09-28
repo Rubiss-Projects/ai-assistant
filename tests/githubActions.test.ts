@@ -417,6 +417,37 @@ test("a release previews all changes and binds dispatch to the merged SHA and pr
   assert.match(f.card.release!.url!, /releases\/tag\/v1.9.1/);
 });
 
+test("merged-card refresh reaches the comparison endpoint through the real linked-account client", async t => {
+  const f = fixture(t);
+  f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged };
+  let now = Date.now();
+  const requests: string[] = [];
+  const auth = new GitHubUserAuth("Iv1.test-client-id", f.root, async input => {
+    const url = new URL(String(input)); requests.push(url.pathname + url.search);
+    if (url.pathname === "/login/device/code") return Response.json({ device_code: "device", user_code: "ABCD-EFGH", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 1 });
+    if (url.pathname === "/login/oauth/access_token") return Response.json({ access_token: "ghu_test", refresh_token: "ghr_test", expires_in: 28800, refresh_token_expires_in: 15897600 });
+    if (url.pathname === "/user") return Response.json({ id: 1, login: "ben" });
+    if (url.pathname === "/graphql") return Response.json({ data: { repository: { databaseId: 1, nameWithOwner: f.card.repository, defaultBranchRef: { name: "main" }, pullRequest: f.pull } } });
+    if (url.pathname.endsWith("/tags")) return Response.json([{ name: "v1.9.0" }]);
+    if (url.pathname.endsWith("/releases/latest")) return Response.json({ tag_name: "v1.9.0" });
+    assert.equal(url.pathname, `/repos/${f.card.repository}/compare/v1.9.0...${merged}`);
+    return Response.json({ status: "ahead", total_commits: 1, commits: [{ commit: { message: "Release fix" } }] });
+  }, () => now);
+  const pending = await auth.begin("111", AbortSignal.timeout(1000)); now += 1100;
+  await auth.finish("111", pending.id, AbortSignal.timeout(1000));
+  const service = new GitHubMaintainer(auth, () => [f.target], f.root);
+  const { card } = await service.refresh(f.card.id, f.context("111"));
+  assert.equal(card.release?.tag, "v1.9.1");
+  assert.equal(githubCardMessage(card, true).components[0].toJSON().components[2].disabled, false);
+  assert.ok(requests.some(endpoint => endpoint.includes(`/compare/v1.9.0...${merged}?per_page=100`)));
+  const client = await auth.client("111", AbortSignal.timeout(1000), async () => {});
+  const sent = requests.length;
+  for (const suffix of ["../user", "%2e%2e/user", ".%2e/user", ".%2fuser", "%5cuser"]) {
+    await assert.rejects(client.request("GET", `/repos/${f.card.repository}/${suffix}`), /Invalid host GitHub endpoint/);
+  }
+  assert.equal(requests.length, sent, "invalid paths must never reach the transport");
+});
+
 test("release verification peels annotated tags and rejects mismatched or non-commit targets", async t => {
   const f = fixture(t); f.pull.state = "MERGED"; f.pull.mergeCommit = { oid: merged };
   await f.service.refresh(f.card.id, f.context());

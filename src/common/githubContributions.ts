@@ -8,6 +8,7 @@ import { ContributionReviewWorker, ReviewCapacityError, contributionReviewsEnabl
 import { GitHubContributionApi, GitHubRequestError, type ContributionApi, type GitHubRole } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration, type ContributionRepository, type GitHubContributionConfiguration } from "./githubContributionConfig.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion, type ReviewThread } from "./githubContributionReviews.js";
+import { readContributionChecks } from "./githubContributionChecks.js";
 
 /** session is the stable Discord conversation key, never a provider thread ID or turn run ID. */
 export interface ContributionCaller { session: string; requester: AccessSubject; access: AccessPolicy; signal: AbortSignal }
@@ -21,6 +22,7 @@ interface GitEntry { path: string; sha: string; mode: string; type: string; size
 interface GitTree { sha: string; tree: GitEntry[]; truncated: boolean }
 interface PullRequest {
   number: number; html_url: string; state: string; draft: boolean; merged: boolean;
+  mergeable?: boolean | null; mergeable_state?: string;
   user: { login: string }; head: { ref: string; sha: string; repo: { id: number } | null };
   base: { ref: string; sha: string; repo: { id: number } }; changed_files: number;
 }
@@ -366,6 +368,17 @@ export class GitHubContributions {
       const record = this.owned(caller, id);
       const pull = await this.refresh(caller, record);
       return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha, auto_review: this.autoReviewStatus(id) };
+    });
+  }
+
+  checks(caller: ContributionCaller, id: string, expectedHead: string) {
+    return this.serial(caller, async () => {
+      const record = this.owned(caller, id);
+      await this.reviewPull(caller, record, expectedHead);
+      const ci = await readContributionChecks(record.repository, record.headSha, caller.signal);
+      const pull = await this.reviewPull(caller, record, expectedHead);
+      return { ...this.summary(record), base_sha: pull.base.sha, draft: pull.draft, mergeable: pull.mergeable ?? null,
+        mergeable_state: pull.mergeable_state ?? "unknown", ci };
     });
   }
 

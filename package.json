@@ -15,7 +15,7 @@
   },
   "scripts": {
     "start": "tsx src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-skills.mjs",
     "test": "node --import tsx --test --test-concurrency=2 tests/*.test.ts",
     "check": "node scripts/check.mjs",
     "register": "tsx scripts/register-commands.ts",

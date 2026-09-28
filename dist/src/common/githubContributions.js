@@ -7,6 +7,7 @@ import { ContributionReviewWorker, ReviewCapacityError, contributionReviewsEnabl
 import { GitHubContributionApi, GitHubRequestError } from "./githubContributionApi.js";
 import { githubContributionsEnabled, hostOnlyGitHubPath, loadGitHubContributionConfiguration } from "./githubContributionConfig.js";
 import { REVIEW_THREADS_QUERY, REVIEW_THREAD_QUERY, REPLY_REVIEW_THREAD, RESOLVE_REVIEW_THREAD, isPublisherComment, reviewThreadSummary, reviewThreadVersion } from "./githubContributionReviews.js";
+import { readContributionChecks } from "./githubContributionChecks.js";
 function rejectCredentials(text) {
     if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,})/.test(text))
         throw new Error("Potential credentials detected; remove them before publishing.");
@@ -408,6 +409,16 @@ export class GitHubContributions {
             const record = this.owned(caller, id);
             const pull = await this.refresh(caller, record);
             return { ...this.summary(record), draft: pull?.draft, state: pull?.state ?? "local", merged: pull?.merged ?? false, pending_publish: Boolean(record.pendingSha), remote_head_sha: pull?.head.sha, auto_review: this.autoReviewStatus(id) };
+        });
+    }
+    checks(caller, id, expectedHead) {
+        return this.serial(caller, async () => {
+            const record = this.owned(caller, id);
+            await this.reviewPull(caller, record, expectedHead);
+            const ci = await readContributionChecks(record.repository, record.headSha, caller.signal);
+            const pull = await this.reviewPull(caller, record, expectedHead);
+            return { ...this.summary(record), base_sha: pull.base.sha, draft: pull.draft, mergeable: pull.mergeable ?? null,
+                mergeable_state: pull.mergeable_state ?? "unknown", ci };
         });
     }
     reviewRequest(caller, record, query, variables) {

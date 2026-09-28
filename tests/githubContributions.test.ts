@@ -727,6 +727,32 @@ async function reviewFixture(t: TestContext) {
   return { ...context, published, thread, fix };
 }
 
+test("CI tools pin the owned head, recheck after reads, and return live mergeability", async t => {
+  const { service, caller, api, published } = await reviewFixture(t);
+  Object.assign(api.pulls[0], { mergeable: true, mergeable_state: "clean" });
+  const fetcher = t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input);
+    return Response.json(url.includes("check-runs?")
+      ? { total_count: 1, check_runs: [{ name: "build", head_sha: published.head_sha, status: "completed", conclusion: "success", html_url: "https://github.com/check/1", output: { title: "Passed", summary: null } }] }
+      : { sha: published.head_sha, total_count: 0, statuses: [] });
+  });
+  const run = new GitHubContributionRun(caller.session, { rulesetContext: { requester: caller.requester, access: caller.access } }, () => service);
+  t.after(() => run.cancel());
+  const args = { run_id: run.id, contribution_id: published.contribution_id, expected_head_sha: published.head_sha };
+  const result = await run.call("github_contribution_checks", args) as Awaited<ReturnType<GitHubContributions["checks"]>>;
+  assert.equal(result.ci.state, "success"); assert.equal(result.mergeable, true);
+  assert.equal(result.base_sha, api.pulls[0].base.sha);
+  const count = fetcher.mock.callCount();
+  await assert.rejects(service.checks({ ...caller, session: "other" }, published.contribution_id, published.head_sha), /another Discord/);
+  await assert.rejects(service.checks(caller, published.contribution_id, "b".repeat(40)), /head changed/);
+  assert.equal(fetcher.mock.callCount(), count);
+  fetcher.mock.mockImplementation(async () => {
+    api.refs.set(api.pulls[0].head.ref, "b".repeat(40));
+    return new Response(null, { status: 403 });
+  });
+  await assert.rejects(service.checks(caller, published.contribution_id, published.head_sha), /head changed/);
+});
+
 test("owned review tools publish replies and resolve only after a published fix and explanation", async t => {
   const { service, caller, api, published, fix, thread } = await reviewFixture(t);
   const id = published.contribution_id;
