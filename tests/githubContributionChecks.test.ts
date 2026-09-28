@@ -6,7 +6,7 @@ const repository = "Rubiss-Projects/ai-assistant", head = "a".repeat(40);
 
 test("public CI reads combine current checks and statuses without credentials", async () => {
   const check = { name: "build", head_sha: head, status: "completed", conclusion: "success", html_url: "https://github.com/check/1", output: { title: "Build", summary: "Passed" } };
-  const runs = { total_count: 1, check_runs: [check] };
+  const runs = { total_count: 2, check_runs: [check, { ...check, name: "container-runtime" }] };
   const statuses = { sha: head, total_count: 0, statuses: [] as { context: string; state: string; target_url: string; description: string }[] };
   const fetcher: typeof fetch = async (url, init) => {
     assert.equal(new Headers(init?.headers).has("authorization"), false);
@@ -17,7 +17,7 @@ test("public CI reads combine current checks and statuses without credentials", 
   const read = () => readContributionChecks(repository, head, AbortSignal.timeout(1000), fetcher);
   assert.equal((await read()).state, "success");
   for (const conclusion of ["neutral", "skipped"]) {
-    check.conclusion = conclusion;
+    for (const run of runs.check_runs) run.conclusion = conclusion;
     assert.equal((await read()).state, "success");
   }
   check.conclusion = "success";
@@ -31,10 +31,30 @@ test("public CI reads combine current checks and statuses without credentials", 
   assert.equal((await read()).state, "failure");
   check.conclusion = "success"; runs.total_count = 101;
   assert.equal((await read()).state, "unknown");
-  runs.total_count = 1; check.head_sha = "b".repeat(40);
+  runs.total_count = 2; check.head_sha = "b".repeat(40);
   assert.equal((await read()).state, "unavailable");
   runs.check_runs = []; runs.total_count = 0; statuses.statuses = []; statuses.total_count = 0;
   assert.equal((await read()).state, "unknown");
+});
+
+test("CI cannot pass before the supported repository's expected jobs register", async () => {
+  for (const [repository, expected] of [
+    ["Rubiss-Projects/ai-assistant", ["build", "container-runtime"]],
+    ["Rubiss-Projects/docker", ["Repository validation"]],
+  ] as const) {
+    const skipped = { name: "dependabot", head_sha: head, status: "completed", conclusion: "skipped", html_url: "", output: { title: null, summary: null } };
+    const runs = { total_count: 1, check_runs: [skipped] };
+    const fetcher: typeof fetch = async url => Response.json(String(url).includes("check-runs?") ? runs : { sha: head, total_count: 0, statuses: [] });
+    const read = () => readContributionChecks(repository, head, AbortSignal.timeout(1000), fetcher);
+    for (const [index, name] of expected.entries()) {
+      const result = await read();
+      assert.equal(result.state, "unknown");
+      assert.deepEqual(result.missing_checks, expected.slice(index));
+      runs.check_runs.push({ ...skipped, name, conclusion: "success" });
+      runs.total_count++;
+    }
+    assert.equal((await read()).state, "success");
+  }
 });
 
 test("CI rate limits and cancellation cannot be reported as passing", async () => {

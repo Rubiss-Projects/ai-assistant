@@ -6,9 +6,15 @@ interface CheckRun {
 }
 interface CommitStatus { context: string; state: string; target_url: string | null; description: string | null }
 
+// Keep these aligned with each supported repository's required PR workflow jobs.
+const expectedChecks = {
+  "Rubiss-Projects/ai-assistant": ["build", "container-runtime"],
+  "Rubiss-Projects/docker": ["Repository validation"],
+};
+
 /** Public CI reads for an owned, host-verified head; never grants Actions writes or exposes credentials. */
 export async function readContributionChecks(repository: string, head: string, signal: AbortSignal, fetcher: typeof fetch = fetch) {
-  if (!["Rubiss-Projects/ai-assistant", "Rubiss-Projects/docker"].includes(repository) || !/^[a-f0-9]{40}$/.test(head)) throw new Error("Invalid contribution CI target.");
+  if (!(repository === "Rubiss-Projects/ai-assistant" || repository === "Rubiss-Projects/docker") || !/^[a-f0-9]{40}$/.test(head)) throw new Error("Invalid contribution CI target.");
   const base = `https://api.github.com/repos/${repository}/commits/${head}`;
   const init = { method: "GET", headers: { accept: "application/vnd.github+json", "x-github-api-version": "2026-03-10" } };
   try {
@@ -20,12 +26,13 @@ export async function readContributionChecks(repository: string, head: string, s
     const checks = runs.check_runs.map(run => ({ name: run.name, status: run.status, conclusion: run.conclusion, url: run.html_url,
       summary: [run.output.title, run.output.summary].filter(Boolean).join("\n").slice(0, 4000) }));
     const complete = runs.total_count === checks.length && statuses.total_count === statuses.statuses.length;
+    const missing_checks = expectedChecks[repository].filter(name => !checks.some(check => check.name === name));
     const failed = checks.some(check => check.status === "completed" && !["success", "neutral", "skipped"].includes(check.conclusion ?? ""))
       || statuses.statuses.some(status => ["failure", "error"].includes(status.state));
     const pending = checks.some(check => check.status !== "completed") || statuses.statuses.some(status => status.state !== "success");
     const empty = checks.length === 0 && statuses.statuses.length === 0;
-    const state = failed ? "failure" : !complete || empty ? "unknown" : pending ? "pending" : "success";
-    return { head_sha: head, state, complete, checks, statuses: statuses.statuses };
+    const state = failed ? "failure" : !complete || empty || missing_checks.length > 0 ? "unknown" : pending ? "pending" : "success";
+    return { head_sha: head, state, complete, missing_checks, checks, statuses: statuses.statuses };
   } catch (error) {
     signal.throwIfAborted();
     return { head_sha: head, state: "unavailable", complete: false, checks: [], statuses: [],
