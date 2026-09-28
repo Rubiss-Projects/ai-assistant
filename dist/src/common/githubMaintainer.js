@@ -178,6 +178,25 @@ export class GitHubMaintainer {
                 return "This PR is already merged. Refresh to prepare its release.";
             }
             this.reviewed(card, pull);
+            if (action === "ready") {
+                await this.canWrite(api, card);
+                if (!pull.isDraft) {
+                    card.draft = false;
+                    for (const attempt of card.attempts.filter(attempt => attempt.action === "ready"))
+                        attempt.state = "done";
+                    this.save();
+                    return "This PR is already ready for review.";
+                }
+                const attempt = this.attempt(card, action, api.user.id, context.userId);
+                await this.send(card, attempt, () => this.graphql(api, "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}", { id: pull.id }));
+                pull = await this.snapshot(api, card);
+                if (pull.isDraft || pull.state !== "OPEN")
+                    throw new GitHubActionError("GitHub did not confirm an open PR ready for review. Refresh to check its state.");
+                card.draft = false;
+                attempt.state = "done";
+                this.save();
+                return `Marked ready for review as @${api.user.login}.`;
+            }
             if (action === "approve") {
                 if (this.approvedBy(pull, api.user.login))
                     return `@${api.user.login} already approved this revision. GitHub determines whether it satisfies required reviews.`;
@@ -224,6 +243,10 @@ export class GitHubMaintainer {
             const api = await this.auth.client(context.userId, context.signal, () => context.authorize("read"));
             const pull = await this.snapshot(api, card);
             card.closed = pull.state === "CLOSED";
+            card.draft = pull.isDraft;
+            if (!pull.isDraft)
+                for (const attempt of card.attempts.filter(attempt => attempt.action === "ready"))
+                    attempt.state = "done";
             if (pull.state === "MERGED") {
                 card.merged = commit(pull.mergeCommit.oid);
                 if (card.repository === "Rubiss-Projects/ai-assistant") {
