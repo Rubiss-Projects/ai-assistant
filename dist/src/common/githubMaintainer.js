@@ -93,8 +93,16 @@ export class GitHubMaintainer {
         const review = this.target(card).review;
         return "head_sha" in review && review.state === "completed" && review.head_sha === card.head && review.base_sha === card.base && review.result?.findings.length === 0;
     }
-    async graphql(api, query, variables) {
+    async graphql(api, query, variables, mutationField) {
         const result = await api.request("POST", "/graphql", { query, variables });
+        // GraphQL permission/identity rejections may use HTTP 200. Only clear a
+        // receipt for known definitive errors with no mutation payload; partial data,
+        // internal errors, and transport failures remain uncertain.
+        if (mutationField && result.errors?.length
+            && result.data?.[mutationField] == null
+            && result.errors.every(error => ["FORBIDDEN", "UNAUTHORIZED", "NOT_FOUND"].includes(error.type ?? ""))) {
+            throw new GitHubActionError("GitHub rejected this action. Check your linked account and App permissions, then retry.", 403);
+        }
         if (result.errors?.length || !result.data)
             throw new GitHubActionError("GitHub could not verify this action. Refresh the card.");
         return result.data;
@@ -188,7 +196,7 @@ export class GitHubMaintainer {
                     return "This PR is already ready for review.";
                 }
                 const attempt = this.attempt(card, action, api.user.id, context.userId);
-                await this.send(card, attempt, () => this.graphql(api, "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}", { id: pull.id }));
+                await this.send(card, attempt, () => this.graphql(api, "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}", { id: pull.id }, "markPullRequestReadyForReview"));
                 pull = await this.snapshot(api, card);
                 if (pull.isDraft || pull.state !== "OPEN")
                     throw new GitHubActionError("GitHub did not confirm an open PR ready for review. Refresh to check its state.");

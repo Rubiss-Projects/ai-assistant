@@ -184,6 +184,7 @@ function fixture(t: TestContext) {
   const calls: { user: string; method: string; endpoint: string; body: unknown }[] = [];
   const tag = { object: { type: "commit", sha: merged } };
   const tagObjects = new Map<string, typeof tag>();
+  let readyError: string | undefined;
   let lost = false, denial = false, unsent = false, mergeDenied = false, emptyReceipt = false, main = merged, ci = "success", latest = "v1.9.0", runHead = merged, runConclusion = "success";
   const auth = { client: async (user: string, _signal: AbortSignal, authorize: () => Promise<void>): Promise<UserGitHubClient> => ({
     user: { id: user === "ben" ? 1 : 2, login: user }, request: async <T>(method: "GET" | "POST" | "PUT", endpoint: string, raw?: unknown) => {
@@ -192,6 +193,7 @@ function fixture(t: TestContext) {
       let result: unknown;
       if (endpoint === "/graphql") {
         const body = raw as { query: string };
+        if (body.query.startsWith("mutation") && readyError) return { data: { markPullRequestReadyForReview: null }, errors: [{ type: readyError }] } as T;
         if (body.query.startsWith("mutation")) { pull.isDraft = false; if (lost) throw new Error("connection lost"); result = { data: { markPullRequestReadyForReview: { pullRequest: { id: pull.id } } } }; }
         else result = { data: { repository: { databaseId: 1, nameWithOwner: target.repository.upstream, defaultBranchRef: { name: "main" }, pullRequest: structuredClone(pull) } } };
       } else if (endpoint.endsWith("/reviews")) {
@@ -223,7 +225,7 @@ function fixture(t: TestContext) {
   const make = () => new GitHubMaintainer(auth, () => [target], root);
   const service = make();
   const card = service.forConversation("session", "guild", "channel")[0];
-  return { root, service, card, pull, target, calls, context, make, tag, tagObjects, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
+  return { root, service, card, pull, target, calls, context, make, tag, tagObjects, setReadyError: (value?: string) => { readyError = value; }, setLost: (value: boolean) => { lost = value; }, setDenial: (value: boolean) => { denial = value; }, setUnsent: (value: boolean) => { unsent = value; }, setMergeDenied: (value: boolean) => { mergeDenied = value; }, setEmptyReceipt: () => { emptyReceipt = true; }, setMain: (value: string) => { main = value; }, setCI: (value: string) => { ci = value; }, setLatest: (value: string) => { latest = value; }, setRunHead: (value: string) => { runHead = value; }, setRunConclusion: (value: string) => { runConclusion = value; } };
 }
 
 test("contributors approve as themselves; their approval never grants merge or release", async t => {
@@ -609,4 +611,25 @@ test("a lost ready response reconciles after restart without repeating the mutat
   assert.match(await restored.act(f.card.id, "ready", f.context()), /already ready/);
   assert.equal(restored.get(f.card.id, f.context()).attempts[0].state, "done");
   assert.equal(f.calls.filter(call => call.endpoint === "/graphql" && (call.body as { query: string }).query.startsWith("mutation")).length, 1);
+});
+
+test("definitive GraphQL ready rejection permits retry after permissions are corrected", async t => {
+  const f = fixture(t); f.pull.isDraft = true;
+  for (const type of ["FORBIDDEN", "UNAUTHORIZED", "NOT_FOUND"]) {
+    f.setReadyError(type);
+    await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /GitHub rejected/);
+    assert.equal(f.card.attempts.length, 0);
+  }
+  f.setReadyError();
+  assert.match(await f.service.act(f.card.id, "ready", f.context()), /Marked ready/);
+});
+
+test("uncertain GraphQL ready errors retain receipts across refresh and restart", async t => {
+  const f = fixture(t); f.pull.isDraft = true; f.setReadyError("INTERNAL");
+  await assert.rejects(f.service.act(f.card.id, "ready", f.context()), /could not verify/);
+  assert.equal(f.card.attempts[0].state, "pending");
+  f.setReadyError();
+  const restored = f.make();
+  await restored.refresh(f.card.id, f.context());
+  await assert.rejects(restored.act(f.card.id, "ready", f.context()), /already sent/);
 });
