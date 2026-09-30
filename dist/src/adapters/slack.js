@@ -157,6 +157,10 @@ function fingerprint(message) {
     return createHash('sha256').update(JSON.stringify([message.authorId, message.text, message.revision ?? 'null'])).digest('hex');
 }
 function historyScope(resource) { return JSON.stringify([resource.channelId, resource.threadId ?? null]); }
+function slackDiagnostic(error) {
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : 'Unknown error';
+    return message.replace(/[\r\n]+/g, ' ').replace(/\b(?:xox[baprs]-|xapp-|sk-|gh[pousr]_)[A-Za-z0-9_-]+/gi, '[redacted]').slice(0, 2000);
+}
 /** Transport-independent Slack event normalization; Socket Mode is only an ingress. */
 export class SlackAdapter {
     config;
@@ -313,6 +317,7 @@ export class SlackAdapter {
             platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
             audience: sessionAudience, capabilities: { ...TEXT_CAPABILITIES, history: true, attachments: true, progress: false, directMessages: true },
             retryGeneratedDelivery: true,
+            onError: error => console.error('[slack] Turn execution error: ' + slackDiagnostic(error)),
             authorize: async (_i, stage, output, signal) => {
                 if (stage === 'ingress')
                     return true;
