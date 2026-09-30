@@ -88,15 +88,17 @@ export function prepareCodexWorkingDirectory(directory: string): void {
   const workspace = resolveConfiguredWorkspace(directory);
   // Codex 0.159.2 protects credential directories even when absent. Explicit
   // denials can otherwise mask missing paths as files, colliding with directory
-  // mounts in Bubblewrap. Establish their types without copying credentials or
-  // relaxing access, and reject existing files or symlinks.
+  // mounts in Bubblewrap. Establish missing paths as directories while preserving
+  // existing regular files (including legacy denial placeholders). The policy
+  // denies both types; symlinks and special files remain rejected.
   for (const name of SENSITIVE_DIRECTORY_NAME_LIST) {
     const sensitiveDirectory = path.join(workspace, name);
     try {
       fs.mkdirSync(sensitiveDirectory, { mode: 0o700 });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST"
-        || !fs.lstatSync(sensitiveDirectory).isDirectory()) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = fs.lstatSync(sensitiveDirectory);
+      if (!existing.isDirectory() && !existing.isFile()) throw error;
     }
   }
 }
