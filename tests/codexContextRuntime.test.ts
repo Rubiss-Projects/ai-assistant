@@ -24,7 +24,7 @@ test("real Codex runtime refreshes instructions through a restricted handoff and
   t.after(() => { for (const key of keys) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key]; } });
   process.env.AI_ASSISTANT_SECURITY_MODE = "unrestricted";
   process.env.USER_INSTRUCTION_MODE = "off";
-  process.env.CODEX_MODEL = "gpt-5.4";
+  process.env.CODEX_MODEL = "gpt-6.1-sol";
   delete process.env.AI_ASSISTANT_SYSTEM_PROMPT_FILE;
   process.env.AI_ASSISTANT_SYSTEM_PROMPT = "POLICY_ALPHA";
   const requests: ModelRequest[] = [];
