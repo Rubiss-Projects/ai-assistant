@@ -265,7 +265,7 @@ test("Codex shared sessions receive distinct private temporary directories", () 
   }
 });
 
-test("Codex workspace preparation preserves existing state and rejects file or symlink collisions", t => {
+test("Codex workspace preparation preserves directories and regular files while rejecting symlinks", t => {
   const root = mkdtempSync(join(tmpdir(), "codex-workspace-preparation-"));
   const previousMode = process.env.AI_ASSISTANT_SECURITY_MODE;
   const previousRoot = process.env.AI_ASSISTANT_WORKSPACE_ROOT;
@@ -288,7 +288,7 @@ test("Codex workspace preparation preserves existing state and rejects file or s
     assert.equal(readFileSync(join(directory, "existing.txt"), "utf8"), "preserve");
     rmSync(directory, { recursive: true });
     writeFileSync(directory, "preserve file");
-    assert.throws(() => prepareCodexWorkingDirectory(root), /EEXIST/);
+    prepareCodexWorkingDirectory(root);
     assert.equal(readFileSync(directory, "utf8"), "preserve file");
     rmSync(directory);
     symlinkSync(target, directory, "junction");
