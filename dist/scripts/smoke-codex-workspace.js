@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { SENSITIVE_DIRECTORY_NAME_LIST } from "../src/common/providerSecurity.js";
 import { codexFilesystemPermissionOverride, createCodexSessionTemporaryDirectory, prepareCodexWorkingDirectory, } from "../src/providers/codex.js";
 // Exercise the production sandbox without model calls, credentials, or Discord.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-workspace-smoke-"));
@@ -28,7 +29,7 @@ try {
                 "set -eu",
                 'test "$(cat visible.txt)" = "visible fixture"',
                 "echo ok > output.txt",
-                "if ls .codex >/dev/null 2>&1; then exit 20; fi",
+                ...SENSITIVE_DIRECTORY_NAME_LIST.map(name => `if ls '${name}' >/dev/null 2>&1; then exit 20; fi`),
                 "if cat .env >/dev/null 2>&1; then exit 21; fi",
                 `if cat '${hostOnly}/publisher.pem' >/dev/null 2>&1; then exit 22; fi`,
                 `if cat '${hostOnly}/contributions.json' >/dev/null 2>&1; then exit 23; fi`,
@@ -42,7 +43,7 @@ try {
         assert.equal(result.status, 0, `Fresh workspace sandbox (Sites=${sites}): ${result.stderr}`);
         assert.equal(fs.readFileSync(path.join(workspace, "output.txt"), "utf8"), "ok\n");
     }
-    console.log("Fresh Codex workspaces: workspace writes succeed; .codex, .env, host GitHub credentials and contribution state remain denied.");
+    console.log("Fresh Codex workspaces: workspace writes succeed; credential directories, .env, host GitHub credentials and contribution state remain denied.");
 }
 finally {
     fs.rmSync(root, { recursive: true, force: true });
