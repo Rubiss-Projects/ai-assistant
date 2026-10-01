@@ -152,14 +152,13 @@ test("Codex starts threads in fresh and legacy shared workspaces", async t => {
   process.env.AI_ASSISTANT_SECURITY_MODE = "shared";
   process.env.AI_ASSISTANT_WORKSPACE_ROOT = root;
   let expectedWorkspace = root;
-  let expectedLegacyFiles = false;
+  let hasLegacyPlaceholders = false;
   const codex = new CodexProvider(() => ({
     startThread: options => {
       assert.equal(options?.workingDirectory, expectedWorkspace);
       for (const name of SENSITIVE_DIRECTORY_NAME_LIST) {
         const state = statSync(join(expectedWorkspace, name));
-        assert.equal(state.isDirectory(), !expectedLegacyFiles);
-        if (expectedLegacyFiles) assert.equal(state.size, 0);
+        assert.equal(state.isDirectory(), true);
       }
       return { run: async () => ({ finalResponse: "Ready", items: [] }) } as unknown as Thread;
     },
@@ -179,13 +178,13 @@ test("Codex starts threads in fresh and legacy shared workspaces", async t => {
       mkdirSync(workspace, { recursive: true });
       codex.setSessionWorkingDir(key, workspace);
     }
-    expectedLegacyFiles = key === "legacy-workspace";
-    if (expectedLegacyFiles) {
+    hasLegacyPlaceholders = key === "legacy-workspace";
+    if (hasLegacyPlaceholders) {
       for (const name of SENSITIVE_DIRECTORY_NAME_LIST) {
         writeFileSync(join(workspace, name), "", { mode: 0o444 });
       }
     }
-    assert.equal(existsSync(join(workspace, ".codex")), expectedLegacyFiles);
+    assert.equal(existsSync(join(workspace, ".codex")), hasLegacyPlaceholders);
     expectedWorkspace = workspace;
     assert.equal((await codex.sendMessage(key, "Check workspace")).content, "Ready");
   }
