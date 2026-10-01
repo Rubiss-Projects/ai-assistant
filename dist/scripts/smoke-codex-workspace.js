@@ -16,14 +16,17 @@ process.env.AI_ASSISTANT_WORKSPACE_ROOT = root;
 try {
     const runs = path.join(root, ".scheduled-runs");
     fs.mkdirSync(runs);
-    for (const [sites, existing] of [[false, false], [true, false], [false, true], [true, true]]) {
+    for (const [sites, legacyPlaceholders] of [[false, false], [true, false], [false, true], [true, true]]) {
         const workspace = fs.mkdtempSync(path.join(runs, "run-"));
-        if (existing) {
+        if (legacyPlaceholders) {
             for (const name of SENSITIVE_DIRECTORY_NAME_LIST) {
-                fs.writeFileSync(path.join(workspace, name), "private fixture", { mode: 0o444 });
+                fs.writeFileSync(path.join(workspace, name), "", { mode: 0o444 });
             }
         }
         prepareCodexWorkingDirectory(workspace);
+        for (const name of SENSITIVE_DIRECTORY_NAME_LIST) {
+            assert.equal(fs.lstatSync(path.join(workspace, name)).isDirectory(), true);
+        }
         fs.writeFileSync(path.join(workspace, "visible.txt"), "visible fixture");
         fs.writeFileSync(path.join(workspace, ".env"), "denied fixture");
         const result = spawnSync(process.env.CODEX_EXECUTABLE_PATH || "codex", [
@@ -34,8 +37,7 @@ try {
                 "set -eu",
                 'test "$(cat visible.txt)" = "visible fixture"',
                 "echo ok > output.txt",
-                // ls can stat an unreadable regular file; check content access below.
-                ...(!existing ? SENSITIVE_DIRECTORY_NAME_LIST.map(name => `if ls '${name}' >/dev/null 2>&1; then exit 20; fi`) : []),
+                ...SENSITIVE_DIRECTORY_NAME_LIST.map(name => `if ls '${name}' >/dev/null 2>&1; then exit 20; fi`),
                 ...SENSITIVE_DIRECTORY_NAME_LIST.map(name => `if cat '${name}' >/dev/null 2>&1; then exit 25; fi`),
                 ...SENSITIVE_DIRECTORY_NAME_LIST.map(name => `if (echo changed > '${name}') 2>/dev/null; then exit 26; fi`),
                 "if cat .env >/dev/null 2>&1; then exit 21; fi",
@@ -48,15 +50,10 @@ try {
             env: { PATH: process.env.PATH, HOME: root, TMPDIR: temporary, TMP: temporary, TEMP: temporary },
         });
         assert.ifError(result.error);
-        assert.equal(result.status, 0, `Workspace sandbox (Sites=${sites}, existing files=${existing}): ${result.stderr}`);
+        assert.equal(result.status, 0, `Workspace sandbox (Sites=${sites}, legacy placeholders=${legacyPlaceholders}): ${result.stderr}`);
         assert.equal(fs.readFileSync(path.join(workspace, "output.txt"), "utf8"), "ok\n");
-        if (existing) {
-            for (const name of SENSITIVE_DIRECTORY_NAME_LIST) {
-                assert.equal(fs.readFileSync(path.join(workspace, name), "utf8"), "private fixture");
-            }
-        }
     }
-    console.log("Fresh and existing Codex workspaces: writes succeed; credential paths, .env, host GitHub credentials and contribution state remain denied.");
+    console.log("Fresh and legacy Codex workspaces: writes succeed; credential paths, .env, host GitHub credentials and contribution state remain denied.");
 }
 finally {
     fs.rmSync(root, { recursive: true, force: true });
