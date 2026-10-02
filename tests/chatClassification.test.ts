@@ -45,6 +45,8 @@ for (const reference of [
   { platform: "slack", kind: "" },
   { platform: "slack", kind: "thread" },
   { platform: "slack", kind: "thread", threadId: "" },
+  { platform: "slack", kind: "channel", threadId: "1700000001.000000" },
+  { platform: "slack", kind: "direct", threadId: "1700000001.000000" },
   { platform: "teams", kind: "channel" },
   { platform: "", kind: "channel" },
 ]) {
