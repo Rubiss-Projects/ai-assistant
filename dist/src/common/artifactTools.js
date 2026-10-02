@@ -58,7 +58,7 @@ export class ArtifactTools {
     call(name, args) {
         const operation = this.queue.catch(() => { }).then(async () => {
             this.controller.signal.throwIfAborted();
-            if (this.options?.transportContext && !(name === 'fetch_webpage' || (name === 'fetch_channel_history' && this.options.transportContext.history) || (name === 'attach_file' && this.options.transportContext.attachments)))
+            if (this.options?.transportContext && !(name === 'fetch_webpage' || (name === 'fetch_channel_history' && this.options.transportContext.history) || (['fetch_artifact', 'attach_file', 'transcode_video'].includes(name) && this.options.transportContext.attachments)))
                 throw new Error('Tool unavailable for this transport.');
             if (args.run_id !== this.id)
                 throw new Error("This artifact run has expired or belongs to another response.");
@@ -88,7 +88,7 @@ export class ArtifactTools {
                 return this.fetch(args);
             if (name === "attach_file")
                 return this.attach(String(args.path), args.filename);
-            if ((process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() !== "native")
+            if (!this.nativeAttachments)
                 throw new Error("Video processing requires DISCORD_ATTACHMENT_MODE=native.");
             if (!["av1", "h264", "hevc"].includes(String(args.codec)))
                 throw new Error("Unsupported target codec.");
@@ -98,6 +98,13 @@ export class ArtifactTools {
         });
         this.queue = operation;
         return operation;
+    }
+    // Other transports declare their own capability; Discord keeps its configured mode.
+    get nativeAttachments() {
+        const transport = this.options?.transportContext;
+        return transport
+            ? transport.attachments
+            : (process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() === "native";
     }
     async webpage(args) {
         const url = lookupUrl(String(args.url));
@@ -290,7 +297,7 @@ export class ArtifactTools {
         if (candidate.size && candidate.size > inputByteLimit())
             throw new Error(`Input exceeds the ${inputByteLimit()}-byte limit.`);
         const fetched = await this.download(candidate.url, this.controller.signal);
-        if ((process.env.DISCORD_ATTACHMENT_MODE ?? "native").trim().toLowerCase() !== "native") {
+        if (!this.nativeAttachments) {
             const head = fetched.data.subarray(0, 12);
             if (!head.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))
                 && !(head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
