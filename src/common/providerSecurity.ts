@@ -68,7 +68,8 @@ export function reportProviderSecurityConfiguration(
   source: Environment = process.env,
 ): void {
   const mode = configuredSecurityMode(source);
-  const sitesEnabled = configuredSitesEnabled(source);
+  const adapter = source.AI_ASSISTANT_ADAPTER?.trim() || "discord";
+  const sitesEnabled = adapter === "discord" && configuredSitesEnabled(source);
   // CODEX_WEB_SEARCH_MODE belongs to the Codex provider. Other providers must
   // remain startable when an installation retains a stale Codex-only value.
   const provider = source.PROVIDER?.trim().toLowerCase() || "copilot";

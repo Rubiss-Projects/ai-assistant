@@ -102,6 +102,22 @@ test("shared startup reports hosted search separately from sandboxed-command net
   assert.equal(lines.filter(line => /hosted web search|sandboxed-command network access/i.test(line)).length, 2);
 });
 
+test("Slack startup diagnostics report hosted search without advertising Sites access", t => {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => { lines.push(line); });
+  t.mock.method(console, "warn", (line: string) => { lines.push(line); });
+  reportProviderSecurityConfiguration({
+    AI_ASSISTANT_ADAPTER: "slack",
+    AI_ASSISTANT_SECURITY_MODE: "shared",
+    AI_ASSISTANT_ENABLE_SITES: "true",
+    PROVIDER: "codex",
+    CODEX_WEB_SEARCH_MODE: "live",
+  });
+  assert.doesNotMatch(lines.join("\n"), /Discord users|Sites enabled|Sites source pushes/);
+  assert.ok(lines.some(line => /hosted web search: live/i.test(line)));
+  assert.ok(lines.some(line => /sandboxed-command network access: package registry only/i.test(line)));
+});
+
 test("non-Codex startup diagnostics ignore invalid Codex hosted-search configuration", t => {
   const lines: string[] = [];
   t.mock.method(console, "log", (line: string) => { lines.push(line); });
