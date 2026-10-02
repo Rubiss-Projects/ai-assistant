@@ -59,9 +59,8 @@ export function reportProviderSecurityConfiguration(source = process.env) {
     const webSearchMode = provider === "codex" ? configuredCodexWebSearchMode(source) : undefined;
     if (mode === "unrestricted") {
         console.warn("[security] AI_ASSISTANT_SECURITY_MODE=unrestricted: Discord sessions retain the provider's full legacy capabilities and may act with the operator's connected identities. Use this only on a private, trusted server.");
-        return;
     }
-    if (sitesEnabled) {
+    else if (sitesEnabled) {
         console.warn("[security] Shared mode is active with ChatGPT Sites enabled. Discord users can create, update, and publish Sites through the operator's ChatGPT account; other connected apps remain restricted.");
     }
     else {
@@ -69,7 +68,10 @@ export function reportProviderSecurityConfiguration(source = process.env) {
     }
     if (webSearchMode) {
         console.log(`[security] Codex hosted web search: ${webSearchMode}.`);
-        console.log(`[security] Codex sandboxed-command network access: package registry only${sitesEnabled ? " plus ChatGPT Sites source pushes" : ""}.`);
+        const networkAccess = mode === "unrestricted"
+            ? "unrestricted"
+            : `package registry only${sitesEnabled ? " plus ChatGPT Sites source pushes" : ""}`;
+        console.log(`[security] Codex sandboxed-command network access: ${networkAccess}.`);
     }
 }
 const COMMON_ENVIRONMENT_KEYS = [

@@ -102,6 +102,20 @@ test("shared startup reports hosted search separately from sandboxed-command net
   assert.equal(lines.filter(line => /hosted web search|sandboxed-command network access/i.test(line)).length, 2);
 });
 
+test("unrestricted startup reports hosted search and unrestricted command networking", t => {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => { lines.push(line); });
+  t.mock.method(console, "warn", (line: string) => { lines.push(line); });
+  reportProviderSecurityConfiguration({
+    PROVIDER: "codex",
+    AI_ASSISTANT_SECURITY_MODE: "unrestricted",
+    CODEX_WEB_SEARCH_MODE: "disabled",
+  });
+  assert.ok(lines.some(line => /hosted web search: disabled/i.test(line)));
+  assert.ok(lines.some(line => /sandboxed-command network access: unrestricted/i.test(line)));
+  assert.doesNotMatch(lines.join("\n"), /package registry only|Shared provider isolation/i);
+});
+
 test("Slack startup diagnostics report hosted search without advertising Sites access", t => {
   const lines: string[] = [];
   t.mock.method(console, "log", (line: string) => { lines.push(line); });
