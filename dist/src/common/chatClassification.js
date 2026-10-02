@@ -40,8 +40,8 @@ function describe(value) {
 }
 /**
  * Classifies one conversation reference. Unsupported platforms, unknown forms and
- * thread forms without their thread identity are rejected explicitly instead of
- * falling back to an untyped classification.
+ * thread forms without their thread identity, and non-thread forms carrying one
+ * are rejected explicitly instead of falling back to an untyped classification.
  */
 export function classifyChat(reference) {
     if (!isChatPlatform(reference.platform))
@@ -50,6 +50,8 @@ export function classifyChat(reference) {
         throw new UnsupportedChatFormError("Unsupported chat form: " + describe(reference.kind) + ".");
     if (reference.kind === "thread" && !reference.threadId)
         throw new UnsupportedChatFormError("Thread chat form requires its thread identity.");
+    if (reference.kind !== "thread" && reference.threadId !== undefined)
+        throw new UnsupportedChatFormError("Unsupported chat form: only thread chats may carry a thread identity.");
     return { platform: reference.platform, form: reference.kind, choice: PLATFORM_CHAT_CLASSIFICATIONS[reference.platform][reference.kind] };
 }
 /** Host-derived statement of the current turn's classification for the agent. */

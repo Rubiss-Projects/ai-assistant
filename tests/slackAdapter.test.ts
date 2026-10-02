@@ -37,7 +37,7 @@ function setup(maxSessions=1000){
  const api: SlackApi={call:async(method:string,args?:Record<string,string>,signal?:AbortSignal)=>{
   if(method==='conversations.members' && audienceStarted) await new Promise<void>((_resolve,reject)=>{assert.ok(signal);signal.addEventListener('abort',()=>reject(signal.reason),{once:true});audienceStarted!();});
   if(method==='conversations.members' && ++audienceCalls === audienceFailureAt) throw new Error('Slack temporarily unavailable');
-  if(method==='conversations.info')return {ok:true,channel:{is_member:true,...channelFlags}};
+  if(method==='conversations.info')return {ok:true,channel:channelFlags.is_im ? {user:'U',...channelFlags} : {is_member:true,...channelFlags}};
   if(method==='conversations.members')return {ok:true,members:authorized
     ? (channelFlags.is_im ? ['U','BOT'] : ['U','FRIEND','BOT',...(extra?['NEW']:[])])
     : ['FRIEND','BOT']};
@@ -507,6 +507,17 @@ test('Slack admits an allowlisted one-to-one direct message and answers it in th
    assert.ok(f.prompts[0].includes('earlier question'));
    assert.deepEqual(f.posts.map(p=>[p.channel,p.thread_ts]),[['D',undefined]]);
   }finally{await f.close()}
+});
+
+test('Slack rejects a DM whose metadata does not identify the requesting counterpart',async()=>{
+  for (const user of ['STRANGER',undefined]) {
+   const f=setup();try{
+    f.describeChannel({is_im:true,user});
+    const result=await (await f.adapter.receive(directMessage('dm-counterpart','1700000003.000000')))!.completion;
+    assert.equal(result.state,'failed');
+    assert.equal(f.prompts.length,0);assert.equal(f.posts.length,0);
+   }finally{await f.close()}
+  }
 });
 
 test('Slack direct-message history resolves to the direct conversation and never to a thread',async()=>{

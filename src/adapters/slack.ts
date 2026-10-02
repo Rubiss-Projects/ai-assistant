@@ -180,8 +180,11 @@ export class SlackAdapter {
     const channel = info.channel as Record<string,unknown>;
     // Group DMs and shared/external channels remain denied. A one-to-one direct
     // message is admitted only as the individual conversation it actually is.
-    if (!channel || channel.is_mpim || channel.is_ext_shared || channel.is_org_shared || !channel.is_member) return;
-    if (input.conversation.kind === 'direct' ? !channel.is_im : channel.is_im) return;
+    if (!channel || channel.is_mpim || channel.is_ext_shared || channel.is_org_shared) return;
+    // Slack DM metadata identifies the counterpart with `user` and omits `is_member`.
+    if (input.conversation.kind === 'direct') {
+      if (!channel.is_im || channel.user !== input.actor.userId) return;
+    } else if (channel.is_im || !channel.is_member) return;
     const members = new Set<string>(); let cursor: string | undefined;
     for (let page = 0; page < 20; page++) {
       signal?.throwIfAborted();

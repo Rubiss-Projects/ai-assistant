@@ -340,11 +340,15 @@ test("Codex workspace preparation migrates empty legacy placeholders and rejects
     prepareCodexWorkingDirectory(root);
     assert.equal(readFileSync(join(directory, "existing.txt"), "utf8"), "preserve");
     rmSync(directory, { recursive: true });
-    writeFileSync(directory, "");
+    writeFileSync(directory, "", { mode: 0o444 });
     prepareCodexWorkingDirectory(root);
     assert.equal(existsSync(directory), true);
     assert.throws(() => readFileSync(directory, "utf8"), /EISDIR/);
     rmSync(directory, { recursive: true });
+    writeFileSync(directory, "", { mode: 0o600 });
+    assert.throws(() => prepareCodexWorkingDirectory(root), /EEXIST/);
+    assert.equal(readFileSync(directory, "utf8"), "");
+    rmSync(directory);
     writeFileSync(directory, "unexpected contents");
     assert.throws(() => prepareCodexWorkingDirectory(root), /EEXIST/);
     assert.equal(readFileSync(directory, "utf8"), "unexpected contents");
