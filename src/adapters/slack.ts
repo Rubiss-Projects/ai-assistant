@@ -159,8 +159,10 @@ export class SlackAdapter {
     const direct = e.type === 'message' && e.channel_type === 'im' && /^D[A-Z0-9]*$/.test(e.channel);
     if (!direct && (e.type !== 'app_mention' || !this.config.channels.has(e.channel) || !e.text.includes('<@' + this.config.botUserId + '>'))) return;
     const ts = slackPosition(e.ts);
-    // Direct messages stay one conversation; a self-referencing thread_ts is the same root.
-    const thread = !direct && e.thread_ts ? slackPosition(e.thread_ts) : undefined;
+    const parent = e.thread_ts ? slackPosition(e.thread_ts) : undefined;
+    // DM threads are unsupported; a self-referencing timestamp still identifies the root.
+    if (direct && parent && parent !== ts) return;
+    const thread = direct ? undefined : parent;
     return { eventId: payload.event_id, sourceMessageId: ts, text: direct ? e.text.trim() : e.text.split('<@' + this.config.botUserId + '>').join('').trim(),
       receivedAt: new Date(Number(ts) * 1000).toISOString(), actor: { platform: 'slack', tenantId: this.config.teamId, userId: e.user },
       conversation: { platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId, channelId: e.channel,
@@ -246,7 +248,7 @@ export class SlackAdapter {
       const current = await this.audience(input, signal);
       return current !== undefined && (audience === undefined || current === audience);
     };
-    const port = new SlackHistory(this.historyApi, input.conversation, authorized, this.config.excludedAuthors);
+    const port = new SlackHistory(input.conversation.kind === 'direct' ? this.api : this.historyApi, input.conversation, authorized, this.config.excludedAuthors);
     return this.service.submit(input, {
       platform: 'slack', tenantId: this.config.teamId, installationId: this.config.installationId,
       audience: sessionAudience, capabilities: { ...TEXT_CAPABILITIES, history: true, attachments: true, progress: false, directMessages: true },
