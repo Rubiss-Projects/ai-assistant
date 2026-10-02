@@ -196,18 +196,41 @@ test("real MCP stdio transport lists and calls tools, isolates sessions, and rev
   assert.equal((await client.callTool({ name: "attach_file", arguments: { run_id: runId!, path: "hello.txt" } })).isError, true);
 });
 
-test("transport MCP allowlist exposes attach_file only when attachments are supported", async (t) => {
+test("transport MCP allowlist exposes artifact tools only when attachments are supported", async (t) => {
   const sessions = new ArtifactToolSessions();
   t.after(() => sessions.shutdown());
   const slack = await sessions.config("slack", { platform: "slack", history: true, attachments: true });
   const textOnly = await sessions.config("text-only", { platform: "cli", history: false, attachments: false });
-  assert.deepEqual(JSON.parse(slack.env.AI_ARTIFACT_ALLOWED_TOOLS), ["fetch_webpage", "fetch_channel_history", "attach_file"]);
+  assert.deepEqual(JSON.parse(slack.env.AI_ARTIFACT_ALLOWED_TOOLS), ["fetch_webpage", "fetch_channel_history", "fetch_artifact", "attach_file", "transcode_video"]);
   assert.deepEqual(JSON.parse(textOnly.env.AI_ARTIFACT_ALLOWED_TOOLS), ["fetch_webpage"]);
 
   const client = new Client({ name: "slack-artifact-test", version: "1" });
   await client.connect(new StdioClientTransport({ ...slack, stderr: "pipe" }));
   t.after(() => client.close());
-  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["fetch_channel_history", "fetch_webpage", "attach_file"]);
+  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["fetch_channel_history", "fetch_webpage", "fetch_artifact", "attach_file", "transcode_video"]);
+});
+
+test("Slack artifact tools use its attachment capability independently of Discord text mode", async (t) => {
+  const workspace = await fixture(t);
+  const previous = process.env.DISCORD_ATTACHMENT_MODE;
+  process.env.DISCORD_ATTACHMENT_MODE = "text";
+  t.after(() => { if (previous === undefined) delete process.env.DISCORD_ATTACHMENT_MODE; else process.env.DISCORD_ATTACHMENT_MODE = previous; });
+  const run = createArtifactRun(workspace);
+  const runtime = new ArtifactTools(run,
+    { transportContext: { platform: "slack", history: true, attachments: true } },
+    async () => ({ data: Buffer.from("download"), filename: "download.txt", contentType: "text/plain" }));
+  t.after(() => runtime.close());
+  const fetched = await runtime.call("fetch_artifact", { run_id: runtime.id, url: "https://example.com/file" }) as { path: string };
+  await runtime.call("attach_file", { run_id: runtime.id, path: fetched.path });
+  assert.equal(run.registeredAttachments?.[0].data.toString(), "download");
+  await assert.rejects(runtime.call("transcode_video", { run_id: runtime.id, path: fetched.path, codec: "invalid" }), /Unsupported target codec/);
+
+  const textOnly = new ArtifactTools(createArtifactRun(workspace),
+    { transportContext: { platform: "cli", history: false, attachments: false } });
+  t.after(() => textOnly.close());
+  for (const name of ["fetch_artifact", "attach_file", "transcode_video"]) {
+    await assert.rejects(textOnly.call(name, { run_id: textOnly.id }), /Tool unavailable for this transport/);
+  }
 });
 
 test("provider configuration enables only the host artifact bridge in shared mode", async (t) => {

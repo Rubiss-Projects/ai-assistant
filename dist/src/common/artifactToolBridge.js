@@ -93,7 +93,7 @@ export class ArtifactToolSessions {
         return transport ? { ...config, env: { ...config.env, AI_ARTIFACT_ALLOWED_TOOLS: JSON.stringify([
                     'fetch_webpage',
                     ...(transport.history ? ['fetch_channel_history'] : []),
-                    ...(transport.attachments ? ['attach_file'] : []),
+                    ...(transport.attachments ? ['fetch_artifact', 'attach_file', 'transcode_video'] : []),
                 ]) } } : config;
     }
     async run(key, run, files, options, action) {

@@ -521,6 +521,20 @@ test('Slack rejects a DM whose metadata does not identify the requesting counter
   }
 });
 
+test('Slack channel turns reject thread history without reading channel history again',async()=>{
+  const f=setup();try{
+   f.engine.sendMessage=async(_key,_prompt,_files,options)=>{
+    assert.ok(options?.resolveChannelHistory);
+    const reads=f.reads();
+    await assert.rejects(options.resolveChannelHistory({scope:'thread',range:'recent',count:5}),/Unsupported history scope/);
+    assert.equal(f.reads(),reads);
+    return {content:'answer',attachments:[]};
+   };
+   const result=await (await f.adapter.receive(event('channel-scope','1700000003.000000')))!.completion;
+   assert.equal(result.state,'delivered');
+  }finally{await f.close()}
+});
+
 test('Slack direct-message history resolves to the direct conversation and never to a thread',async()=>{
   const f=setup();try{
    f.describeChannel({is_im:true});

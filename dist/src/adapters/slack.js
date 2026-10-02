@@ -391,9 +391,8 @@ export class SlackAdapter {
                     resolveChannelHistory: async (args, signal) => {
                         if (args.scope && !['channel', 'thread'].includes(String(args.scope)))
                             throw new Error('Unsupported history scope.');
-                        // A direct message is a single conversation: channel scope is itself and
-                        // there is no thread scope to narrow.
-                        if (input.conversation.kind === 'direct' && args.scope === 'thread')
+                        // Thread history needs an invoking thread; channel and direct turns have none.
+                        if (input.conversation.kind !== 'thread' && args.scope === 'thread')
                             throw new Error('Unsupported history scope.');
                         const resource = args.scope === 'channel' && input.conversation.kind !== 'direct'
                             ? { ...input.conversation, kind: 'channel', threadId: undefined } : input.conversation;
