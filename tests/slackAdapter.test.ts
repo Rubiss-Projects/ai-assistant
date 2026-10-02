@@ -51,8 +51,9 @@ function setup(maxSessions=1000){
  }};
  const engine={contextIdentity:()=>identity,sendMessage:async(key:string,prompt:string,_files?:SendAttachment[],options?:SendMessageOptions)=>{sessions.push(key);contexts.push(options?.transportContext);prompts.push(prompt);return {content:'answer',attachments:[]}},resetSession:async()=>{resets++},shutdown:async()=>{}};
  const excludedAuthors=new Set<string>();
- const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C','D']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,api,engine,service,maxSessions);
- return {dir,api,adapter,engine,service,prompts,posts,journal,sessions,contexts,blockAudience:(started:()=>void)=>{audienceStarted=started},blockHistory:(started:()=>void)=>{historyStarted=started},failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},describeChannel:(flags:Record<string,unknown>)=>{channelFlags=flags},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
+ const historyApi:SlackApi={call:(method,args,signal)=>api.call(method,args,signal)};
+ const adapter=new SlackAdapter({teamId:'T',installationId:'i',botUserId:'BOT',channels:new Set(['C','D']),users:new Set(['U']),excludedAuthors,stateDirectory:dir},api,historyApi,engine,service,maxSessions);
+ return {dir,api,historyApi,adapter,engine,service,prompts,posts,journal,sessions,contexts,blockAudience:(started:()=>void)=>{audienceStarted=started},blockHistory:(started:()=>void)=>{historyStarted=started},failAudienceCheck:(offset:number)=>{audienceFailureAt=audienceCalls+offset},loseHistoryAccess:()=>{historyUnavailable=true},exclude:(id:string)=>excludedAuthors.add(id),changeIdentity:(value:string)=>{identity=value},setHistory:(messages:Record<string,unknown>[])=>{history=messages},resets:()=>resets,changeAudience:()=>{extra=true},reads:()=>reads,revoke:()=>{authorized=false},describeChannel:(flags:Record<string,unknown>)=>{channelFlags=flags},close:async()=>{await service.shutdown();rmSync(dir,{recursive:true,force:true})}};
 }
 
 test('Slack shutdown aborts audience membership retrieval before generation', { timeout: 2000 }, async () => {
@@ -536,6 +537,31 @@ test('Slack direct-message history resolves to the direct conversation and never
    assert.match(summary,/unmentioned clarification/);
    assert.ok(methods.includes('conversations.history'));
    assert.ok(!methods.includes('conversations.replies'));
+  }finally{await f.close()}
+});
+
+test('Slack DM history uses the bot credential while channels retain the optional history credential',async()=>{
+  const f=setup();try{
+   f.describeChannel({is_im:true});
+   f.setHistory([{ts:'1700000001.000000',user:'U',text:'earlier private question'}]);
+   let userHistoryCalls=0;
+   f.historyApi.call=async()=>{userHistoryCalls++;throw Error('user token cannot access the bot DM')};
+   const dm=await (await f.adapter.receive(directMessage('dm-bot-history','1700000003.000000')))!.completion;
+   assert.equal(dm.state,'delivered');assert.match(f.prompts[0],/earlier private question/);assert.equal(userHistoryCalls,0);
+   f.describeChannel({});
+   await (await f.adapter.receive(event('channel-user-history','1700000004.000000')))!.completion;
+   assert.ok(userHistoryCalls>0);
+  }finally{await f.close()}
+});
+
+test('Slack rejects descendant DM-thread events while accepting self-referencing roots',async()=>{
+  const f=setup();try{
+   f.describeChannel({is_im:true});
+   const parent='1700000001.000000';
+   assert.equal(await f.adapter.receive(directMessage('dm-thread-reply','1700000003.000000','U','D','im',parent)),undefined);
+   assert.equal(f.prompts.length,0);assert.equal(f.posts.length,0);
+   const root=await (await f.adapter.receive(directMessage('dm-thread-root',parent,'U','D','im',parent)))!.completion;
+   assert.equal(root.state,'delivered');assert.equal(root.input.conversation.kind,'direct');assert.equal(f.posts[0].thread_ts,undefined);
   }finally{await f.close()}
 });
 
