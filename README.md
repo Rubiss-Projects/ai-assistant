@@ -46,7 +46,7 @@ Set `PROVIDER` to one of the following. Authenticate each provider you want to u
 | `codex` | OpenAI Codex SDK | `OPENAI_API_KEY` or a persisted `codex login` | `gpt-5.6-sol` |
 | `opencode` | OpenCode CLI | `opencode auth login` or the selected model provider's API key | OpenCode's configured default |
 
-For native installs, OpenCode requires its CLI to be installed and discoverable (or set `OPENCODE_BIN`). Docker includes all three provider CLIs; [container login commands](#docker) are below.
+OpenCode requires **V2 2.0.31 or newer** (`npm install -g @opencode/cli@2.0.31`); V1 is no longer supported. For native installs, its CLI must be discoverable (or set `OPENCODE_BIN`). Docker includes all three provider CLIs; [container login commands](#docker) are below.
 
 Native video conversion also requires `ffmpeg` and `ffprobe` on `PATH`, with the `libsvtav1`, `libx264`, and `libx265` encoders. These are included in the Docker image.
 
@@ -232,7 +232,7 @@ Ordinary messages are grouped after two seconds of quiet (up to eight seconds be
 
 Set `CHAT_PARTICIPATION_MODE=always` to answer every message or `mentions-only` to require an explicit mention or slash command. Unrestricted/dedicated deployments default to `always`. These settings affect bot-owned threads; ordinary mentions and `DISCORD_FREE_CHANNELS` retain their behavior. Restart after changing configuration.
 
-The default evaluator uses the thread's active provider and existing login in a separate classification session. It prefers Luna, independently of the main chat model, and can be changed with `CHAT_PARTICIPATION_MODEL` to a model your account supports. Copilot disables tools and configuration discovery. Codex uses an ephemeral, isolated, read-only run with shell, web search, MCP, apps, hooks and plugins disabled. OpenCode selects a small model on the configured connection (preferring Luna, then Haiku or GPT-4.1 Mini, then the configured model) and uses an isolated pure run with tools and permissions denied. Its temporary session database is deleted afterward. No artifact tools are attached to classification runs. Provider startup overhead still contributes to latency.
+The default evaluator uses the thread's active provider and existing login in a separate classification session. It prefers Luna, independently of the main chat model, and can be changed with `CHAT_PARTICIPATION_MODEL` to a model your account supports. Copilot disables tools and configuration discovery. Codex uses an ephemeral, isolated, read-only run with shell, web search, MCP, apps, hooks and plugins disabled. OpenCode selects a small model on the configured connection (preferring Luna, then Haiku or GPT-4.1 Mini, then the configured model) and uses an isolated V2 run with tools and permissions denied. Stored credentials are exported into its temporary database over private process pipes; conversation history is not copied. Its temporary session database is deleted afterward. No artifact tools are attached to classification runs. Provider startup overhead still contributes to latency.
 
 [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) is an optional decision evaluator, not a replacement for the model writing answers. Its [typed Choice API](https://docs.typesafe.ai/primitives/choice) supplies a probability for each action. To use it, put this in your gitignored `.env`:
 
@@ -755,12 +755,16 @@ To exercise the real hosted-search boundary without making it part of CI, run `C
 
 ### OpenCode and model provider keys
 
+Docker pins OpenCode V2. Existing V1 sessions and credentials are migrated by OpenCode when it opens the persistent data directory. Back up OpenCode's data directory and the assistant's session maps before upgrading; retain that backup for a V1 rollback. Do not run V1 against a database already opened by V2. Native V1 users must remove `opencode-ai`, install `@opencode/cli@2.0.31`, and update any `OPENCODE_BIN` override.
+
+Each conversation turn owns a private V2 server and waits for its host MCP bridges to connect before inference. Cancellation closes that server and its stdio lease. Shared mode ignores ambient global/project configuration, including custom provider definitions; use the supported model-provider environment keys below. Unrestricted mode preserves operator configuration, which V2 can read in either its supported V1 or native V2 format.
+
 The following API keys are explicitly allowed into the OpenCode child process in shared mode. Set the key for the model provider you use, or use a persisted CLI login. `OPENAI_API_KEY` is listed in the Codex table above.
 
 | Variable | Default / accepted values | What it does |
 | --- | --- | --- |
 | `OPENCODE_MODEL` | OpenCode's configured default | Selects a model in `provider/model` format, for example `openrouter/anthropic/claude-sonnet-4.5`. |
-| `OPENCODE_BIN` | Known npm install locations, then `opencode` on `PATH` | Overrides the OpenCode executable path. |
+| `OPENCODE_BIN` | Known V2 npm install locations, then `opencode` on `PATH` | Overrides the OpenCode V2 executable path. Install `@opencode/cli`; an old `opencode-ai` binary is rejected. |
 | `ANTHROPIC_API_KEY` | Unset | API key for OpenCode's Anthropic provider. |
 | `OPENROUTER_API_KEY` | Unset | API key for OpenCode's OpenRouter provider. |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Unset | Google model provider API key passed to OpenCode. |
@@ -770,7 +774,7 @@ The following API keys are explicitly allowed into the OpenCode child process in
 | `COHERE_API_KEY` | Unset | API key for OpenCode's Cohere provider. |
 | `XAI_API_KEY` | Unset | API key for OpenCode's xAI provider. |
 | `OPENCODE_DISABLE_AUTOUPDATE` | Forced to `1` by the bot | Disables CLI auto-updates for each OpenCode child process. Operator values are overwritten. |
-| `OPENCODE_DISABLE_PROJECT_CONFIG` | Forced to `1` in shared mode | Prevents repository configuration from weakening OpenCode's generated security policy. In unrestricted mode, an existing value is inherited. |
+| `OPENCODE_DISABLE_PROJECT_CONFIG` | Forced to `1` in shared mode | Prevents repository configuration from weakening OpenCode's generated security policy. Shared turns also use a temporary home/config directory to exclude ambient plugins and agents, while retaining the persistent OpenCode data directory. In unrestricted mode, an existing value is inherited. |
 | `OPENCODE_CONFIG_CONTENT` | Generated by the bot in shared mode | Supplies OpenCode's inline security policy in shared mode, overriding operator values. In unrestricted mode, existing configuration is preserved; the bot adds its artifact MCP tools when starting a turn. |
 
 ### MCP
