@@ -101,6 +101,11 @@ const COMMON_ENVIRONMENT_KEYS = [
     "SSL_CERT_DIR",
     "NPM_CONFIG_NODEDIR",
 ];
+export const OPENCODE_API_KEY_ENVIRONMENT_KEYS = [
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
+    "MISTRAL_API_KEY", "COHERE_API_KEY", "XAI_API_KEY",
+];
 const PROVIDER_ENVIRONMENT_KEYS = {
     codex: ["CODEX_HOME", "OPENAI_BASE_URL"],
     copilot: ["COPILOT_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"],
@@ -109,15 +114,7 @@ const PROVIDER_ENVIRONMENT_KEYS = {
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
         "XDG_STATE_HOME",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GOOGLE_GENERATIVE_AI_API_KEY",
-        "GEMINI_API_KEY",
-        "GROQ_API_KEY",
-        "MISTRAL_API_KEY",
-        "COHERE_API_KEY",
-        "XAI_API_KEY",
+        ...OPENCODE_API_KEY_ENVIRONMENT_KEYS,
     ],
 };
 /** Shared mode uses an allowlist; unrestricted mode preserves legacy inheritance. */

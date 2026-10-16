@@ -11,6 +11,10 @@ import { assertOpenCodeV2, openCodeBaseRunArguments, openCodeChildEnvironment, o
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-v2-smoke-"));
 const workspace = path.join(root, "workspace");
 fs.mkdirSync(workspace);
+const ambient = path.join(root, "ambient-config", "opencode");
+fs.mkdirSync(ambient, { recursive: true });
+fs.writeFileSync(path.join(ambient, "opencode.json"), JSON.stringify({ plugins: ["./must-not-load"], agents: { ambient: { system: "UNTRUSTED_GLOBAL_PROMPT" } } }));
+fs.writeFileSync(path.join(ambient, "AGENTS.md"), "UNTRUSTED_GLOBAL_PROMPT");
 fs.writeFileSync(path.join(workspace, ".env"), "SMOKE_SECRET_LEAK");
 fs.writeFileSync(path.join(workspace, ".env.example"), "SMOKE_ALLOWED_FILE");
 fs.writeFileSync(path.join(workspace, "opencode.json"), JSON.stringify({
@@ -22,12 +26,14 @@ fs.writeFileSync(bridge, `
 import { McpServer } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/mcp.js"))};
 import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/stdio.js"))};
 const server = new McpServer({ name: "fixture", version: "1.0.0" });
+if (process.argv[2]) await new Promise(resolve => setTimeout(resolve, Number(process.argv[2])));
 server.registerTool("probe", { description: "Return the fixture marker" }, () => ({ content: [{ type: "text", text: process.env.SMOKE_BRIDGE_VALUE }] }));
 await server.connect(new StdioServerTransport());
 process.stdin.on("end", () => { void server.close(); });
 `);
 let requests = 0;
 let bridgeObserved = false;
+let unrestricted = false;
 const model = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req)
@@ -36,10 +42,13 @@ const model = createServer(async (req, res) => {
     const input = JSON.parse(body);
     assert.match(JSON.stringify(input.messages), /SMOKE_SYSTEM_PROMPT/);
     assert.doesNotMatch(JSON.stringify(input.messages), /UNTRUSTED_PROJECT_PROMPT/);
+    assert.doesNotMatch(JSON.stringify(input.messages), /UNTRUSTED_GLOBAL_PROMPT/);
     const tools = input.tools?.map(tool => tool.function.name) ?? [];
     assert.ok(!tools.includes("shell"));
     assert.ok(!tools.includes("subagent"));
     assert.ok(tools.includes("artifact_tools_probe"), `Missing host MCP tool: ${tools.join(", ")}`);
+    if (unrestricted)
+        assert.ok(tools.includes("custom_tools_probe"), "Slow operator MCP server was missing from the first model request");
     requests++;
     res.writeHead(200, { "content-type": "text/event-stream" });
     const needsTool = !input.messages.some(message => message.role === "tool");
@@ -66,6 +75,7 @@ assert.ok(address && typeof address !== "string");
 const env = openCodeIsolatedEnvironment(openCodeChildEnvironment({
     PATH: process.env.PATH,
     AI_ASSISTANT_SECURITY_MODE: "shared",
+    XDG_CONFIG_HOME: path.join(root, "ambient-config"),
     XDG_DATA_HOME: path.join(root, "data"),
     XDG_CACHE_HOME: path.join(root, "cache"),
     XDG_STATE_HOME: path.join(root, "state"),
@@ -102,9 +112,10 @@ function cli(args, stdin, environment = env, signal) {
 try {
     assertOpenCodeV2(await cli(["--version"]));
     assert.match(await cli(["models", "--standalone"]), /fixture\/fixture/);
+    assert.doesNotMatch(await cli(["api", "config.get", "--param", `directory=${workspace}`, "--standalone"]), /ambient-config|UNTRUSTED_GLOBAL_PROMPT/);
     assert.deepEqual(JSON.parse(await cli(["auth", "list", "--format", "json", "--standalone"])), []);
-    const run = async (session) => {
-        const stdout = await withOpenCodeServer(process.env.OPENCODE_BIN || "opencode", { cwd: workspace, env, timeoutMs: 60_000, mcpServers: ["artifact_tools"] }, (url, environment, signal) => cli([...openCodeBaseRunArguments(), "--server", url, "--agent", "smoke", "--title", "Fixture", "--model", "fixture/fixture", ...(session ? ["--session", session] : []), "fixture request"], undefined, environment, signal));
+    const run = async (session, environment = env) => {
+        const stdout = await withOpenCodeServer(process.env.OPENCODE_BIN || "opencode", { cwd: workspace, env: environment, timeoutMs: 60_000, mcpServers: ["artifact_tools"] }, (url, environment, signal) => cli([...openCodeBaseRunArguments(), "--server", url, "--agent", "smoke", "--title", "Fixture", "--model", "fixture/fixture", ...(session ? ["--session", session] : []), "fixture request"], undefined, environment, signal));
         const events = stdout.trim().split("\n").map(line => JSON.parse(line));
         assert.equal(events.filter(event => event.type === "text").at(-1)?.part?.text, "OPENCODE_V2_OK");
         const id = events.find(event => event.sessionID)?.sessionID;
@@ -115,9 +126,23 @@ try {
     assert.equal(await run(session), session);
     await cli(["auth", "import", "--standalone"], await cli(["auth", "export", "--standalone"]));
     await cli(["session", "delete", session, "--standalone"]);
+    // Normal global configuration is intentionally preserved in unrestricted mode.
+    // Its MCP server is slower than the host bridge and must still be ready first.
+    const operatorConfig = path.join(root, "operator-config");
+    fs.mkdirSync(operatorConfig);
+    fs.writeFileSync(path.join(operatorConfig, "opencode.json"), JSON.stringify({ mcp: { servers: {
+                custom_tools: { type: "local", command: [process.execPath, bridge, "1000"], environment: { SMOKE_BRIDGE_VALUE: "CUSTOM_MCP_OK" }, codemode: false },
+                disabled_tools: { type: "local", command: ["must-not-run"], disabled: true },
+            } } }));
+    const operator = openCodeChildEnvironment({
+        ...env, AI_ASSISTANT_SECURITY_MODE: "unrestricted", OPENCODE_CONFIG_DIR: operatorConfig,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ providers: config.providers, permission: { bash: "deny", task: "deny", read: { ".env": "deny" } } }),
+    }, { command: process.execPath, args: [bridge], env: { SMOKE_BRIDGE_VALUE: "MCP_BRIDGE_OK" } }, undefined, "SMOKE_SYSTEM_PROMPT", "smoke");
+    unrestricted = true;
+    await run(undefined, operator);
     assert.ok(bridgeObserved);
-    assert.equal(requests, 3);
-    console.log("OpenCode V2: native config, model discovery, auth transfer, prompt, JSON output, session resume/delete, host MCP execution, and project isolation verified.");
+    assert.equal(requests, 5);
+    console.log("OpenCode V2: config isolation, legacy permissions, model/auth/session contracts, host MCP execution, and slow operator MCP readiness verified.");
 }
 finally {
     await new Promise((resolve, reject) => model.close(error => error ? reject(error) : resolve()));
