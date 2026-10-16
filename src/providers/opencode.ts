@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import os from "node:os";
 import { ParticipationProcessRunner } from "./participationProcess.js";
+import { withOpenCodeServer } from "./openCodeServer.js";
 import path from "path";
 import { SessionStore } from "../common/sessionStore.js";
 import { providerSystemPrompt, withSystemPrompt } from "../common/systemPrompt.js";
@@ -26,13 +27,14 @@ import { RunTimeoutError, UnsupportedError, type AgentInfo, type AgentResponse, 
 
 /**
  * Resolves the `opencode` executable. Prefers OPENCODE_BIN, then well-known
- * npm-global install locations (Windows + POSIX), and finally falls back to the
+ * V2 npm-global install locations (Windows + POSIX), and finally falls back to the
  * bare command name so the OS PATH lookup is used (Linux/macOS installs).
  */
 function resolveOpenCodeBinary(): string {
   if (process.env.OPENCODE_BIN) return process.env.OPENCODE_BIN;
 
-  const binName = process.platform === "win32" ? "opencode.exe" : "opencode";
+  // The V2 npm package ships this filename on both Windows and POSIX.
+  const binName = "opencode.exe";
   const candidates: string[] = [];
 
   if (process.platform === "win32" && process.env.APPDATA) {
@@ -41,7 +43,7 @@ function resolveOpenCodeBinary(): string {
         process.env.APPDATA,
         "npm",
         "node_modules",
-        "opencode-ai",
+        "@opencode", "cli",
         "bin",
         binName
       )
@@ -49,11 +51,11 @@ function resolveOpenCodeBinary(): string {
   }
   if (process.env.HOME) {
     candidates.push(
-      path.join(process.env.HOME, ".npm-global", "lib", "node_modules", "opencode-ai", "bin", binName)
+      path.join(process.env.HOME, ".npm-global", "lib", "node_modules", "@opencode", "cli", "bin", binName)
     );
   }
-  candidates.push(path.join("/usr", "local", "lib", "node_modules", "opencode-ai", "bin", binName));
-  candidates.push(path.join("/usr", "lib", "node_modules", "opencode-ai", "bin", binName));
+  candidates.push(path.join("/usr", "local", "lib", "node_modules", "@opencode", "cli", "bin", binName));
+  candidates.push(path.join("/usr", "lib", "node_modules", "@opencode", "cli", "bin", binName));
 
   for (const candidate of candidates) {
     try {
@@ -75,40 +77,51 @@ function openCodeAgentName(systemPrompt: string): string {
   return `ai-assistant-${contextFingerprint(systemPrompt).slice(0, 16)}`;
 }
 
-/** Inline policy has the highest normal config precedence in OpenCode v1. */
-export function openCodeSecurityConfig(): Record<string, unknown> {
-  const sensitivePathPolicy = Object.fromEntries([
-    ["*", "allow"],
-    ...SENSITIVE_FILE_DENY_GLOBS.map((glob) => [glob, "deny"]),
-    ...SENSITIVE_PATH_ALLOW_GLOBS.map((glob) => [glob, "allow"]),
+type OpenCodePermission = { action: string; resource: string; effect: "allow" | "deny" };
+type OpenCodeMcpServer = { type: "local"; command: string[]; environment: Record<string, string>; disabled: boolean; codemode: false; timeout: { catalog: number; execution: number } };
+type OpenCodeConfig = {
+  agents?: Record<string, { mode?: string; system?: string; permissions?: OpenCodePermission[] }>;
+  permissions?: OpenCodePermission[];
+  mcp?: { servers?: Record<string, OpenCodeMcpServer> };
+  [key: string]: unknown;
+};
+
+function openCodeMcpServer(config: ArtifactMcpConfig, execution: number): OpenCodeMcpServer {
+  return { type: "local", command: [config.command, ...config.args], environment: config.env,
+    disabled: false, codemode: false, timeout: { catalog: 120_000, execution },
+  };
+}
+
+/** Native V2 rules are ordered; the last matching permission wins. */
+export function openCodeSecurityConfig() {
+  const sensitivePathPolicy = [
+    { resource: "*", effect: "allow" as const },
+    ...SENSITIVE_FILE_DENY_GLOBS.map(resource => ({ resource, effect: "deny" as const })),
+    ...SENSITIVE_PATH_ALLOW_GLOBS.map(resource => ({ resource, effect: "allow" as const })),
     // OpenCode uses the last matching rule, so credential-directory denials must win.
-    ...SENSITIVE_DIRECTORY_DENY_GLOBS.map((glob) => [glob, "deny"]),
-  ]);
+    ...SENSITIVE_DIRECTORY_DENY_GLOBS.map(resource => ({ resource, effect: "deny" as const })),
+  ];
   return {
-    autoupdate: false,
-    share: "disabled",
-    plugin: [],
-    permission: {
-      "*": "deny",
-      read: sensitivePathPolicy,
-      edit: sensitivePathPolicy,
-      glob: "allow",
+    plugins: [],
+    permissions: [
+      { action: "*", resource: "*", effect: "deny" as const },
+      ...["read", "edit"].flatMap(action => sensitivePathPolicy.map(rule => ({ action, ...rule }))),
+      ...["glob", "list", "webfetch", "websearch", "question", "todowrite", "todoread"].map(action => ({ action, resource: "*", effect: "allow" as const })),
       // OpenCode matches grep permissions against the regex, not searched paths, so
       // path-based secret exclusions cannot secure it. File reads remain available.
-      grep: "deny",
-      list: "allow",
       // LSP servers are repository-controlled child processes and would inherit provider credentials.
-      lsp: "deny",
-      webfetch: "allow",
-      websearch: "allow",
-      question: "allow",
-      todowrite: "allow",
-      todoread: "allow",
-      external_directory: "deny",
-      bash: "deny",
-      task: "deny",
-      skill: "deny",
-    },
+      ...["grep", "lsp", "external_directory", "shell", "subagent", "skill"].map(action => ({ action, resource: "*", effect: "deny" as const })),
+    ],
+  } satisfies OpenCodeConfig;
+}
+
+/** Hide ambient configuration without moving the persistent session/credential database. */
+export function openCodeIsolatedEnvironment(source: NodeJS.ProcessEnv, directory: string): NodeJS.ProcessEnv {
+  return { ...source,
+    HOME: directory, USERPROFILE: directory,
+    XDG_DATA_HOME: source.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"),
+    OPENCODE_CONFIG_DIR: path.join(directory, "config"),
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1",
   };
 }
 
@@ -122,33 +135,30 @@ export function openCodeChildEnvironment(
 ): Record<string, string> {
   const environment = providerChildEnvironment("opencode", source);
   if (artifacts || rulesets || github || systemPrompt) {
-    const config = configuredSecurityMode(source) === "shared" ? openCodeSecurityConfig()
+    const config: OpenCodeConfig = configuredSecurityMode(source) === "shared" ? openCodeSecurityConfig()
       : JSON.parse(environment.OPENCODE_CONFIG_CONTENT || "{}");
     if (systemPrompt) {
       const name = agentName ?? openCodeAgentName(systemPrompt);
-      config.agent = {
-        ...(typeof config.agent === "object" && config.agent !== null ? config.agent : {}),
-        [name]: { mode: "primary", prompt: secureSystemPrompt(systemPrompt, { ...source, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: github ? "true" : "false" }) },
+      config.agents = {
+        ...config.agents,
+        [name]: { mode: "primary", system: secureSystemPrompt(systemPrompt, { ...source, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: github ? "true" : "false" }) },
       };
     }
-    config.mcp = { ...(config.mcp ?? {}) };
-    config.permission = { ...(config.permission ?? {}) };
-    delete config.mcp.github_contributions;
+    const servers = { ...config.mcp?.servers };
+    config.mcp = { ...config.mcp, servers };
+    config.permissions = [...(config.permissions ?? [])];
+    delete servers.github_contributions;
     if (github) {
-      config.mcp.github_contributions = { type: "local", command: [github.command, ...github.args], environment: github.env, enabled: true, timeout: 120_000 };
-      config.permission["github_contributions_*"] = "allow";
+      servers.github_contributions = openCodeMcpServer(github, 120_000);
+      config.permissions.push({ action: "github_contributions_*", resource: "*", effect: "allow" });
     }
     if (artifacts) {
-      config.mcp.artifact_tools = {
-        type: "local", command: [artifacts.command, ...artifacts.args], environment: artifacts.env, enabled: true, timeout: 960_000,
-      };
-      config.permission["artifact_tools_*"] = "allow";
+      servers.artifact_tools = openCodeMcpServer(artifacts, 960_000);
+      config.permissions.push({ action: "artifact_tools_*", resource: "*", effect: "allow" });
     }
     if (rulesets) {
-      config.mcp.ruleset_tools = {
-        type: "local", command: [rulesets.command, ...rulesets.args], environment: rulesets.env, enabled: true, timeout: 120_000,
-      };
-      config.permission["ruleset_tools_*"] = "allow";
+      servers.ruleset_tools = openCodeMcpServer(rulesets, 120_000);
+      config.permissions.push({ action: "ruleset_tools_*", resource: "*", effect: "allow" });
     }
     return { ...environment, OPENCODE_DISABLE_AUTOUPDATE: "1",
       ...(configuredSecurityMode(source) === "shared" ? { OPENCODE_DISABLE_PROJECT_CONFIG: "1" } : {}),
@@ -165,16 +175,8 @@ export function openCodeChildEnvironment(
   };
 }
 
-export function openCodeBaseRunArguments(
-  source: Record<string, string | undefined> = process.env,
-): string[] {
-  return [
-    "run",
-    "--format",
-    "json",
-    ...(configuredSecurityMode(source) === "shared" ? ["--pure"] : []),
-    "--auto",
-  ];
+export function openCodeBaseRunArguments(): string[] {
+  return ["run", "--format", "json", "--auto"];
 }
 
 export function openCodeRequestPrompt(prompt: string): string {
@@ -199,18 +201,56 @@ export function selectOpenCodeParticipationModel(models: string[], current?: str
  * Runs the `opencode` CLI non-interactively and returns its stdout.
  * Uses spawn (no shell) so prompts/arguments are never interpreted by a shell.
  */
-function runOpenCode(
+type OpenCodeRunOptions = { signal?: AbortSignal; cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig; github?: GitHubContributionMcpConfig; systemPrompt?: string; agentName?: string };
+
+export function assertOpenCodeV2(version: string): void {
+  const match = /^(?:opencode\s+)?v?2\.(\d+)\.(\d+)(?:[-+][\w.-]+)?\s*$/i.exec(version.trim());
+  if (!match || (Number(match[1]) === 0 && Number(match[2]) < 31)) {
+    throw new Error("OpenCode V2 (2.0.31 or newer) is required. Install @opencode/cli@2.0.31 and update OPENCODE_BIN if set.");
+  }
+}
+
+let verifiedBinary: string | undefined;
+
+async function runOpenCode(args: string[], opts: OpenCodeRunOptions): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  const binary = openCodeBin();
+  const isolation = configuredSecurityMode() === "shared" ? fs.mkdtempSync(path.join(os.tmpdir(), "ai-assistant-opencode-")) : undefined;
+  try {
+    const base = openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets, opts.systemPrompt, opts.agentName, opts.github);
+    const env = isolation ? openCodeIsolatedEnvironment(base, isolation) : base;
+    if (verifiedBinary !== binary) {
+      const version = await executeOpenCode(binary, ["--version"], opts, env);
+      if (version.code !== 0) throw new Error("Could not read the OpenCode version.");
+      assertOpenCodeV2(version.stdout);
+      verifiedBinary = binary;
+    }
+    if (args[0] === "run") {
+      const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT || "{}") as OpenCodeConfig;
+      const mcpServers = Object.entries(config.mcp?.servers ?? {}).filter(([, server]) => !server.disabled).map(([name]) => name);
+      return await withOpenCodeServer(binary, { ...opts, env, mcpServers }, (url, environment, signal) =>
+        executeOpenCode(binary, ["run", "--server", url, ...args.slice(1)], { ...opts, signal }, environment));
+    }
+    const command = args[0] === "--version" ? args : [...args, "--standalone"];
+    return await executeOpenCode(binary, command, opts, env);
+  } finally {
+    if (isolation) fs.rmSync(isolation, { recursive: true, force: true });
+  }
+}
+
+function executeOpenCode(
+  binary: string,
   args: string[],
-  opts: { signal?: AbortSignal; cwd?: string; timeoutMs: number; providerName?: string; artifacts?: ArtifactMcpConfig; rulesets?: RulesetMcpConfig; github?: GitHubContributionMcpConfig; systemPrompt?: string; agentName?: string }
+  opts: OpenCodeRunOptions,
+  env: NodeJS.ProcessEnv,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const cancellationGraceMs = configuredMilliseconds("AI_CANCELLATION_GRACE_MS", 5_000);
-    const child = spawn(openCodeBin(), args, {
+    const child = spawn(binary, args, {
       cwd: opts.cwd,
       signal: opts.signal,
       killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "pipe"],
-      env: openCodeChildEnvironment(process.env, opts.artifacts, opts.rulesets, opts.systemPrompt, opts.agentName, opts.github),
+      env,
     });
 
     let stdout = "";
@@ -349,7 +389,7 @@ export class OpenCodeProvider implements Provider {
       const response = await this.githubTools.run(userId, options, context.githubContributionsEnabled, githubRun => runWithRulesetTools(async (rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(userId, artifactRun, imagePaths, options, async (_runtime, staged) => {
         for (const file of staged.filter((file) => !file.binary)) args.push("--file", file.path);
         const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
-        args.push(githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun));
+          args.push(githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun));
         const stopProgress = startProgressUpdates(options);
         const { stdout, stderr, code } = await runOpenCode(args, {
           cwd: workingDirectory,
@@ -394,44 +434,41 @@ export class OpenCodeProvider implements Provider {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ai-assistant-classifier-"));
     const started = Date.now();
     try {
-      // Isolate OpenCode's session database while preserving the operator's login.
       const dataDirectory = path.join(directory, "data");
-      const authDirectory = path.join(dataDirectory, "opencode");
-      fs.mkdirSync(authDirectory, { recursive: true, mode: 0o700 });
-      const authFile = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "opencode", "auth.json");
-      if (fs.existsSync(authFile)) {
-        const target = path.join(authDirectory, "auth.json");
-        fs.copyFileSync(authFile, target);
-        fs.chmodSync(target, 0o600);
-      }
       const config = {
-        autoupdate: false, share: "disabled", plugin: [], mcp: {}, permission: { "*": "deny" },
-        agent: { build: { tools: { "*": false }, permission: { "*": "deny" } } },
+        plugins: [], mcp: { servers: {} },
+        permissions: [{ action: "*", resource: "*", effect: "deny" }],
+        agents: { build: { permissions: [{ action: "*", resource: "*", effect: "deny" }] } },
       };
+      const source = openCodeIsolatedEnvironment(providerChildEnvironment("opencode", { ...process.env, AI_ASSISTANT_SECURITY_MODE: "shared" }), directory);
       const env = {
-        ...providerChildEnvironment("opencode", { ...process.env, AI_ASSISTANT_SECURITY_MODE: "shared" }),
+        ...source,
         XDG_DATA_HOME: dataDirectory, XDG_STATE_HOME: path.join(directory, "state"),
         OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_PROJECT_CONFIG: "1",
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
       };
+      const run = (args: string[], environment: NodeJS.ProcessEnv = env, stdin?: string) => {
+        const remaining = options.timeoutMs - (Date.now() - started);
+        if (remaining <= 0) throw new Error("Participation evaluator timed out during setup.");
+        return this.participationProcesses.run(openCodeBin(), args, { cwd: directory, timeoutMs: remaining, env: environment, stdin });
+      };
+      assertOpenCodeV2(await run(["--version"]));
+      // V2 stores credentials in SQLite. Transfer only credentials, never the user's
+      // conversations; keep secrets in memory and the private, disposable database.
+      const credentials = await run(["auth", "export", "--standalone"], { ...source, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) });
+      await run(["auth", "import", "--standalone"], env, credentials);
       if (!options.model && !this.participationModels) {
-        const listed = await this.participationProcesses.run(openCodeBin(), ["models", "--pure"], {
-          cwd: directory, timeoutMs: options.timeoutMs, env,
-        });
+        const listed = await run(["models", "--standalone"]);
         this.participationModels = listed.split("\n").map(line => line.trim()).filter(line => /^[^\s/]+\/[^\s]+$/.test(line));
       }
       const model = options.model ?? selectOpenCodeParticipationModel(this.participationModels!, options.connectionModel ?? this.configuredModel());
       if (model.endsWith("/gpt-5.6-luna")) {
         const slash = model.indexOf("/");
         env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config,
-          provider: { [model.slice(0, slash)]: { models: { [model.slice(slash + 1)]: { options: { reasoningEffort: options.effort } } } } },
+          providers: { [model.slice(0, slash)]: { models: { [model.slice(slash + 1)]: { body: { reasoningEffort: options.effort } } } } },
         });
       }
-      const remaining = options.timeoutMs - (Date.now() - started);
-      if (remaining <= 0) throw new Error("Participation evaluator timed out during model discovery.");
-      const stdout = await this.participationProcesses.run(openCodeBin(), [
-        "run", "--format", "json", "--pure", "--auto", "--model", model, prompt,
-      ], { cwd: directory, timeoutMs: remaining, env });
+      const stdout = await run(["run", "--format", "json", "--standalone", "--title", "Participation", "--model", model, prompt]);
       return finalTextFromEvents(parseEvents(stdout));
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   }
@@ -440,7 +477,7 @@ export class OpenCodeProvider implements Provider {
     let version = "unknown";
     try {
       const res = await runOpenCode(["--version"], { cwd: ensureProviderWorkingDirectory(), timeoutMs: 30_000 });
-      version = res.stdout.trim() || version;
+        version = res.stdout.trim().replace(/^opencode\s+/i, "") || version;
     } catch (err) {
       console.warn("[OpenCodeProvider] Failed to read opencode version:", err);
     }
@@ -448,10 +485,11 @@ export class OpenCodeProvider implements Provider {
     let isAuthenticated = false;
     let login: string | undefined;
     try {
-      const res = await runOpenCode(["auth", "list"], { cwd: ensureProviderWorkingDirectory(), timeoutMs: 30_000 });
-      isAuthenticated = res.code === 0;
-      // Very loose: expose auth.json path as the login label.
-      login = isAuthenticated ? "opencode auth (see ~/.local/share/opencode/auth.json)" : undefined;
+        const res = await runOpenCode(["auth", "list", "--format", "json"], { cwd: ensureProviderWorkingDirectory(), timeoutMs: 30_000 });
+        const integrations: unknown = res.code === 0 ? JSON.parse(res.stdout) : [];
+        isAuthenticated = Array.isArray(integrations) && integrations.length > 0;
+        // Credentials are stored in OpenCode V2's persistent database.
+        login = isAuthenticated ? "opencode auth (stored in OpenCode's database)" : undefined;
     } catch (err) {
       console.warn("[OpenCodeProvider] Failed to read opencode auth:", err);
     }

@@ -27,7 +27,7 @@ FROM node:22-bookworm-slim AS runtime
 
 ARG VERSION=dev
 ARG REVISION=unknown
-ARG OPENCODE_VERSION=1.18.29
+ARG OPENCODE_VERSION=2.0.31
 LABEL org.opencontainers.image.title="AI Assistant" \
       org.opencontainers.image.description="Sandboxed Discord AI assistant" \
       org.opencontainers.image.source="https://github.com/Rubiss-Projects/ai-assistant" \
@@ -38,7 +38,7 @@ LABEL org.opencontainers.image.title="AI Assistant" \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep ffmpeg chromium python3 make g++ \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global "opencode-ai@${OPENCODE_VERSION}" \
+    && npm install --global "@opencode/cli@${OPENCODE_VERSION}" \
     && npm cache clean --force \
     && groupadd --gid 10001 assistant \
     && useradd --uid 10001 --gid assistant --home-dir /data --create-home assistant \

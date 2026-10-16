@@ -456,26 +456,21 @@ test("Codex unrestricted mode preserves legacy client configuration", () => {
 });
 
 test("OpenCode shared mode is deny-by-default with no shell, plugins, external paths, or MCP fallback", () => {
-  const config = openCodeSecurityConfig() as Record<string, any>;
-  const permission = config.permission as Record<string, any>;
-  assert.equal(permission["*"], "deny");
-  assert.equal(permission.bash, "deny");
-  assert.equal(permission.external_directory, "deny");
-  assert.equal(permission.grep, "deny");
-  assert.equal(permission.edit["*"], "allow");
-  assert.equal(permission.edit["**/.*/**"], "deny");
-  assert.equal(permission.edit["AUTH.JSON"], "deny");
-  assert.equal(permission.edit["**/AUTH.JSON"], "deny");
-  assert.equal(permission.edit[".env.example"], "allow");
-  assert.equal(permission.edit["**/.env.example"], undefined);
-  assert.deepEqual(permission.edit, permission.read);
-  const openCodeRuleOrder = Object.keys(permission.edit);
+  const config = openCodeSecurityConfig();
+  const permission = (action: string, resource = "*") => config.permissions.findLast(rule => rule.action === action && rule.resource === resource)?.effect;
+  assert.equal(permission("*"), "deny");
+  for (const action of ["shell", "external_directory", "grep", "lsp", "subagent", "skill"]) assert.equal(permission(action), "deny");
+  assert.equal(permission("edit"), "allow");
+  for (const resource of ["**/.*/**", "AUTH.JSON", "**/AUTH.JSON"]) assert.equal(permission("edit", resource), "deny");
+  assert.equal(permission("edit", ".env.example"), "allow");
+  assert.equal(permission("edit", "**/.env.example"), undefined);
+  const edits = config.permissions.filter(rule => rule.action === "edit");
+  const reads = config.permissions.filter(rule => rule.action === "read");
+  assert.deepEqual(edits.map(({ resource, effect }) => ({ resource, effect })), reads.map(({ resource, effect }) => ({ resource, effect })));
   for (const directoryGlob of SENSITIVE_DIRECTORY_DENY_GLOBS) {
-    assert.ok(
-      openCodeRuleOrder.indexOf(".env.example") < openCodeRuleOrder.indexOf(directoryGlob),
-    );
+    assert.ok(edits.findIndex(rule => rule.resource === ".env.example") < edits.findIndex(rule => rule.resource === directoryGlob));
   }
-  assert.deepEqual(config.plugin, []);
+  assert.deepEqual(config.plugins, []);
 
   const env = openCodeChildEnvironment({
     AI_ASSISTANT_SECURITY_MODE: "shared",
@@ -494,14 +489,7 @@ test("OpenCode unrestricted mode restores its inherited environment and normal c
   assert.equal(env.DISCORD_TOKEN, "discord-secret");
   assert.equal(env.OPENCODE_CONFIG_CONTENT, undefined);
   assert.equal(env.OPENCODE_DISABLE_AUTOUPDATE, "1");
-  assert.equal(
-    openCodeBaseRunArguments({ AI_ASSISTANT_SECURITY_MODE: "unrestricted" }).includes("--pure"),
-    false,
-  );
-  assert.equal(
-    openCodeBaseRunArguments({ AI_ASSISTANT_SECURITY_MODE: "shared" }).includes("--pure"),
-    true,
-  );
+  assert.deepEqual(openCodeBaseRunArguments(), ["run", "--format", "json", "--auto"]);
 });
 
 test("OpenCode can add a generated primary agent for dynamic system prompts", () => {
@@ -513,8 +501,8 @@ test("OpenCode can add a generated primary agent for dynamic system prompts", ()
     "ai-assistant-test",
   );
   const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
-  assert.equal(config.agent["ai-assistant-test"].mode, "primary");
-  const prompt: string = config.agent["ai-assistant-test"].prompt;
+  assert.equal(config.agents["ai-assistant-test"].mode, "primary");
+  const prompt: string = config.agents["ai-assistant-test"].system;
   assert.match(prompt, /operator plus user rules/);
   assert.match(prompt, /External side effects are disabled/);
   assert.equal(secureSystemPrompt(prompt, { AI_ASSISTANT_SECURITY_MODE: "shared" }), prompt);

@@ -630,7 +630,7 @@ test("provider policies expose only the contribution bridge and refresh its capa
   assert.doesNotMatch(network ?? "", /api\.github\.com|"github\.com"/);
   const openCode = openCodeChildEnvironment(process.env, undefined, undefined, context.systemPrompt, undefined, bridge);
   assert.match(openCode.OPENCODE_CONFIG_CONTENT, /github_contributions/);
-  assert.equal(JSON.parse(openCode.OPENCODE_CONFIG_CONTENT).permission.bash, "deny");
+  assert.equal(JSON.parse(openCode.OPENCODE_CONFIG_CONTENT).permissions.findLast((rule: { action: string }) => rule.action === "shell").effect, "deny");
   const decide = createCopilotPermissionHandler(directory);
   assert.equal((await decide({ kind: "mcp", serverName: "github_contributions", toolName: "github_contribution_publish", toolTitle: "Publish", readOnly: false }, { sessionId: "test" })).kind, "approve-once");
   assert.equal((await decide({ kind: "mcp", serverName: "github", toolName: "create_pull_request", toolTitle: "Publish", readOnly: false }, { sessionId: "test" })).kind, "reject");

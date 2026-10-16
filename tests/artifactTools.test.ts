@@ -246,9 +246,9 @@ test("provider configuration enables only the host artifact bridge in shared mod
   assert.doesNotMatch(codex.configOverrides![0], /default_tools_approval_mode/);
   assert.equal(codex.env?.AI_ARTIFACT_BRIDGE_TOKEN, undefined);
   const openCode = JSON.parse(openCodeChildEnvironment({ AI_ASSISTANT_SECURITY_MODE: "shared" }, config).OPENCODE_CONFIG_CONTENT);
-  assert.deepEqual(Object.keys(openCode.mcp), ["artifact_tools"]);
-  assert.equal(openCode.permission.bash, "deny");
-  assert.equal(openCode.permission["artifact_tools_*"], "allow");
+  assert.deepEqual(Object.keys(openCode.mcp.servers), ["artifact_tools"]);
+  assert.equal(openCode.permissions.findLast((rule: { action: string }) => rule.action === "shell").effect, "deny");
+  assert.equal(openCode.permissions.findLast((rule: { action: string }) => rule.action === "artifact_tools_*").effect, "allow");
   const permission = createCopilotPermissionHandler(workspace);
   assert.equal((await permission({ kind: "mcp", serverName: "artifact_tools", readOnly: false } as never, {} as never)).kind, "approve-once");
   assert.equal((await permission({ kind: "mcp", serverName: "other", readOnly: false } as never, {} as never)).kind, "reject");
