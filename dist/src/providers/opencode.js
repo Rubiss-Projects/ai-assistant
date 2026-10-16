@@ -12,7 +12,7 @@ import { ArtifactToolSessions, artifactInputPrompt } from "../common/artifactToo
 import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBridge.js";
 import { GitHubContributionSessions, githubContributionPrompt } from "../common/githubContributionToolBridge.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
-import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
+import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, OPENCODE_API_KEY_ENVIRONMENT_KEYS, resolveConfiguredWorkspace, SENSITIVE_DIRECTORY_DENY_GLOBS, SENSITIVE_FILE_DENY_GLOBS, SENSITIVE_PATH_ALLOW_GLOBS, secureSystemPrompt, } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError } from "./types.js";
 /**
  * Resolves the `opencode` executable. Prefers OPENCODE_BIN, then well-known
@@ -82,6 +82,7 @@ export function openCodeIsolatedEnvironment(source, directory) {
     return { ...source,
         HOME: directory, USERPROFILE: directory,
         XDG_DATA_HOME: source.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"),
+        XDG_CONFIG_HOME: path.join(directory, "xdg-config"),
         OPENCODE_CONFIG_DIR: path.join(directory, "config"),
         OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1",
     };
@@ -100,19 +101,28 @@ export function openCodeChildEnvironment(source = process.env, artifacts, rulese
         }
         const servers = { ...config.mcp?.servers };
         config.mcp = { ...config.mcp, servers };
-        config.permissions = [...(config.permissions ?? [])];
+        // Keep an existing legacy policy in its original format when adding grants;
+        // introducing a competing native field is unnecessary for V1-format config.
+        const grant = (action) => {
+            if (config.permissions || config.permission === undefined) {
+                config.permissions = [...(config.permissions ?? []), { action, resource: "*", effect: "allow" }];
+            }
+            else {
+                config.permission = { ...(typeof config.permission === "string" ? { "*": config.permission } : config.permission), [action]: "allow" };
+            }
+        };
         delete servers.github_contributions;
         if (github) {
             servers.github_contributions = openCodeMcpServer(github, 120_000);
-            config.permissions.push({ action: "github_contributions_*", resource: "*", effect: "allow" });
+            grant("github_contributions_*");
         }
         if (artifacts) {
             servers.artifact_tools = openCodeMcpServer(artifacts, 960_000);
-            config.permissions.push({ action: "artifact_tools_*", resource: "*", effect: "allow" });
+            grant("artifact_tools_*");
         }
         if (rulesets) {
             servers.ruleset_tools = openCodeMcpServer(rulesets, 120_000);
-            config.permissions.push({ action: "ruleset_tools_*", resource: "*", effect: "allow" });
+            grant("ruleset_tools_*");
         }
         return { ...environment, OPENCODE_DISABLE_AUTOUPDATE: "1",
             ...(configuredSecurityMode(source) === "shared" ? { OPENCODE_DISABLE_PROJECT_CONFIG: "1" } : {}),
@@ -389,7 +399,7 @@ export class OpenCodeProvider {
             if (model.endsWith("/gpt-5.6-luna")) {
                 const slash = model.indexOf("/");
                 env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config,
-                    providers: { [model.slice(0, slash)]: { models: { [model.slice(slash + 1)]: { body: { reasoningEffort: options.effort } } } } },
+                    providers: { [model.slice(0, slash)]: { models: { [model.slice(slash + 1)]: { settings: { reasoningEffort: options.effort } } } } },
                 });
             }
             const stdout = await run(["run", "--format", "json", "--standalone", "--title", "Participation", "--model", model, prompt]);
@@ -408,14 +418,14 @@ export class OpenCodeProvider {
         catch (err) {
             console.warn("[OpenCodeProvider] Failed to read opencode version:", err);
         }
-        let isAuthenticated = false;
-        let login;
+        const environmentKey = OPENCODE_API_KEY_ENVIRONMENT_KEYS.find(key => process.env[key]?.trim());
+        let isAuthenticated = Boolean(environmentKey);
+        let login = environmentKey;
         try {
             const res = await runOpenCode(["auth", "list", "--format", "json"], { cwd: ensureProviderWorkingDirectory(), timeoutMs: 30_000 });
             const integrations = res.code === 0 ? JSON.parse(res.stdout) : [];
-            isAuthenticated = Array.isArray(integrations) && integrations.length > 0;
-            // Credentials are stored in OpenCode V2's persistent database.
-            login = isAuthenticated ? "opencode auth (stored in OpenCode's database)" : undefined;
+            isAuthenticated ||= Array.isArray(integrations) && integrations.length > 0;
+            login ??= isAuthenticated ? "opencode auth (stored credentials or provider environment)" : undefined;
         }
         catch (err) {
             console.warn("[OpenCodeProvider] Failed to read opencode auth:", err);
@@ -425,7 +435,7 @@ export class OpenCodeProvider {
             authStatus: {
                 isAuthenticated,
                 login,
-                authType: isAuthenticated ? "opencode credentials file" : "opencode auth login",
+                authType: environmentKey ? "environment API key" : isAuthenticated ? "opencode credentials or provider environment" : "opencode auth login",
                 host: "local",
                 statusMessage: isAuthenticated
                     ? undefined

@@ -50,17 +50,18 @@ export async function withOpenCodeServer(binary, options, action) {
         server.once("close", () => lifetime.abort(new Error("OpenCode server exited during the turn.")));
         // The CLI resolves the released API's route and authentication; no generated
         // client or hardcoded server API contract needs to be kept in sync here.
-        while (options.mcpServers.length) {
+        while (true) {
             signal.throwIfAborted();
             const stdout = await runParticipationProcess(binary, ["api", "mcp.list", "--server", url, "--param", `directory=${options.cwd ?? process.cwd()}`], {
                 cwd: options.cwd ?? process.cwd(), env, signal, timeoutMs: options.timeoutMs,
             });
             const result = JSON.parse(stdout);
             const configured = options.mcpServers.map(name => result.data.find(server => server.name === name));
-            if (configured.every(server => server?.status.status === "connected"))
+            const enabled = result.data.filter(server => server.status.status !== "disabled");
+            if (configured.every(server => server?.status.status === "connected") && enabled.every(server => server.status.status === "connected"))
                 break;
-            if (configured.some(server => server && !["pending", "connected"].includes(server.status.status)))
-                throw new Error("An OpenCode host tool bridge failed to connect.");
+            if (enabled.some(server => !["pending", "connected"].includes(server.status.status)))
+                throw new Error("An OpenCode MCP server failed to connect.");
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         return await action(url, env, signal);
