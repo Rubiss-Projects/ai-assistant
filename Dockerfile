@@ -18,10 +18,10 @@ COPY .agents/skills/babysit-contribution ./.agents/skills/babysit-contribution
 RUN npm run build && npm prune --omit=dev
 
 # Relocate the complete native Codex bundle to a stable system path. The CLI
-# resolves Bubblewrap, zsh, rg, and its code-mode host relative to this layout;
+# resolves Bubblewrap, rg, and its code-mode host relative to this layout;
 # copying only bin/codex makes every shared-mode sandbox launch fail.
 RUN node -e "const fs=require('fs');const path=require('path');const arch=process.arch==='arm64'?'arm64':'x64';const triple=arch==='arm64'?'aarch64-unknown-linux-musl':'x86_64-unknown-linux-musl';const pkg=require.resolve('@openai/codex-linux-'+arch+'/package.json');fs.cpSync(path.join(path.dirname(pkg),'vendor',triple),'/app/codex-runtime',{recursive:true})" \
-    && chmod 0555 /app/codex-runtime/bin/* /app/codex-runtime/codex-path/* /app/codex-runtime/codex-resources/bwrap /app/codex-runtime/codex-resources/zsh/bin/zsh
+    && chmod 0555 /app/codex-runtime/bin/* /app/codex-runtime/codex-path/* /app/codex-runtime/codex-resources/bwrap
 
 FROM node:22-bookworm-slim AS runtime
 
