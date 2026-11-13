@@ -48,8 +48,9 @@ jobs:
 
       - name: Verify sandboxed dependency install, build and tests
         # Match the workspace test's hosted-runner namespace accommodation.
+        # Allow room for the native Codex bundle, npm cache, and installed dependencies.
         # No credentials enter this container; the inner sandbox uses production policy.
-        run: docker run --rm --privileged --user 0:0 --read-only --pids-limit 256 --tmpfs /data:rw,exec,nosuid,nodev,size=1g --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m --mount "type=bind,source=$PWD,target=/source,readonly" --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-codex-development.js /source
+        run: docker run --rm --privileged --user 0:0 --read-only --pids-limit 256 --tmpfs /data:rw,exec,nosuid,nodev,size=3g --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m --mount "type=bind,source=$PWD,target=/source,readonly" --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-codex-development.js /source
 
       - name: Verify software transcoding and artifact MCP delivery
         run: docker run --rm --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-artifacts.js
