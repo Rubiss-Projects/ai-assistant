@@ -184,6 +184,18 @@ export class SessionManager {
     listReasoningEfforts(key) {
         return this.providerFor(key).listReasoningEfforts();
     }
+    async setFastMode(key, enabled) {
+        const provider = this.providerFor(key);
+        if (!provider.setFastMode)
+            throw new UnsupportedError(provider.displayName, "fast mode");
+        await provider.setFastMode(key, enabled);
+    }
+    async getFastMode(key) {
+        const provider = this.providerFor(key);
+        if (!provider.getFastMode)
+            throw new UnsupportedError(provider.displayName, "fast mode");
+        return provider.getFastMode(key);
+    }
     setReasoningEffort(key, effort) {
         return this.providerFor(key).setReasoningEffort(key, effort);
     }

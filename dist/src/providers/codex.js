@@ -240,6 +240,14 @@ export function codexGeneratedImagePaths(event) {
     visit(event);
     return [...paths];
 }
+export function configuredCodexFastMode() {
+    const value = process.env.CODEX_FAST_MODE?.trim().toLowerCase();
+    if (!value || value === "false")
+        return false;
+    if (value === "true")
+        return true;
+    throw new Error("Invalid CODEX_FAST_MODE: expected true or false");
+}
 function configuredCodexModel() {
     return process.env.CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
 }
@@ -379,11 +387,13 @@ export class CodexProvider {
     histories = new Map();
     workingDirOverrides = new Map();
     modelOverrides = new Map();
+    fastModeOverrides = new Map();
     reasoningEffortOverrides = new Map();
     mcpToolOverrides = new Map();
     clientFor(key, context, artifacts, rulesets, github) {
         // Connection bindings are private and transient: rebuild the client without rotating history.
-        const fingerprint = contextFingerprint({ context: context.fingerprint, artifacts, rulesets, github });
+        const fastMode = this.fastModeOverrides.get(key) ?? configuredCodexFastMode();
+        const fingerprint = contextFingerprint({ context: context.fingerprint, artifacts, rulesets, github, fastMode });
         const existing = this.clients.get(key);
         if (existing?.fingerprint === fingerprint)
             return existing.client;
@@ -392,7 +402,8 @@ export class CodexProvider {
             temporaryDirectory = createCodexSessionTemporaryDirectory();
             this.temporaryDirectories.set(key, temporaryDirectory);
         }
-        const client = this.makeClient(codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github, context.sitesEnabled, Boolean(context.transportContext)));
+        const options = codexClientOptions(temporaryDirectory, artifacts, rulesets, context.systemPrompt, github, context.sitesEnabled, Boolean(context.transportContext));
+        const client = this.makeClient({ ...options, config: { ...options.config, service_tier: fastMode ? "fast" : "default" } });
         this.clients.set(key, { fingerprint, client });
         this.sessions.delete(key);
         return client;
@@ -743,6 +754,13 @@ export class CodexProvider {
     async getCurrentModel(key) {
         return this.modelOverrides.get(key) ?? configuredCodexModel();
     }
+    async setFastMode(key, enabled) {
+        this.fastModeOverrides.set(key, enabled);
+        this.sessions.delete(key);
+    }
+    async getFastMode(key) {
+        return this.fastModeOverrides.get(key) ?? configuredCodexFastMode();
+    }
     async listReasoningEfforts() {
         return [...REASONING_EFFORTS];
     }
@@ -804,6 +822,7 @@ export class CodexProvider {
         this.workingDirOverrides.delete(key);
         this.modelOverrides.delete(key);
         this.reasoningEffortOverrides.delete(key);
+        this.fastModeOverrides.delete(key);
         this.mcpToolOverrides.delete(key);
     }
     async resetSession(key) {

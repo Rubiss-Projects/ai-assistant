@@ -172,6 +172,8 @@ export interface Provider {
   setModel(userId: string, model: string): Promise<void>;
   getCurrentModel(key: string): Promise<string | undefined>;
 
+  setFastMode?(key: string, enabled: boolean): Promise<void>;
+  getFastMode?(key: string): Promise<boolean>;
   listReasoningEfforts(): Promise<string[]>;
   setReasoningEffort(key: string, effort: string): Promise<void>;
   getCurrentReasoningEffort(key: string): Promise<string>;

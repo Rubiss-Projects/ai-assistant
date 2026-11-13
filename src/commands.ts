@@ -3,6 +3,10 @@ import { SlashCommandBuilder } from "discord.js";
 import { githubCommand } from "./adapters/discord/github.js";
 
 export const commands = [
+  new SlashCommandBuilder().setName("fast").setDescription("Manage Codex fast mode")
+    .addSubcommand(sub => sub.setName("current").setDescription("Show fast mode"))
+    .addSubcommand(sub => sub.setName("set").setDescription("Set fast mode for the next message")
+      .addBooleanOption(opt => opt.setName("enabled").setDescription("Enable fast mode").setRequired(true))),
   githubCommand,
   scheduleCommand,
   new SlashCommandBuilder()
@@ -365,6 +369,7 @@ export type CommandName =
   | "servers"
   | "leave"
   | "model"
+  | "fast"
   | "reasoning"
   | "status"
   | "history"

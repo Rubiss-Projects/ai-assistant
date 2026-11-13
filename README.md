@@ -745,6 +745,7 @@ Provider timing and progress settings require integer values of at least `10`; i
 | `OPENAI_API_KEY` | Unset; persisted Codex CLI login | Authenticates Codex with an API key. Also passed to OpenCode when using an OpenAI model provider. |
 | `OPENAI_BASE_URL` | SDK default | Overrides the OpenAI API endpoint used by Codex, for example `https://api.openai.com/v1`. |
 | `CODEX_MODEL` | `gpt-5.6-sol` | Default Codex model ID. |
+| `CODEX_FAST_MODE` | `false` | Codex fast mode default (`true`/`false`). Override with `/fast set enabled:true` or `false`; inspect with `/fast current`. |
 | `CODEX_REASONING_EFFORT` | `low`; accepts `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Default Codex reasoning effort. Invalid values raise an error; model support may vary. |
 | `CODEX_WEB_SEARCH_MODE` | `cached`; accepts `disabled`, `cached`, `indexed`, `live` | Controls Codex hosted web search for normal Discord, Slack, and local CLI conversations. Values are trimmed and case-insensitive; invalid values stop Codex startup or selection but do not affect Copilot or OpenCode. `cached` uses the hosted cache, `indexed` may search the hosted index, `live` permits current live retrieval, and `disabled` removes hosted search. This does not change local command networking. Restart after changing it (for Compose, recreate with `docker compose up -d`). |
 | `CODEX_HOME` | `~/.codex` | Codex configuration/login directory, also used to locate its model cache and generated images. |
