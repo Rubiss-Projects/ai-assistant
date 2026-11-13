@@ -109,12 +109,12 @@ export function slashCommandCapability({ commandName: command, subcommand: sub, 
     if (["servers", "leave", "status", "fleet"].includes(command) && !sub)
         return "bot.manage";
     const read = {
-        model: ["list", "current"], reasoning: ["list", "current"], provider: ["list", "current"],
+        fast: ["current"], model: ["list", "current"], reasoning: ["list", "current"], provider: ["list", "current"],
         agent: ["list", "current"], mode: ["get"], plan: ["read", "update", "delete"],
     };
     if (sub && read[command]?.includes(sub))
         return "chat.use";
-    if ((["model", "reasoning", "provider", "mode"].includes(command) && sub === "set")
+    if ((["model", "reasoning", "provider", "mode", "fast"].includes(command) && sub === "set")
         || (command === "agent" && ["select", "deselect"].includes(sub ?? "")))
         return "session.configure";
     if (command === "workspace" && ["list", "read", "create"].includes(sub ?? ""))
