@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeQueryOptions, claudeToolDecision, configuredClaudeFastMode } from "../src/providers/claude.js";
@@ -83,4 +83,17 @@ test("providers without Sites support keep the no-external-writes boundary", (t)
   assert.equal(claude.sitesEnabled, false);
   assert.doesNotMatch(claude.systemPrompt, /ChatGPT Sites/);
   assert.match(claude.systemPrompt, /External side effects are disabled/);
+});
+
+test("shared Claude rejects a config directory inside the workspace, including symlink aliases", (t) => {
+  const root = workspace(t);
+  const outside = workspace(t);
+  mkdirSync(join(root, "state"));
+  symlinkSync(join(root, "state"), join(outside, "alias"));
+  const params = { workingDirectory: root, model: "m", effort: "medium" as const, fastMode: false, systemPrompt: "", mcpServers: {} };
+  const options = (dir: string) => claudeQueryOptions(params, { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: root, CLAUDE_CONFIG_DIR: dir });
+
+  assert.throws(() => options(join(root, "state")), /CLAUDE_CONFIG_DIR must be outside/);
+  assert.throws(() => options(join(outside, "alias")), /CLAUDE_CONFIG_DIR must be outside/);
+  assert.doesNotThrow(() => options(join(outside, "claude")));
 });
