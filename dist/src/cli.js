@@ -47,7 +47,7 @@ async function setup() {
     const token = await promptVar(rl, "Discord Bot Token", "DISCORD_TOKEN", existing, true);
     const appId = await promptVar(rl, "Discord Application ID", "DISCORD_APP_ID", existing, true);
     const guildId = await promptVar(rl, "Discord Guild ID (for slash command registration)", "DISCORD_GUILD_ID", existing, true);
-    const provider = await promptVar(rl, "AI provider (copilot | codex | opencode | claude)", "PROVIDER", existing, false) || "copilot";
+    const provider = await promptVar(rl, "AI provider (copilot | codex | opencode | claude)", "PROVIDER", existing, false) || "codex";
     const validProviders = ["copilot", "codex", "opencode", "claude"];
     if (!validProviders.includes(provider)) {
         console.error(`\n❌ Invalid provider "${provider}". Choose one of: ${validProviders.join(", ")}.`);

@@ -654,7 +654,7 @@ Defaults below describe behavior when a setting is absent, with template, wizard
 
 | Variable | Default / accepted values | What it does |
 | --- | --- | --- |
-| `PROVIDER` | `copilot`; accepts `copilot`, `codex`, `opencode`, `claude` | Selects the default AI backend. `/provider set` overrides it for a session. |
+| `PROVIDER` | `codex`; accepts `copilot`, `codex`, `opencode`, `claude` | Selects the default AI backend. `/provider set` overrides it for a session. |
 | `AI_ASSISTANT_CONFIG_DIR` | `~/.ai-assistant`; container: `/data` | Changes the CLI's configuration directory. Set in the launching environment **before** invoking the CLI; placing it only inside the file it is meant to locate does not redirect loading. Does not relocate session stores. |
 | `AI_ASSISTANT_SYSTEM_PROMPT` | Unset | Adds persistent operator instructions to every provider. Quote text containing spaces or `#` in `.env`. |
 | `AI_ASSISTANT_SYSTEM_PROMPT_FILE` | Unset | Reads operator instructions from a UTF-8 file, taking precedence over inline text. Relative paths resolve from the bot's working directory. Unreadable files cause an error. In Docker, keep the file under `/data`. |

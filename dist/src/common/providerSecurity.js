@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeProviderName } from "../providers/types.js";
 export const SECURITY_MODES = ["shared", "unrestricted"];
 export const CODEX_WEB_SEARCH_MODES = ["disabled", "cached", "indexed", "live"];
 /**
@@ -55,7 +56,7 @@ export function reportProviderSecurityConfiguration(source = process.env) {
     const sitesEnabled = adapter === "discord" && configuredSitesEnabled(source);
     // CODEX_WEB_SEARCH_MODE belongs to the Codex provider. Other providers must
     // remain startable when an installation retains a stale Codex-only value.
-    const provider = source.PROVIDER?.trim().toLowerCase() || "copilot";
+    const provider = normalizeProviderName(source.PROVIDER);
     const webSearchMode = provider === "codex" ? configuredCodexWebSearchMode(source) : undefined;
     if (mode === "unrestricted") {
         console.warn("[security] AI_ASSISTANT_SECURITY_MODE=unrestricted: Discord sessions retain the provider's full legacy capabilities and may act with the operator's connected identities. Use this only on a private, trusted server.");
