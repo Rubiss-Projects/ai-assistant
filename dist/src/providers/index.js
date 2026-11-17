@@ -2,14 +2,10 @@ import { CopilotProvider } from "./copilot.js";
 import { CodexProvider } from "./codex.js";
 import { OpenCodeProvider } from "./opencode.js";
 import { ClaudeProvider } from "./claude.js";
-import { PROVIDERS } from "./types.js";
-/**
- * Resolves the active provider name from the PROVIDER env var.
- * Defaults to "copilot" (GitHub Copilot) for backward compatibility.
- */
+import { normalizeProviderName, PROVIDERS } from "./types.js";
+/** Resolves the active provider name from the PROVIDER env var, defaulting to Codex. */
 export function configuredProviderName() {
-    const raw = (process.env.PROVIDER ?? "copilot").trim().toLowerCase();
-    return raw || "copilot";
+    return normalizeProviderName(process.env.PROVIDER);
 }
 export function isValidProviderName(name) {
     return PROVIDERS.includes(name.toLowerCase());

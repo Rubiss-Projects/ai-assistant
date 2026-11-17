@@ -6,8 +6,9 @@ import type { UserInstructionContext } from "../utils/userInstructions.js";
 export const PROVIDERS = ["copilot", "codex", "opencode", "claude"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 
+/** Normalizes a configured provider name; blank or unset selects Codex. */
 export function normalizeProviderName(value?: string | null): string {
-  return value?.trim().toLowerCase() || "copilot";
+  return value?.trim().toLowerCase() || "codex";
 }
 
 export class UnsupportedError extends Error {

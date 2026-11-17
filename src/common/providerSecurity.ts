@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ProviderName } from "../providers/types.js";
+import { normalizeProviderName, type ProviderName } from "../providers/types.js";
 
 type Environment = Record<string, string | undefined>;
 
@@ -72,7 +72,7 @@ export function reportProviderSecurityConfiguration(
   const sitesEnabled = adapter === "discord" && configuredSitesEnabled(source);
   // CODEX_WEB_SEARCH_MODE belongs to the Codex provider. Other providers must
   // remain startable when an installation retains a stale Codex-only value.
-  const provider = source.PROVIDER?.trim().toLowerCase() || "copilot";
+  const provider = normalizeProviderName(source.PROVIDER);
   const webSearchMode = provider === "codex" ? configuredCodexWebSearchMode(source) : undefined;
   if (mode === "unrestricted") {
     console.warn(

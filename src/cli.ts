@@ -74,7 +74,7 @@ async function setup(): Promise<void> {
     "PROVIDER",
     existing,
     false
-  ) || "copilot";
+  ) || "codex";
 
   const validProviders = ["copilot", "codex", "opencode", "claude"];
   if (!validProviders.includes(provider)) {

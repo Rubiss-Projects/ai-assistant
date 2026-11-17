@@ -247,7 +247,7 @@ test("AI schedule creation accepts the same default-provider configuration as th
   const { handleSchedule } = await import("../src/handlers/slash/schedule.js");
   const oldProvider = process.env.PROVIDER;
   t.after(() => { if (oldProvider === undefined) delete process.env.PROVIDER; else process.env.PROVIDER = oldProvider; });
-  for (const [configured, expected] of [[undefined, "copilot"], ["", "copilot"], ["   ", "copilot"], [" CoDeX ", "codex"], ["OpenCode", "opencode"]]) {
+  for (const [configured, expected] of [[undefined, "codex"], ["", "codex"], ["   ", "codex"], [" CoPilot ", "copilot"], ["OpenCode", "opencode"]]) {
     if (configured === undefined) delete process.env.PROVIDER; else process.env.PROVIDER = configured;
     let saved: any;
     const replies: string[] = [];

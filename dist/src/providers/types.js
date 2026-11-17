@@ -1,6 +1,7 @@
 export const PROVIDERS = ["copilot", "codex", "opencode", "claude"];
+/** Normalizes a configured provider name; blank or unset selects Codex. */
 export function normalizeProviderName(value) {
-    return value?.trim().toLowerCase() || "copilot";
+    return value?.trim().toLowerCase() || "codex";
 }
 export class UnsupportedError extends Error {
     constructor(providerName, feature) {
