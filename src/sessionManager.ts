@@ -41,7 +41,7 @@ export function runTimeoutMessage(err: unknown): string | null {
 }
 
 /**
- * Facade in front of all AI providers (Copilot / Codex / OpenCode).
+ * Facade in front of all AI providers (Copilot / Codex / OpenCode / Claude).
  *
  * The whole Discord layer (bot, commands, handlers) talks only to this class.
  * It can host any number of providers at once and lets a Discord session key

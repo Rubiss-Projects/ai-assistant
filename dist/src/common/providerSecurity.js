@@ -107,6 +107,8 @@ export const OPENCODE_API_KEY_ENVIRONMENT_KEYS = [
     "MISTRAL_API_KEY", "COHERE_API_KEY", "XAI_API_KEY",
 ];
 const PROVIDER_ENVIRONMENT_KEYS = {
+    // USER lets Claude Code find its macOS keychain login.
+    claude: ["USER", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"],
     codex: ["CODEX_HOME", "OPENAI_BASE_URL"],
     copilot: ["COPILOT_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"],
     opencode: [
@@ -200,6 +202,7 @@ const SENSITIVE_FILE_NAME_LIST = [
 ];
 export const SENSITIVE_DIRECTORY_NAME_LIST = [
     ".aws",
+    ".claude",
     ".codex",
     ".config",
     ".copilot",

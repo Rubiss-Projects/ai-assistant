@@ -1,4 +1,4 @@
-export const PROVIDERS = ["copilot", "codex", "opencode"];
+export const PROVIDERS = ["copilot", "codex", "opencode", "claude"];
 export function normalizeProviderName(value) {
     return value?.trim().toLowerCase() || "copilot";
 }

@@ -3,7 +3,7 @@ import { SlashCommandBuilder } from "discord.js";
 import { githubCommand } from "./adapters/discord/github.js";
 
 export const commands = [
-  new SlashCommandBuilder().setName("fast").setDescription("Manage Codex fast mode")
+  new SlashCommandBuilder().setName("fast").setDescription("Manage Codex or Claude fast mode")
     .addSubcommand(sub => sub.setName("current").setDescription("Show fast mode"))
     .addSubcommand(sub => sub.setName("set").setDescription("Set fast mode for the next message")
       .addBooleanOption(opt => opt.setName("enabled").setDescription("Enable fast mode").setRequired(true))),
@@ -148,7 +148,7 @@ export const commands = [
         .addStringOption((opt) =>
           opt
             .setName("provider")
-            .setDescription("Provider name (copilot | codex | opencode)")
+            .setDescription("Provider name (copilot | codex | opencode | claude)")
             .setRequired(true)
         )
     )
