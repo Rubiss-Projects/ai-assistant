@@ -251,6 +251,9 @@ export function isSensitivePath(candidate) {
     }
     if (SENSITIVE_FILE_NAMES.has(fileName))
         return true;
+    // Claude Code keeps account and MCP state in ~/.claude.json and writes timestamped backups beside it.
+    if (fileName === ".claude.json" || fileName.startsWith(".claude.json."))
+        return true;
     return segments.some((segment) => SENSITIVE_DIRECTORY_NAMES.has(segment.toLowerCase()));
 }
 export function workspacePathIsAllowed(workingDirectory, requestedPath) {

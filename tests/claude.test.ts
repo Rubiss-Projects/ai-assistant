@@ -85,6 +85,14 @@ test("providers without Sites support keep the no-external-writes boundary", (t)
   assert.match(claude.systemPrompt, /External side effects are disabled/);
 });
 
+test("shared Claude denies the home-level Claude state file and its backups", (t) => {
+  const root = workspace(t);
+  for (const name of [".claude.json", ".Claude.JSON", ".claude.json.backup", "nested/.claude.json"]) {
+    assert.equal(claudeToolDecision(root, "Read", { file_path: join(root, name) }, false).allow, false, name);
+  }
+  assert.equal(claudeToolDecision(root, "Read", { file_path: join(root, "claude.json") }, false).allow, true);
+});
+
 test("shared Claude rejects a config directory inside the workspace, including symlink aliases", (t) => {
   const root = workspace(t);
   const outside = workspace(t);
