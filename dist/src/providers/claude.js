@@ -1,3 +1,4 @@
+import path from "node:path";
 import { AbortError, deleteSession, getSessionMessages, query, } from "@anthropic-ai/claude-agent-sdk";
 import { SessionStore } from "../common/sessionStore.js";
 import { resolveSessionContext, withContextTurn } from "../common/sessionContext.js";
@@ -7,7 +8,7 @@ import { RulesetToolSessions, rulesetToolPrompt } from "../common/rulesetToolBri
 import { GitHubContributionSessions, githubContributionPrompt } from "../common/githubContributionToolBridge.js";
 import { githubContributionsEnabled } from "../common/githubContributionConfig.js";
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
-import { configuredSecurityMode, ensureProviderWorkingDirectory, providerChildEnvironment, resolveConfiguredWorkspace, workspacePathIsAllowed, } from "../common/providerSecurity.js";
+import { configuredSecurityMode, configuredWorkspaceRoot, ensureProviderWorkingDirectory, pathIsWithin, providerChildEnvironment, resolveConfiguredWorkspace, workspacePathIsAllowed, } from "../common/providerSecurity.js";
 import { RunTimeoutError, UnsupportedError, } from "./types.js";
 const DEFAULT_CLAUDE_MODEL = "claude-sonnet-5-5";
 const DEFAULT_CLAUDE_PARTICIPATION_MODEL = "claude-haiku-5-5";
@@ -116,6 +117,7 @@ export function claudeQueryOptions(params, source = process.env) {
     if (configuredSecurityMode(source) === "unrestricted") {
         return { ...base, permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true };
     }
+    assertClaudeStateOutsideWorkspace(source);
     return {
         ...base,
         // Mentions would expand files before the hook sees them; memory would leak operator context.
@@ -129,6 +131,18 @@ export function claudeQueryOptions(params, source = process.env) {
         // The hook decides every call; anything still asking has no interactive approver.
         canUseTool: async () => ({ behavior: "deny", message: "Interactive approval is unavailable in shared sessions." }),
     };
+}
+/** Claude's login and transcripts must stay unreachable from shared file tools, whatever the folder is named. */
+function assertClaudeStateOutsideWorkspace(source) {
+    const configDir = source.CLAUDE_CONFIG_DIR?.trim();
+    const root = configuredWorkspaceRoot(source);
+    if (!configDir || !root)
+        return;
+    const relative = path.relative(path.resolve(root), path.resolve(configDir));
+    const lexicallyInside = relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+    if (lexicallyInside || pathIsWithin(root, configDir)) {
+        throw new Error("CLAUDE_CONFIG_DIR must be outside the provider workspace root, including symlink targets.");
+    }
 }
 function stdioServer(config) {
     return { type: "stdio", command: config.command, args: config.args, env: config.env };

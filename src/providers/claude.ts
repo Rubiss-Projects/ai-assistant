@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   AbortError,
   deleteSession,
@@ -22,7 +23,9 @@ import { githubContributionsEnabled } from "../common/githubContributionConfig.j
 import { configuredMilliseconds, providerTimeout, startProgressUpdates } from "../common/runLifecycle.js";
 import {
   configuredSecurityMode,
+  configuredWorkspaceRoot,
   ensureProviderWorkingDirectory,
+  pathIsWithin,
   providerChildEnvironment,
   resolveConfiguredWorkspace,
   workspacePathIsAllowed,
@@ -172,6 +175,7 @@ export function claudeQueryOptions(params: {
   if (configuredSecurityMode(source) === "unrestricted") {
     return { ...base, permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true };
   }
+  assertClaudeStateOutsideWorkspace(source);
   return {
     ...base,
     // Mentions would expand files before the hook sees them; memory would leak operator context.
@@ -185,6 +189,18 @@ export function claudeQueryOptions(params: {
     // The hook decides every call; anything still asking has no interactive approver.
     canUseTool: async () => ({ behavior: "deny", message: "Interactive approval is unavailable in shared sessions." }),
   };
+}
+
+/** Claude's login and transcripts must stay unreachable from shared file tools, whatever the folder is named. */
+function assertClaudeStateOutsideWorkspace(source: Record<string, string | undefined>): void {
+  const configDir = source.CLAUDE_CONFIG_DIR?.trim();
+  const root = configuredWorkspaceRoot(source);
+  if (!configDir || !root) return;
+  const relative = path.relative(path.resolve(root), path.resolve(configDir));
+  const lexicallyInside = relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+  if (lexicallyInside || pathIsWithin(root, configDir)) {
+    throw new Error("CLAUDE_CONFIG_DIR must be outside the provider workspace root, including symlink targets.");
+  }
 }
 
 function stdioServer(config: ArtifactMcpConfig): McpStdioServerConfig {
