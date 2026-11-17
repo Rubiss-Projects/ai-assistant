@@ -95,5 +95,6 @@ test("shared Claude rejects a config directory inside the workspace, including s
 
   assert.throws(() => options(join(root, "state")), /CLAUDE_CONFIG_DIR must be outside/);
   assert.throws(() => options(join(outside, "alias")), /CLAUDE_CONFIG_DIR must be outside/);
+  assert.throws(() => options("state"), /must be an absolute path/);
   assert.doesNotThrow(() => options(join(outside, "claude")));
 });
