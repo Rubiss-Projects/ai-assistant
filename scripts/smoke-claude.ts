@@ -1,7 +1,7 @@
 /**
  * Manual end-to-end check for the Claude provider against a real Claude login.
  * Usage: CLAUDE_SMOKE_WORKSPACE=/abs/dir npx tsx scripts/smoke-claude.ts
- * Runs in shared mode: status, models, a turn, a resume, history, an artifact and a denied shell call.
+ * Runs in shared mode: status, models, a turn, a resume, a context change on resume, history, an artifact and a denied shell call.
  */
 import assert from "node:assert/strict";
 import os from "node:os";
@@ -30,9 +30,21 @@ try {
   console.log("turn 2:", second.content);
   assert.match(second.content, /PINEAPPLE-42/);
 
+  // Changed instructions rotate the context fingerprint; the resumed session must follow them and keep its memory.
+  const before = store.getState(key);
+  process.env.AI_ASSISTANT_SYSTEM_PROMPT = "End every reply with the tag [BETA].";
+  const changed = await provider.sendMessage(key, "Repeat the codeword once more.");
+  delete process.env.AI_ASSISTANT_SYSTEM_PROMPT;
+  const after = store.getState(key);
+  console.log("context change:", changed.content);
+  assert.notEqual(after?.context?.instructions, before?.context?.instructions);
+  assert.equal(after?.sessionId, before?.sessionId);
+  assert.match(changed.content, /PINEAPPLE-42/);
+  assert.match(changed.content, /\[BETA\]/);
+
   const history = await provider.getHistory(key);
   console.log("history events:", history?.length);
-  assert.ok(history && history.length >= 4);
+  assert.ok(history && history.length >= 6);
 
   const artifact = await provider.sendMessage(key, "Create a text file named hello.txt containing 'hello from claude' and attach it to your reply.");
   console.log("artifact turn:", artifact.content, artifact.attachments.map((file) => `${file.displayName} (${file.data.length} bytes)`));
