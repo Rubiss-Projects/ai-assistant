@@ -27,6 +27,8 @@ export interface ContextRequest {
   transportContext?: TransportContext;
   profile?: ContextProfile;
   userInstructionContext?: UserInstructionContext;
+  /** False for providers that cannot publish ChatGPT Sites; they keep the no-external-writes boundary. Defaults to true. */
+  sitesSupported?: boolean;
 }
 
 export interface ContextContribution {
@@ -70,6 +72,11 @@ export function contextFingerprint(value: unknown): string {
 
 const allProfiles = ["conversation", "one-shot", "scheduled", "ephemeral"] as const;
 const userProfiles = ["conversation", "one-shot", "scheduled"] as const;
+
+/** Sites need a Discord turn, operator opt-in, and a provider that can publish them. */
+function sitesAvailable(request: ContextRequest): boolean {
+  return !request.transportContext && request.sitesSupported !== false && configuredSitesEnabled();
+}
 
 /** Add application-owned context here; provider adapters consume the same snapshot. */
 export const CONTEXT_CONTRIBUTORS: readonly ContextContributor[] = [
@@ -119,8 +126,8 @@ export const CONTEXT_CONTRIBUTORS: readonly ContextContributor[] = [
     id: "security",
     profiles: allProfiles,
     resolve: request => ({
-      instructions: request.transportContext ? secureSystemPrompt(undefined, { ...process.env, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "false", AI_ASSISTANT_ENABLE_SITES: "false" }).replaceAll("Discord", request.transportContext.platform) : secureSystemPrompt(),
-      capabilities: { mode: configuredSecurityMode(), sites: !request.transportContext && configuredSitesEnabled() },
+      instructions: request.transportContext ? secureSystemPrompt(undefined, { ...process.env, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "false", AI_ASSISTANT_ENABLE_SITES: "false" }).replaceAll("Discord", request.transportContext.platform) : secureSystemPrompt(undefined, sitesAvailable(request) ? process.env : { ...process.env, AI_ASSISTANT_ENABLE_SITES: "false" }),
+      capabilities: { mode: configuredSecurityMode(), sites: sitesAvailable(request) },
     }),
   },
 ];
@@ -166,7 +173,7 @@ export function resolveSessionContext(
     transportContext: request.transportContext,
     rulesetsEnabled: resolved.some(part => part.id === "user-rulesets"),
     githubContributionsEnabled: resolved.some(part => part.id === "github-contributions"),
-    sitesEnabled: !request.transportContext && configuredSitesEnabled(),
+    sitesEnabled: sitesAvailable(request),
   };
 }
 

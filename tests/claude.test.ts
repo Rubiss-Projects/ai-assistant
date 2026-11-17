@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeQueryOptions, claudeToolDecision, configuredClaudeFastMode } from "../src/providers/claude.js";
 import { providerChildEnvironment } from "../src/common/providerSecurity.js";
+import { resolveSessionContext } from "../src/common/sessionContext.js";
 
 function workspace(t: test.TestContext): string {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "ai-claude-")));
@@ -45,7 +46,8 @@ test("shared Claude options isolate settings and gate every tool through a block
   assert.equal(shared.permissionMode, "default");
   assert.ok(Array.isArray(shared.tools) && !shared.tools.includes("Bash"));
   assert.equal(shared.hooks?.PreToolUse?.[0]?.onFailure, "block");
-  assert.deepEqual(shared.env, { HOME: "/home/bot", ANTHROPIC_API_KEY: "key" });
+  assert.deepEqual(shared.env, { HOME: "/home/bot", ANTHROPIC_API_KEY: "key", CLAUDE_CODE_DISABLE_FILE_MENTIONS: "1" });
+  assert.deepEqual(shared.settings, { fastMode: false, autoMemoryEnabled: false });
 
   const unrestricted = claudeQueryOptions(params, { HOME: "/home/bot" });
   assert.equal(unrestricted.permissionMode, "bypassPermissions");
@@ -65,4 +67,20 @@ test("CLAUDE_FAST_MODE accepts only true or false", () => {
   assert.equal(configuredClaudeFastMode({}), false);
   assert.equal(configuredClaudeFastMode({ CLAUDE_FAST_MODE: "TRUE" }), true);
   assert.throws(() => configuredClaudeFastMode({ CLAUDE_FAST_MODE: "yes" }), /CLAUDE_FAST_MODE/);
+});
+
+test("providers without Sites support keep the no-external-writes boundary", (t) => {
+  const previous = { mode: process.env.AI_ASSISTANT_SECURITY_MODE, sites: process.env.AI_ASSISTANT_ENABLE_SITES };
+  t.after(() => {
+    for (const [key, value] of [["AI_ASSISTANT_SECURITY_MODE", previous.mode], ["AI_ASSISTANT_ENABLE_SITES", previous.sites]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  Object.assign(process.env, { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_ENABLE_SITES: "true" });
+
+  assert.equal(resolveSessionContext().sitesEnabled, true);
+  const claude = resolveSessionContext({ sitesSupported: false });
+  assert.equal(claude.sitesEnabled, false);
+  assert.doesNotMatch(claude.systemPrompt, /ChatGPT Sites/);
+  assert.match(claude.systemPrompt, /External side effects are disabled/);
 });

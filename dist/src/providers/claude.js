@@ -105,7 +105,8 @@ export function claudeQueryOptions(params, source = process.env) {
         model: params.model,
         effort: params.effort,
         settings: { fastMode: params.fastMode },
-        systemPrompt: { type: "preset", preset: "claude_code", append: params.systemPrompt },
+        // Render the host prompt fresh each turn so changed instructions or rulesets reach resumed sessions.
+        systemPrompt: { type: "preset", preset: "claude_code", append: params.systemPrompt, snapshot: false },
         mcpServers: params.mcpServers,
         mcpServersDelivery: "initialize",
         env: providerChildEnvironment("claude", source),
@@ -117,6 +118,9 @@ export function claudeQueryOptions(params, source = process.env) {
     }
     return {
         ...base,
+        // Mentions would expand files before the hook sees them; memory would leak operator context.
+        env: { ...base.env, CLAUDE_CODE_DISABLE_FILE_MENTIONS: "1" },
+        settings: { fastMode: params.fastMode, autoMemoryEnabled: false },
         settingSources: [],
         strictMcpConfig: true,
         tools: CLAUDE_SHARED_TOOLS,
@@ -194,13 +198,16 @@ export class ClaudeProvider {
     }
     async runTurn(key, prompt, imagePaths, options) {
         options?.signal?.throwIfAborted();
-        const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext });
+        const context = resolveSessionContext({ transportContext: options?.transportContext, profile: options?.contextProfile, userInstructionContext: options?.userInstructionContext, sitesSupported: false });
         const workingDirectory = this.workingDir(key);
         const timeoutMs = providerTimeout("CLAUDE_TIMEOUT_MS", options);
         const runWithRulesetTools = (action) => context.rulesetsEnabled ? this.rulesetTools.run(key, options, (runtime) => action(runtime)) : action();
         return this.githubTools.run(key, options, context.githubContributionsEnabled, (githubRun) => runWithRulesetTools((rulesetRuntime) => captureAgentArtifacts(workingDirectory, (artifactRun) => this.artifactTools.run(key, artifactRun, imagePaths, options, async (_runtime, staged) => {
-            const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(prompt, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
-            const fullPrompt = githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun);
+            // Wraps request text in this turn's host tool envelope (staged inputs, run IDs, tool guidance).
+            const withEnvelope = (text) => {
+                const basePrompt = withArtifactOutputPrompt(artifactInputPrompt(withContextTurn(text, { userInstructionContext: options?.userInstructionContext }), staged), artifactRun, options?.transportContext);
+                return githubContributionPrompt(rulesetRuntime ? rulesetToolPrompt(basePrompt, rulesetRuntime) : basePrompt, githubRun);
+            };
             const mcpServers = {
                 artifact_tools: stdioServer(await this.artifactTools.config(key, options?.transportContext)),
                 ...(context.rulesetsEnabled ? { ruleset_tools: stdioServer(await this.rulesetTools.config(key)) } : {}),
@@ -219,16 +226,16 @@ export class ClaudeProvider {
                 const resume = this.store.get(key);
                 let turn;
                 try {
-                    turn = await this.runQuery(fullPrompt, { ...turnOptions, resume }, timeoutMs, options?.signal);
+                    turn = await this.runQuery(withEnvelope(prompt), { ...turnOptions, resume }, timeoutMs, options?.signal);
                 }
                 catch (error) {
                     if (!resume || !isMissingSessionError(error))
                         throw error;
                     console.warn(`[ClaudeProvider] Session ${resume} for ${key} is gone; starting a new one.`);
                     this.store.delete(key);
-                    const recovered = options?.onSessionRecovery?.() ?? fullPrompt;
-                    turn = await this.runQuery(recovered, turnOptions, timeoutMs, options?.signal);
+                    turn = await this.runQuery(withEnvelope(options?.onSessionRecovery?.() ?? prompt), turnOptions, timeoutMs, options?.signal);
                 }
+                options?.signal?.throwIfAborted();
                 if (turn.sessionId)
                     this.store.set(key, turn.sessionId, context.applied);
                 return turn.text || (options?.transportContext?.attachments ? "" : "(no response)");
@@ -240,6 +247,8 @@ export class ClaudeProvider {
     }
     /** Runs one query with host cancellation and a hard timeout that waits briefly for confirmation. */
     async runQuery(prompt, params, timeoutMs, signal) {
+        // Setup is async; a cancellation during it must not start a paid run.
+        signal?.throwIfAborted();
         const abortController = new AbortController();
         const onAbort = () => abortController.abort(signal?.reason);
         signal?.addEventListener("abort", onAbort, { once: true });
@@ -288,7 +297,8 @@ export class ClaudeProvider {
                 persistSession: false,
                 maxTurns: 1,
                 cwd: ensureProviderWorkingDirectory(),
-                env: providerChildEnvironment("claude", { ...process.env, AI_ASSISTANT_SECURITY_MODE: "shared" }),
+                env: { ...providerChildEnvironment("claude", { ...process.env, AI_ASSISTANT_SECURITY_MODE: "shared" }), CLAUDE_CODE_DISABLE_FILE_MENTIONS: "1" },
+                settings: { autoMemoryEnabled: false },
                 systemPrompt: "Classify the supplied conversation using the supplied policy. Return only the decision JSON.",
                 canUseTool: async () => ({ behavior: "deny", message: "Classification has no tool permissions." }),
             },
