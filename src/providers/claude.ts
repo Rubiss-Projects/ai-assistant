@@ -196,6 +196,8 @@ function assertClaudeStateOutsideWorkspace(source: Record<string, string | undef
   const configDir = source.CLAUDE_CONFIG_DIR?.trim();
   const root = configuredWorkspaceRoot(source);
   if (!configDir || !root) return;
+  // The child resolves a relative path against its workspace cwd, not the bot's, so only absolute paths are checkable.
+  if (!path.isAbsolute(configDir)) throw new Error("CLAUDE_CONFIG_DIR must be an absolute path in shared mode.");
   const relative = path.relative(path.resolve(root), path.resolve(configDir));
   const lexicallyInside = relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
   if (lexicallyInside || pathIsWithin(root, configDir)) {
