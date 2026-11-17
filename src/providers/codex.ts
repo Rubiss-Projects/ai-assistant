@@ -33,7 +33,6 @@ import {
   type CodexWebSearchMode,
 } from "../common/providerSecurity.js";
 import {
-  DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
   UnsupportedError,
   type AgentInfo,
@@ -55,7 +54,8 @@ import {
 import { readFile, stat } from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
-const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+const DEFAULT_CODEX_MODEL = "gpt-6.2-sol";
+const DEFAULT_CODEX_REASONING_EFFORT: ReasoningEffort = "medium";
 const DEFAULT_CODEX_INLINE_ATTACHMENT_BYTES = 200_000;
 const MAX_CODEX_INLINE_ATTACHMENT_BYTES = 1_000_000;
 // Codex app policy keys are catalog connector IDs, not tool namespace/display names.
@@ -316,7 +316,7 @@ function configuredCodexModel(): string {
 
 function configuredCodexReasoningEffort(): ReasoningEffort {
   const configured = process.env.CODEX_REASONING_EFFORT?.trim().toLowerCase();
-  if (!configured) return DEFAULT_REASONING_EFFORT;
+  if (!configured) return DEFAULT_CODEX_REASONING_EFFORT;
   if (!REASONING_EFFORTS.includes(configured as ReasoningEffort)) {
     throw new Error(
       `Invalid CODEX_REASONING_EFFORT: ${configured} (expected ${REASONING_EFFORTS.join(", ")})`,

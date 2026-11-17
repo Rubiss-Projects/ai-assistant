@@ -187,7 +187,7 @@ async function setup(): Promise<void> {
     );
     const codexModel = await promptVar(
       rl,
-      "Default Codex model (e.g. gpt-5.6-sol)",
+      "Default Codex model (e.g. gpt-6.2-sol)",
       "CODEX_MODEL",
       existing,
       false
