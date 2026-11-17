@@ -26,6 +26,10 @@ export function contextFingerprint(value) {
 }
 const allProfiles = ["conversation", "one-shot", "scheduled", "ephemeral"];
 const userProfiles = ["conversation", "one-shot", "scheduled"];
+/** Sites need a Discord turn, operator opt-in, and a provider that can publish them. */
+function sitesAvailable(request) {
+    return !request.transportContext && request.sitesSupported !== false && configuredSitesEnabled();
+}
 /** Add application-owned context here; provider adapters consume the same snapshot. */
 export const CONTEXT_CONTRIBUTORS = [
     {
@@ -74,8 +78,8 @@ export const CONTEXT_CONTRIBUTORS = [
         id: "security",
         profiles: allProfiles,
         resolve: request => ({
-            instructions: request.transportContext ? secureSystemPrompt(undefined, { ...process.env, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "false", AI_ASSISTANT_ENABLE_SITES: "false" }).replaceAll("Discord", request.transportContext.platform) : secureSystemPrompt(),
-            capabilities: { mode: configuredSecurityMode(), sites: !request.transportContext && configuredSitesEnabled() },
+            instructions: request.transportContext ? secureSystemPrompt(undefined, { ...process.env, AI_ASSISTANT_ENABLE_GITHUB_CONTRIBUTIONS: "false", AI_ASSISTANT_ENABLE_SITES: "false" }).replaceAll("Discord", request.transportContext.platform) : secureSystemPrompt(undefined, sitesAvailable(request) ? process.env : { ...process.env, AI_ASSISTANT_ENABLE_SITES: "false" }),
+            capabilities: { mode: configuredSecurityMode(), sites: sitesAvailable(request) },
         }),
     },
 ];
@@ -121,7 +125,7 @@ export function resolveSessionContext(request = {}, contributors = CONTEXT_CONTR
         transportContext: request.transportContext,
         rulesetsEnabled: resolved.some(part => part.id === "user-rulesets"),
         githubContributionsEnabled: resolved.some(part => part.id === "github-contributions"),
-        sitesEnabled: !request.transportContext && configuredSitesEnabled(),
+        sitesEnabled: sitesAvailable(request),
     };
 }
 export function sameContext(previous, current) {
