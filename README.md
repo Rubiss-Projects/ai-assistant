@@ -765,7 +765,7 @@ To exercise the real hosted-search boundary without making it part of CI, run `C
 | `ANTHROPIC_API_KEY` | Unset; persisted Claude Code login | Authenticates Claude with an API key. Also passed to OpenCode for its Anthropic provider. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Unset | Long-lived Claude subscription token from `claude setup-token`. Useful in Docker, which has no interactive login. |
 | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` | Unset | Optional gateway credentials and endpoint passed to Claude Code. |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code configuration, login and session directory. In shared mode it must be an absolute path outside `AI_ASSISTANT_WORKSPACE_ROOT`. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code configuration, login and session directory. In shared mode it must be an absolute path that does not overlap `AI_ASSISTANT_WORKSPACE_ROOT` in either direction. |
 | `CLAUDE_MODEL` | `claude-sonnet-5-5` | Default Claude model ID. |
 | `CLAUDE_REASONING_EFFORT` | `medium`; accepts `low`, `medium`, `high`, `xhigh`, `max` | Default Claude effort. Invalid values raise an error. |
 | `CLAUDE_FAST_MODE` | `false` | Claude fast mode default (`true`/`false`) on models that support it. Override with `/fast set`. |

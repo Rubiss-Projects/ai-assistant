@@ -93,7 +93,7 @@ test("shared Claude denies the home-level Claude state file and its backups", (t
   assert.equal(claudeToolDecision(root, "Read", { file_path: join(root, "claude.json") }, false).allow, true);
 });
 
-test("shared Claude rejects a config directory inside the workspace, including symlink aliases", (t) => {
+test("shared Claude rejects any overlap between the workspace and Claude state, including symlink aliases", (t) => {
   const root = workspace(t);
   const outside = workspace(t);
   mkdirSync(join(root, "state"));
@@ -101,8 +101,15 @@ test("shared Claude rejects a config directory inside the workspace, including s
   const params = { workingDirectory: root, model: "m", effort: "medium" as const, fastMode: false, systemPrompt: "", mcpServers: {} };
   const options = (dir: string) => claudeQueryOptions(params, { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: root, CLAUDE_CONFIG_DIR: dir });
 
-  assert.throws(() => options(join(root, "state")), /CLAUDE_CONFIG_DIR must be outside/);
-  assert.throws(() => options(join(outside, "alias")), /CLAUDE_CONFIG_DIR must be outside/);
+  assert.throws(() => options(join(root, "state")), /must not overlap/);
+  assert.throws(() => options(join(outside, "alias")), /must not overlap/);
   assert.throws(() => options("state"), /must be an absolute path/);
+  const home = workspace(t);
+  const nested = join(home, ".claude", "projects");
+  mkdirSync(nested, { recursive: true });
+  const nestedOptions = (env: Record<string, string>) => claudeQueryOptions({ ...params, workingDirectory: nested }, { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: nested, ...env });
+  assert.throws(() => nestedOptions({ HOME: home }), /must not overlap/);
+  assert.throws(() => nestedOptions({ CLAUDE_CONFIG_DIR: join(home, ".claude") }), /must not overlap/);
+  assert.doesNotThrow(() => claudeQueryOptions({ ...params, workingDirectory: home }, { AI_ASSISTANT_SECURITY_MODE: "shared", AI_ASSISTANT_WORKSPACE_ROOT: home, HOME: home }));
   assert.doesNotThrow(() => options(join(outside, "claude")));
 });
