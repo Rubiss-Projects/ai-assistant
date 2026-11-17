@@ -99,7 +99,7 @@ async function setup() {
     ];
     if (provider === "codex") {
         const openaiKey = await promptVar(rl, "OpenAI API Key (optional if Codex CLI is logged in)", "OPENAI_API_KEY", existing, false);
-        const codexModel = await promptVar(rl, "Default Codex model (e.g. gpt-5.6-sol)", "CODEX_MODEL", existing, false);
+        const codexModel = await promptVar(rl, "Default Codex model (e.g. gpt-6.2-sol)", "CODEX_MODEL", existing, false);
         const codexTimeout = await promptVar(rl, "Codex hard timeout in ms (default 3600000)", "CODEX_TIMEOUT_MS", existing, false);
         const requestedWebSearchMode = await promptVar(rl, "Codex hosted web search (disabled | cached | indexed | live; default cached)", "CODEX_WEB_SEARCH_MODE", existing, false);
         let webSearchMode;

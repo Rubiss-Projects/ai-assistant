@@ -43,7 +43,7 @@ Set `PROVIDER` to one of the following. Authenticate each provider you want to u
 | `PROVIDER` | Backend | Authentication | Default model in this repo |
 | --- | --- | --- | --- |
 | `copilot` | GitHub Copilot SDK | `COPILOT_GITHUB_TOKEN` (preferred), `GH_TOKEN`, or a persisted CLI login with Copilot access | `claude-haiku-4.5` |
-| `codex` | OpenAI Codex SDK | `OPENAI_API_KEY` or a persisted `codex login` | `gpt-5.6-sol` |
+| `codex` | OpenAI Codex SDK | `OPENAI_API_KEY` or a persisted `codex login` | `gpt-6.2-sol` |
 | `opencode` | OpenCode CLI | `opencode auth login` or the selected model provider's API key | OpenCode's configured default |
 
 OpenCode requires **V2 2.0.31 or newer** (`npm install -g @opencode/cli@2.0.31`); V1 is no longer supported. For native installs, its CLI must be discoverable (or set `OPENCODE_BIN`). Docker includes all three provider CLIs; [container login commands](#docker) are below.
@@ -744,9 +744,9 @@ Provider timing and progress settings require integer values of at least `10`; i
 | --- | --- | --- |
 | `OPENAI_API_KEY` | Unset; persisted Codex CLI login | Authenticates Codex with an API key. Also passed to OpenCode when using an OpenAI model provider. |
 | `OPENAI_BASE_URL` | SDK default | Overrides the OpenAI API endpoint used by Codex, for example `https://api.openai.com/v1`. |
-| `CODEX_MODEL` | `gpt-5.6-sol` | Default Codex model ID. |
+| `CODEX_MODEL` | `gpt-6.2-sol` | Default Codex model ID. |
 | `CODEX_FAST_MODE` | `false` | Codex fast mode default (`true`/`false`). Override with `/fast set enabled:true` or `false`; inspect with `/fast current`. |
-| `CODEX_REASONING_EFFORT` | `low`; accepts `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Default Codex reasoning effort. Invalid values raise an error; model support may vary. |
+| `CODEX_REASONING_EFFORT` | `medium`; accepts `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Default Codex reasoning effort. Invalid values raise an error; model support may vary. |
 | `CODEX_WEB_SEARCH_MODE` | `cached`; accepts `disabled`, `cached`, `indexed`, `live` | Controls Codex hosted web search for normal Discord, Slack, and local CLI conversations. Values are trimmed and case-insensitive; invalid values stop Codex startup or selection but do not affect Copilot or OpenCode. `cached` uses the hosted cache, `indexed` may search the hosted index, `live` permits current live retrieval, and `disabled` removes hosted search. This does not change local command networking. Restart after changing it (for Compose, recreate with `docker compose up -d`). |
 | `CODEX_HOME` | `~/.codex` | Codex configuration/login directory, also used to locate its model cache and generated images. |
 | `CODEX_EXECUTABLE_PATH` | SDK executable; image: `/usr/local/lib/codex/bin/codex` | Overrides the Codex executable used by the SDK. The image sets this to its bundled runtime. |
