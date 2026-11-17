@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { AbortError, deleteSession, getSessionMessages, query, } from "@anthropic-ai/claude-agent-sdk";
 import { SessionStore } from "../common/sessionStore.js";
@@ -132,19 +133,27 @@ export function claudeQueryOptions(params, source = process.env) {
         canUseTool: async () => ({ behavior: "deny", message: "Interactive approval is unavailable in shared sessions." }),
     };
 }
-/** Claude's login and transcripts must stay unreachable from shared file tools, whatever the folder is named. */
-function assertClaudeStateOutsideWorkspace(source) {
-    const configDir = source.CLAUDE_CONFIG_DIR?.trim();
-    const root = configuredWorkspaceRoot(source);
-    if (!configDir || !root)
-        return;
-    // The child resolves a relative path against its workspace cwd, not the bot's, so only absolute paths are checkable.
-    if (!path.isAbsolute(configDir))
-        throw new Error("CLAUDE_CONFIG_DIR must be an absolute path in shared mode.");
-    const relative = path.relative(path.resolve(root), path.resolve(configDir));
+/** True when `candidate` is `root` or below it, lexically or through symlinks. */
+function overlaps(root, candidate) {
+    const relative = path.relative(path.resolve(root), path.resolve(candidate));
     const lexicallyInside = relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-    if (lexicallyInside || pathIsWithin(root, configDir)) {
-        throw new Error("CLAUDE_CONFIG_DIR must be outside the provider workspace root, including symlink targets.");
+    return lexicallyInside || pathIsWithin(root, candidate);
+}
+/**
+ * Claude's login and transcripts must stay unreachable from shared file tools, whatever the folder is named.
+ * The default `~/.claude` inside a HOME workspace is already denied by name; a workspace inside Claude state never is.
+ */
+function assertClaudeStateOutsideWorkspace(source) {
+    const root = configuredWorkspaceRoot(source);
+    if (!root)
+        return;
+    const explicit = source.CLAUDE_CONFIG_DIR?.trim();
+    // The child resolves a relative path against its workspace cwd, not the bot's, so only absolute paths are checkable.
+    if (explicit && !path.isAbsolute(explicit))
+        throw new Error("CLAUDE_CONFIG_DIR must be an absolute path in shared mode.");
+    const configDir = explicit || path.join(source.HOME?.trim() || os.homedir(), ".claude");
+    if (overlaps(configDir, root) || (explicit && overlaps(root, explicit))) {
+        throw new Error("The provider workspace root and Claude's config directory must not overlap, including symlink targets.");
     }
 }
 function stdioServer(config) {
