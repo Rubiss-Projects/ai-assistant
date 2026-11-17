@@ -3,7 +3,7 @@ import type { ContextProfile, TransportContext } from "../common/sessionContext.
 import type { AccessPolicy, AccessSubject } from "../common/accessPolicy.js";
 import type { UserInstructionContext } from "../utils/userInstructions.js";
 
-export const PROVIDERS = ["copilot", "codex", "opencode"] as const;
+export const PROVIDERS = ["copilot", "codex", "opencode", "claude"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 
 export function normalizeProviderName(value?: string | null): string {
@@ -152,13 +152,13 @@ export class RunTimeoutError extends Error {
 /**
  * Provider-agnostic session manager contract. Every slash command handler and
  * the Discord bot talk only to this interface, so a provider can be swapped
- * (Copilot, Codex, OpenCode, …) purely via configuration.
+ * (Copilot, Codex, OpenCode, Claude, …) purely via configuration.
  *
  * Methods a provider cannot implement should throw `UnsupportedError`, which
  * handlers render as a friendly in-Discord message instead of a crash.
  */
 export interface Provider {
-  /** Stable identifier, e.g. "copilot", "codex", "opencode". */
+  /** Stable identifier, e.g. "copilot", "codex", "opencode", "claude". */
   readonly name: ProviderName | string;
   /** Human-facing name for /status etc., e.g. "GitHub Copilot". */
   readonly displayName: string;

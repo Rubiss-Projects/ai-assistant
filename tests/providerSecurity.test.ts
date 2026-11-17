@@ -136,7 +136,7 @@ test("non-Codex startup diagnostics ignore invalid Codex hosted-search configura
   const lines: string[] = [];
   t.mock.method(console, "log", (line: string) => { lines.push(line); });
   t.mock.method(console, "warn", (line: string) => { lines.push(line); });
-  for (const provider of ["copilot", "opencode"]) {
+  for (const provider of ["copilot", "opencode", "claude"]) {
     for (const securityMode of ["shared", "unrestricted"]) {
       assert.doesNotThrow(() => reportProviderSecurityConfiguration({
         PROVIDER: provider,

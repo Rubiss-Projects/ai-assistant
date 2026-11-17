@@ -8,7 +8,7 @@ import { createProvider } from "../src/providers/index.js";
 
 loadEnv({ quiet: true });
 const evaluator = process.argv[2] ?? "jev";
-if (!["jev", "copilot", "codex", "opencode"].includes(evaluator)) throw new Error("Choose jev, copilot, codex, or opencode.");
+if (!["jev", "copilot", "codex", "opencode", "claude"].includes(evaluator)) throw new Error("Choose jev, copilot, codex, opencode, or claude.");
 const config = participationEvaluatorConfig({ ...process.env, CHAT_PARTICIPATION_EVALUATOR: evaluator === "jev" ? "jev" : "provider" });
 const provider = evaluator === "jev" ? undefined : createProvider(evaluator);
 let passed = 0;

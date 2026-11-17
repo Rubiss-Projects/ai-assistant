@@ -10,6 +10,7 @@ import type { Thread } from "@openai/codex-sdk";
 import { SessionStore } from "../src/common/sessionStore.js";
 import { CodexProvider } from "../src/providers/codex.js";
 import { OpenCodeProvider } from "../src/providers/opencode.js";
+import { ClaudeProvider } from "../src/providers/claude.js";
 import { RunTimeoutError, UnsupportedError } from "../src/providers/types.js";
 import { ProviderStore } from "../src/common/providerStore.js";
 import { SENSITIVE_DIRECTORY_NAME_LIST } from "../src/common/providerSecurity.js";
@@ -109,6 +110,7 @@ test("createProvider returns the matching provider implementation", () => {
   assert.ok(createProvider("copilot") instanceof CopilotProvider);
   assert.ok(createProvider("codex") instanceof CodexProvider);
   assert.ok(createProvider("opencode") instanceof OpenCodeProvider);
+  assert.ok(createProvider("claude") instanceof ClaudeProvider);
 });
 
 test("createProvider rejects unknown providers", () => {

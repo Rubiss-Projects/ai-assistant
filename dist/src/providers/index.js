@@ -1,6 +1,7 @@
 import { CopilotProvider } from "./copilot.js";
 import { CodexProvider } from "./codex.js";
 import { OpenCodeProvider } from "./opencode.js";
+import { ClaudeProvider } from "./claude.js";
 import { PROVIDERS } from "./types.js";
 /**
  * Resolves the active provider name from the PROVIDER env var.
@@ -22,6 +23,8 @@ export function createProvider(name, store) {
             return new CodexProvider(undefined, store);
         case "opencode":
             return new OpenCodeProvider(store);
+        case "claude":
+            return new ClaudeProvider(store);
         default:
             throw new Error(`Unknown PROVIDER "${provider}". Choose one of: ${PROVIDERS.join(", ")}.`);
     }

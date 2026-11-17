@@ -47,8 +47,8 @@ async function setup() {
     const token = await promptVar(rl, "Discord Bot Token", "DISCORD_TOKEN", existing, true);
     const appId = await promptVar(rl, "Discord Application ID", "DISCORD_APP_ID", existing, true);
     const guildId = await promptVar(rl, "Discord Guild ID (for slash command registration)", "DISCORD_GUILD_ID", existing, true);
-    const provider = await promptVar(rl, "AI provider (copilot | codex | opencode)", "PROVIDER", existing, false) || "copilot";
-    const validProviders = ["copilot", "codex", "opencode"];
+    const provider = await promptVar(rl, "AI provider (copilot | codex | opencode | claude)", "PROVIDER", existing, false) || "copilot";
+    const validProviders = ["copilot", "codex", "opencode", "claude"];
     if (!validProviders.includes(provider)) {
         console.error(`\n❌ Invalid provider "${provider}". Choose one of: ${validProviders.join(", ")}.`);
         rl.close();
@@ -125,6 +125,16 @@ async function setup() {
             lines.push(`OPENCODE_MODEL=${opencodeModel}`);
         if (opencodeTimeout)
             lines.push(`OPENCODE_TIMEOUT_MS=${opencodeTimeout}`);
+    }
+    else if (provider === "claude") {
+        const anthropicKey = await promptVar(rl, "Anthropic API Key (optional if Claude Code is logged in)", "ANTHROPIC_API_KEY", existing, false);
+        const claudeModel = await promptVar(rl, "Default Claude model (e.g. claude-sonnet-5-5)", "CLAUDE_MODEL", existing, false);
+        const claudeTimeout = await promptVar(rl, "Claude hard timeout in ms (default 3600000)", "CLAUDE_TIMEOUT_MS", existing, false);
+        lines.push(anthropicKey ? `ANTHROPIC_API_KEY=${anthropicKey}` : "# ANTHROPIC_API_KEY=");
+        if (claudeModel)
+            lines.push(`CLAUDE_MODEL=${claudeModel}`);
+        if (claudeTimeout)
+            lines.push(`CLAUDE_TIMEOUT_MS=${claudeTimeout}`);
     }
     else {
         const copilotTimeout = await promptVar(rl, "Copilot hard timeout in ms (default 3600000)", "COPILOT_TIMEOUT_MS", existing, false);

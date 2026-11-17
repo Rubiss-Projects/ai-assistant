@@ -30,6 +30,9 @@ jobs:
         run: docker build --tag ai-assistant-runtime-test .
       - name: Verify OpenCode V2 CLI and session contracts
         run: docker run --rm --entrypoint node ai-assistant-runtime-test /app/dist/scripts/smoke-opencode.js
+      - name: Verify bundled Claude Code runtime starts
+        run: |
+          docker run --rm --entrypoint node -e AI_ASSISTANT_SECURITY_MODE=shared -e AI_ASSISTANT_WORKSPACE_ROOT=/data/workspaces ai-assistant-runtime-test --input-type=module -e "import { ClaudeProvider } from '/app/dist/src/providers/claude.js'; const status = await new ClaudeProvider().getStatus(); console.log(JSON.stringify(status)); if (!/^Claude Code \d/.test(status.status.version ?? '')) process.exit(1);"
       - name: Verify shared-mode Codex runtime bundle
         run: |
           docker run --rm --entrypoint /bin/sh ai-assistant-runtime-test -c 'test -x /usr/local/lib/codex/bin/codex && test -x /usr/local/lib/codex/codex-resources/bwrap && test -x /usr/local/lib/codex/bin/codex-code-mode-host && test -x /usr/local/lib/codex/codex-path/rg && /usr/local/lib/codex/bin/codex --version'

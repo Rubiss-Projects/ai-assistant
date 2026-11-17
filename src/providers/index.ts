@@ -1,6 +1,7 @@
 import { CopilotProvider } from "./copilot.js";
 import { CodexProvider } from "./codex.js";
 import { OpenCodeProvider } from "./opencode.js";
+import { ClaudeProvider } from "./claude.js";
 import { PROVIDERS, type Provider, type ProviderName } from "./types.js";
 import type { SessionStore } from "../common/sessionStore.js";
 
@@ -26,6 +27,8 @@ export function createProvider(name?: string, store?: SessionStore): Provider {
       return new CodexProvider(undefined, store);
     case "opencode":
       return new OpenCodeProvider(store);
+    case "claude":
+      return new ClaudeProvider(store);
     default:
       throw new Error(
         `Unknown PROVIDER "${provider}". Choose one of: ${PROVIDERS.join(", ")}.`

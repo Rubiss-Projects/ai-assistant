@@ -1,6 +1,6 @@
 # AI Assistant
 
-An assistant with Discord, opt-in [Slack](#slack-adapter), and CLI adapters for **GitHub Copilot**, **OpenAI Codex**, and **OpenCode**. Choose a default provider, then chat through your configured adapter. Discord supports mentions, DMs and dedicated conversation threads, with provider switching during a conversation.
+An assistant with Discord, opt-in [Slack](#slack-adapter), and CLI adapters for **GitHub Copilot**, **OpenAI Codex**, **OpenCode**, and **Claude**. Choose a default provider, then chat through your configured adapter. Discord supports mentions, DMs and dedicated conversation threads, with provider switching during a conversation.
 
 - Persistent conversations, isolated by user/channel or chat thread.
 - Images, video, audio, text/code attachments, and downloadable files created by the agent.
@@ -45,8 +45,9 @@ Set `PROVIDER` to one of the following. Authenticate each provider you want to u
 | `copilot` | GitHub Copilot SDK | `COPILOT_GITHUB_TOKEN` (preferred), `GH_TOKEN`, or a persisted CLI login with Copilot access | `claude-haiku-4.5` |
 | `codex` | OpenAI Codex SDK | `OPENAI_API_KEY` or a persisted `codex login` | `gpt-6.2-sol` |
 | `opencode` | OpenCode CLI | `opencode auth login` or the selected model provider's API key | OpenCode's configured default |
+| `claude` | Claude Agent SDK | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), or a persisted Claude Code login | `claude-sonnet-5-5` |
 
-OpenCode requires **V2 2.0.31 or newer** (`npm install -g @opencode/cli@2.0.31`); V1 is no longer supported. For native installs, its CLI must be discoverable (or set `OPENCODE_BIN`). Docker includes all three provider CLIs; [container login commands](#docker) are below.
+OpenCode requires **V2 2.0.31 or newer** (`npm install -g @opencode/cli@2.0.31`); V1 is no longer supported. For native installs, its CLI must be discoverable (or set `OPENCODE_BIN`). Docker includes every provider runtime (the Claude Agent SDK bundles its own Claude Code binary); [container login commands](#docker) are below.
 
 Native video conversion also requires `ffmpeg` and `ffprobe` on `PATH`, with the `libsvtav1`, `libx264`, and `libx265` encoders. These are included in the Docker image.
 
@@ -105,6 +106,8 @@ docker compose run --rm assistant copilot login
 docker compose run --rm assistant codex login
 docker compose run --rm assistant opencode auth login
 ```
+
+The image has no interactive Claude login; set `ANTHROPIC_API_KEY` or a `CLAUDE_CODE_OAUTH_TOKEN` created with `claude setup-token` on another machine.
 
 For the Discord adapter, the entrypoint registers the current slash commands on each container start unless `REGISTER_COMMANDS_ON_START=false`. Slack always skips Discord registration, regardless of that flag. The included Compose file uses `${REGISTER_COMMANDS_ON_START:-true}`: a value supplied through Compose interpolation (for example, the project `.env` or `--env-file`) overrides the default. A separate service `env_file` does not override an explicit `environment` value. Releases publish `ghcr.io/rubiss-projects/ai-assistant:<version>`; the included Compose file uses `latest`.
 
@@ -258,7 +261,7 @@ To keep messages with links compact, set `DISCORD_SUPPRESS_EMBEDS=true` and rest
 
 ### Artifact and media tools
 
-The built-in `artifact_tools` MCP server is available to all three providers, including in shared mode.
+The built-in `artifact_tools` MCP server is available to every provider, including in shared mode.
 
 | Tool | Behavior |
 | --- | --- |
@@ -651,7 +654,7 @@ Defaults below describe behavior when a setting is absent, with template, wizard
 
 | Variable | Default / accepted values | What it does |
 | --- | --- | --- |
-| `PROVIDER` | `copilot`; accepts `copilot`, `codex`, `opencode` | Selects the default AI backend. `/provider set` overrides it for a session. |
+| `PROVIDER` | `copilot`; accepts `copilot`, `codex`, `opencode`, `claude` | Selects the default AI backend. `/provider set` overrides it for a session. |
 | `AI_ASSISTANT_CONFIG_DIR` | `~/.ai-assistant`; container: `/data` | Changes the CLI's configuration directory. Set in the launching environment **before** invoking the CLI; placing it only inside the file it is meant to locate does not redirect loading. Does not relocate session stores. |
 | `AI_ASSISTANT_SYSTEM_PROMPT` | Unset | Adds persistent operator instructions to every provider. Quote text containing spaces or `#` in `.env`. |
 | `AI_ASSISTANT_SYSTEM_PROMPT_FILE` | Unset | Reads operator instructions from a UTF-8 file, taking precedence over inline text. Relative paths resolve from the bot's working directory. Unreadable files cause an error. In Docker, keep the file under `/data`. |
@@ -722,6 +725,7 @@ Provider timing and progress settings require integer values of at least `10`; i
 | `COPILOT_TIMEOUT_MS` | `3600000` (1 hour) | Hard limit for a Copilot run; the active run is aborted on timeout. |
 | `CODEX_TIMEOUT_MS` | `3600000` (1 hour) | Hard limit for a Codex run; the active run is cancelled on timeout. |
 | `OPENCODE_TIMEOUT_MS` | `3600000` (1 hour) | Hard limit for an OpenCode run; its child process is terminated on timeout. |
+| `CLAUDE_TIMEOUT_MS` | `3600000` (1 hour) | Hard limit for a Claude run; the active query is aborted on timeout. |
 | `AI_INPUT_ATTACHMENT_MAX_BYTES` | `104857600` (100 MiB) | Per-file limit for incoming uploads and URL downloads. Requires an integer from `1` to `536870912` (512 MiB); invalid values raise an error. |
 | `AI_MEDIA_TIMEOUT_MS` | `300000` (5 minutes) | Deadline for software video conversion. Positive integer, capped at `900000` (15 minutes); invalid values use the default. |
 | `AI_OUTPUT_ATTACHMENT_MAX_BYTES` | `10485760` (10 MiB) | Maximum size of each agent-created response attachment, also bounded by the total response limit. |
@@ -753,6 +757,22 @@ Provider timing and progress settings require integer values of at least `10`; i
 | `CODEX_MAX_INLINE_ATTACHMENT_BYTES` | `200000` | Maximum bytes per non-image attachment read as text by the Codex adapter; positive integer, capped at `1000000`. Oversized attachments produce an error. |
 
 To exercise the real hosted-search boundary without making it part of CI, run `CODEX_WEB_SEARCH_SMOKE=1 npx tsx scripts/smoke-codex-web-search.ts` with a working Codex login. It checks that `live` produces a cited current result and that `disabled` emits no hosted-search operation.
+
+### Claude
+
+| Variable | Default / accepted values | What it does |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | Unset; persisted Claude Code login | Authenticates Claude with an API key. Also passed to OpenCode for its Anthropic provider. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Unset | Long-lived Claude subscription token from `claude setup-token`. Useful in Docker, which has no interactive login. |
+| `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` | Unset | Optional gateway credentials and endpoint passed to Claude Code. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code configuration, login and session directory. |
+| `CLAUDE_MODEL` | `claude-sonnet-5-5` | Default Claude model ID. |
+| `CLAUDE_REASONING_EFFORT` | `medium`; accepts `low`, `medium`, `high`, `xhigh`, `max` | Default Claude effort. Invalid values raise an error. |
+| `CLAUDE_FAST_MODE` | `false` | Claude fast mode default (`true`/`false`) on models that support it. Override with `/fast set`. |
+
+Each turn resumes the session's Claude Code conversation, so history survives restarts. In shared mode Claude ignores user and project Claude Code settings, has no shell or content-wide grep, and every tool call is checked by a host hook that limits file access to non-sensitive workspace paths and MCP calls to the host's own tools. Unrestricted mode uses the operator's Claude Code configuration and skips permission prompts.
+
+To exercise a real Claude login end to end, run `CLAUDE_SMOKE_WORKSPACE=/abs/empty/dir npx tsx scripts/smoke-claude.ts`. It runs in shared mode and checks status, resume, history, artifact delivery and that shell access is blocked.
 
 ### OpenCode and model provider keys
 
@@ -895,6 +915,7 @@ In shared mode, provider processes receive an explicit environment allowlist tha
 
 - **Copilot** uses its `empty` mode with scoped file/search/web tools, read-only external MCP calls, and the host-owned artifact tools. Arbitrary shell, external mutating MCP calls, repository-defined MCP processes, and file access through workspace symlinks are blocked.
 - **Codex** retains local shell, build, and test support inside its filesystem permissions. A restricted proxy permits package downloads from `registry.npmjs.org`; Sites additionally allows source pushes to `git.chatgpt-team.site`. Other destinations and broad private-network access remain blocked. Its shell gets a separate environment without provider credentials and a private temporary directory. npm uses that private directory for its cache and does not load the operator's npm configuration. Development runs use a source copy there so npm's hidden files work without relaxing workspace credential and Git restrictions. Hosted web search is configured separately with `CODEX_WEB_SEARCH_MODE`; changing it never expands sandboxed-command networking. Handoff summarization and participation evaluation always disable hosted search. Connected apps default off except known read-only GitHub repository tools; mutating and newly introduced connector tools remain disabled.
+- **Claude** ignores ambient Claude Code settings and offers only file, glob, web and host MCP tools. A pre-tool hook, which blocks the call if it fails, rejects shell execution, sensitive paths, access outside the workspace and non-host MCP servers.
 - **OpenCode** uses a permission policy that denies tools unless explicitly allowed. Plugins, shell execution, content-wide grep, sensitive paths, and access outside the workspace are blocked.
 
 `AI_ASSISTANT_ENABLE_SITES=true` adds a Codex-only exception to shared mode: Discord users can create, update, and publish Sites as the logged-in ChatGPT account. It permits workspace-root `.openai` metadata and stages current site files in a fresh temporary Git repository; existing `.git` directories and history remain blocked. Other apps remain restricted and destructive connector actions remain blocked. In unrestricted mode, Sites follows the operator's normal Codex configuration.
@@ -1005,6 +1026,7 @@ src/
     copilot.ts          # Copilot SDK adapter (GitHub Copilot)
     codex.ts            # Codex SDK adapter (OpenAI Codex)
     opencode.ts         # OpenCode CLI adapter
+    claude.ts           # Claude Agent SDK adapter
     index.ts            # createProvider() factory (reads PROVIDER env)
   common/
     chunkForDiscord.ts  # Chunk text for Discord's 2000-char limit
