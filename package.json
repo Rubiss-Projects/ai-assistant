@@ -29,7 +29,7 @@
     "@github/copilot-sdk": "^1.0.28",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@openai/codex-sdk": "^0.169.0",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^13.2.0",
     "cron-parser": "^5.10.6",
     "discord.js": "^14.28.1",
     "dotenv": "^18.0.10",
