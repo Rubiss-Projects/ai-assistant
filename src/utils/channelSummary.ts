@@ -5,6 +5,7 @@ import { CHANNEL_SUMMARY_CAPABILITIES, CHANNEL_SUMMARY_SOURCE_INSTRUCTIONS } fro
 const SCAN_LIMIT = CHANNEL_SUMMARY_CAPABILITIES.limits.scannedMessages;
 const TEXT_LIMIT = CHANNEL_SUMMARY_CAPABILITIES.limits.sourceCharacters;
 type Invocation = Message | ChatInputCommandInteraction;
+type Search = { before?: string; author?: string; mentions?: string; attachmentsOnly?: boolean; around?: string };
 type Range = { kind: "last" } | { kind: "recent"; count: number } | { kind: "after"; id: string } | { kind: "time"; timestamp: number };
 
 export function isChannelSummaryRequest(prompt: string): boolean {
@@ -65,7 +66,7 @@ export async function channelSummaryContext(invocation: Invocation, prompt: stri
   return retrieveChannelSummary(invocation, prompt, range, client, canIncludeAuthor);
 }
 
-async function retrieveChannelSummary(invocation: Invocation, prompt: string, range: Range, client: Client, canIncludeAuthor: (id: string) => boolean, signal?: AbortSignal): Promise<string> {
+async function retrieveChannelSummary(invocation: Invocation, prompt: string, range: Range, client: Client, canIncludeAuthor: (id: string) => boolean, signal?: AbortSignal, search: Search = {}): Promise<string> {
   const notice = (text: string) => `[Channel summary unavailable: ${text} Explain this limitation; do not invent a summary from other context.]\n\n${prompt}`;
   const requester = "user" in invocation ? invocation.user.id : invocation.author.id;
   try {
@@ -82,7 +83,7 @@ async function retrieveChannelSummary(invocation: Invocation, prompt: string, ra
       const startingMessage = await client.rest.get(Routes.channelMessage(channel.id, range.id)).catch(() => null) as APIMessage | null;
       if (!startingMessage || startingMessage.id !== range.id || startingMessage.channel_id !== channel.id) return notice("The starting message could not be retrieved. Supply an existing message link or a recent-message count.");
     }
-    let before = invocation.id;
+    let before = search.before ?? invocation.id;
     let scanned = 0;
     let done = false;
     let anchorFound = false;
@@ -91,10 +92,12 @@ async function retrieveChannelSummary(invocation: Invocation, prompt: string, ra
     while (scanned < SCAN_LIMIT && !done) {
       signal?.throwIfAborted();
       const limit = Math.min(CHANNEL_SUMMARY_CAPABILITIES.limits.pageMessages, SCAN_LIMIT - scanned, range.kind === "recent" ? range.count - scanned : SCAN_LIMIT);
-      const page = await client.rest.get(Routes.channelMessages(channel.id), { query: new URLSearchParams({ before, limit: String(limit) }) }) as APIMessage[];
+      const page = await client.rest.get(Routes.channelMessages(channel.id), { query: new URLSearchParams(search.around ? { around: search.around, limit: "21" } : { before, limit: String(limit) }) }) as APIMessage[];
       if (page.length === 0) { done = true; break; }
       const ordered = page.filter(message => BigInt(message.id) < BigInt(before))
         .sort((a, b) => BigInt(a.id) > BigInt(b.id) ? -1 : BigInt(a.id) < BigInt(b.id) ? 1 : 0);
+      if (search.around) done = true;
+      if (!ordered.length && done) break;
       if (!ordered.length) return notice("History pagination did not advance. Please try again.");
       for (const message of ordered) {
         scanned++;
@@ -102,7 +105,11 @@ async function retrieveChannelSummary(invocation: Invocation, prompt: string, ra
           anchorFound = true; anchor = `https://discord.com/channels/${invocation.guildId}/${channel.id}/${message.id}`; done = true; break;
         }
         if ((range.kind === "after" && BigInt(message.id) <= BigInt(range.id)) || (range.kind === "time" && Date.parse(message.timestamp) <= range.timestamp)) { done = true; break; }
-        if (!message.author.bot && canIncludeAuthor(message.author.id)) selected.push(message);
+        if (message.author.bot || !canIncludeAuthor(message.author.id)) continue;
+        if (search.author && message.author.id !== search.author) continue;
+        if (search.mentions && !message.mentions.some(user => user.id === search.mentions)) continue;
+        if (search.attachmentsOnly && !message.attachments.length) continue;
+        selected.push(message);
       }
       before = ordered[ordered.length - 1].id;
       if (page.length < limit || (range.kind === "recent" && scanned >= range.count)) done = true;
@@ -120,13 +127,14 @@ async function retrieveChannelSummary(invocation: Invocation, prompt: string, ra
         url: `https://discord.com/channels/${invocation.guildId}/${channel.id}/${message.id}`,
         text: message.content,
         attachments: message.attachments.length,
+        files: message.attachments.length ? message.attachments.map(file => ({ id: file.id, name: file.filename })) : undefined,
       });
       if (size + record.length + 1 > TEXT_LIMIT) { clipped = true; break; }
       records.push(record); size += record.length + 1;
     }
     signal?.throwIfAborted();
     const partial = !done || clipped;
-    return `[Channel summary source]\n${CHANNEL_SUMMARY_SOURCE_INSTRUCTIONS}\n${JSON.stringify({ channelId: channel.id, range, anchor, scanned, included: records.length, partial, coverage: partial ? "PARTIAL: retrieval or text limit reached; older messages omitted" : "Requested range retrieved", exclusions: "Bot messages and authors excluded by access policy are omitted. Attachments are counted, not read.", empty: records.length === 0 })}\n${records.reverse().join("\n")}\n[/Channel summary source]\n\n${prompt}`;
+    return `[Channel summary source]\n${CHANNEL_SUMMARY_SOURCE_INSTRUCTIONS}\n${JSON.stringify({ channelId: channel.id, range, anchor, nextBefore: range.kind === "time" && partial && !search.around ? (clipped ? selected[records.length - 1]?.id : before) : undefined, scanned, included: records.length, partial, coverage: partial ? "PARTIAL: retrieval or text limit reached; older messages omitted" : "Requested range retrieved", exclusions: "Bot messages and authors excluded by access policy are omitted. Attachments are counted, not read.", empty: records.length === 0 })}\n${records.reverse().join("\n")}\n[/Channel summary source]\n\n${prompt}`;
   } catch {
     return notice("Discord history could not be retrieved. Please try again; no complete summary is available.");
   }
@@ -142,15 +150,29 @@ export function channelHistoryResolver(invocation: Invocation, client: Client, c
   } as Invocation;
   return async (args: Record<string, unknown>, signal?: AbortSignal): Promise<string> => {
     if (!source.guildId) throw new Error("Channel history is unavailable in DMs. Use the existing conversation context.");
-    const fields: Record<string, string[]> = { previous_message: [], recent: ["count"], after_message: ["message_url"], relative_time: ["amount", "unit"] };
+    const fields: Record<string, string[]> = { previous_message: [], recent: ["count"], after_message: ["message_url"], around_message: ["message_id"], relative_time: ["amount", "unit", "before", "author_id", "mentions_id", "attachments_only"] };
     const kind = typeof args.range === "string" ? args.range : "";
     if (!Object.hasOwn(fields, kind) || Object.keys(args).some(key => !["run_id", "range", ...fields[kind]].includes(key))) throw new Error("Choose one supported range without additional constraints.");
     const integer = (value: unknown, limit: number): number => {
       if (typeof value !== "string" || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1 || Number(value) > limit) throw new Error(`Use an integer between 1 and ${limit}.`);
       return Number(value);
     };
+    const id = (key: string) => {
+      const value = args[key];
+      if (value === undefined) return undefined;
+      if (typeof value !== "string" || !/^[1-9]\d{0,19}$/.test(value)) throw new Error("Invalid Discord ID.");
+      return value;
+    };
+    const search: Search = { before: id("before"), author: id("author_id"), mentions: id("mentions_id"), around: id("message_id") };
+    for (const boundary of [search.before, search.around]) {
+      if (boundary && BigInt(boundary) >= BigInt(source.id)) throw new Error("History boundary must precede this request.");
+    }
+    if (kind === "around_message" && !search.around) throw new Error("Provide a message_id.");
+    if (args.attachments_only !== undefined && args.attachments_only !== "true") throw new Error("Use true for attachments_only.");
+    search.attachmentsOnly = args.attachments_only === "true";
     let range: Range;
     if (kind === "previous_message") range = { kind: "last" };
+    else if (kind === "around_message") range = { kind: "recent", count: 21 };
     else if (kind === "recent") range = { kind: "recent", count: args.count === undefined ? CHANNEL_SUMMARY_CAPABILITIES.limits.defaultMessages : integer(args.count, SCAN_LIMIT) };
     else if (kind === "relative_time") {
       const units: Record<string, number> = { minutes: 60_000, hours: 3_600_000, days: 86_400_000 };
@@ -162,6 +184,6 @@ export function channelHistoryResolver(invocation: Invocation, client: Client, c
       if (BigInt(link[3]) >= BigInt(source.id)) throw new Error("The starting message must be older than this request.");
       range = { kind: "after", id: link[3] };
     }
-    return retrieveChannelSummary(source, "", range, client, canIncludeAuthor, signal);
+    return retrieveChannelSummary(source, "", range, client, canIncludeAuthor, signal, search);
   };
 }

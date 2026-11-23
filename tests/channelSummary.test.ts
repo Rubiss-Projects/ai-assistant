@@ -272,3 +272,20 @@ test("history tool snapshots cutoff and uses invocation time, defaults and cance
   await read({ range: "recent" }, AbortSignal.abort());
   assert.equal(f.calls.length, count);
 });
+
+test("three-week search resumes past 1,000 unrelated posts and finds a specific upload", async () => {
+  const { channelHistoryResolver } = await import("../src/utils/channelSummary.js");
+  const shot = message(950, "123", { timestamp: "2026-09-03T15:30:00Z", attachments: [{ id: "456", filename: "character.png" }] });
+  const channel = fixture([...Array.from({ length: 1049 }, (_, i) => message(1999 - i)), shot,
+    message(949, "123", { timestamp: "2026-08-30T15:30:00Z" })]);
+  const fetch = channelHistoryResolver(invocation, channel.client);
+  const args = { range: "relative_time", amount: "21", unit: "days", author_id: "123", attachments_only: "true" };
+  const first = await fetch(args);
+  assert.match(first, /"included":0/);
+  const before = JSON.parse(first.split("\n")[2]).nextBefore;
+  assert.equal(before, "1000");
+  const older = await fetch({ ...args, before });
+  assert.match(older, /"partial":false/);
+  assert.match(older, /"files":\[\{"id":"456","name":"character.png"\}\]/);
+  assert.match(older, /discord.com\/channels\/1\/2\/950/);
+});

@@ -76,7 +76,7 @@ export class ArtifactTools {
             if (name === "fetch_channel_history") {
                 if (!this.options?.resolveChannelHistory || this.options.contextProfile === "scheduled" || this.options.contextProfile === "ephemeral")
                     throw new Error("Channel history is unavailable for this run.");
-                if (++this.historyCalls > 3)
+                if (++this.historyCalls > (this.options.transportContext ? 3 : 32))
                     throw new Error("Channel history call limit reached for this response.");
                 return abortable(this.options.resolveChannelHistory(args, this.controller.signal), this.controller.signal);
             }
@@ -246,6 +246,8 @@ export class ArtifactTools {
                 throw new Error("Provide a URL or a candidate_id.");
             candidate = { url: args.url };
         }
+        if (args.attachment_id && (args.candidate_id || !discordMessageLocation(candidate.url)))
+            throw new Error("Use attachment_id with a Discord message URL.");
         if (discordMessageLocation(candidate.url)) {
             if (!this.options?.resolveArtifactMessage)
                 throw new Error("Discord message retrieval is unavailable for this run.");
@@ -264,6 +266,8 @@ export class ArtifactTools {
                 try {
                     const message = await abortable(this.options.resolveArtifactMessage(next.url), this.controller.signal);
                     for (const file of message.candidates.slice(0, 20)) {
+                        if (args.attachment_id && file.attachmentId !== args.attachment_id)
+                            continue;
                         if (discordMessageLocation(file.url)) {
                             if (next.depth < 3)
                                 queue.push({ url: file.url, depth: next.depth + 1 });

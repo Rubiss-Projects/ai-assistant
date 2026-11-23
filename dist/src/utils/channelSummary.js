@@ -68,7 +68,7 @@ export async function channelSummaryContext(invocation, prompt, client, canInclu
         return notice(range);
     return retrieveChannelSummary(invocation, prompt, range, client, canIncludeAuthor);
 }
-async function retrieveChannelSummary(invocation, prompt, range, client, canIncludeAuthor, signal) {
+async function retrieveChannelSummary(invocation, prompt, range, client, canIncludeAuthor, signal, search = {}) {
     const notice = (text) => `[Channel summary unavailable: ${text} Explain this limitation; do not invent a summary from other context.]\n\n${prompt}`;
     const requester = "user" in invocation ? invocation.user.id : invocation.author.id;
     try {
@@ -89,7 +89,7 @@ async function retrieveChannelSummary(invocation, prompt, range, client, canIncl
             if (!startingMessage || startingMessage.id !== range.id || startingMessage.channel_id !== channel.id)
                 return notice("The starting message could not be retrieved. Supply an existing message link or a recent-message count.");
         }
-        let before = invocation.id;
+        let before = search.before ?? invocation.id;
         let scanned = 0;
         let done = false;
         let anchorFound = false;
@@ -98,13 +98,17 @@ async function retrieveChannelSummary(invocation, prompt, range, client, canIncl
         while (scanned < SCAN_LIMIT && !done) {
             signal?.throwIfAborted();
             const limit = Math.min(CHANNEL_SUMMARY_CAPABILITIES.limits.pageMessages, SCAN_LIMIT - scanned, range.kind === "recent" ? range.count - scanned : SCAN_LIMIT);
-            const page = await client.rest.get(Routes.channelMessages(channel.id), { query: new URLSearchParams({ before, limit: String(limit) }) });
+            const page = await client.rest.get(Routes.channelMessages(channel.id), { query: new URLSearchParams(search.around ? { around: search.around, limit: "21" } : { before, limit: String(limit) }) });
             if (page.length === 0) {
                 done = true;
                 break;
             }
             const ordered = page.filter(message => BigInt(message.id) < BigInt(before))
                 .sort((a, b) => BigInt(a.id) > BigInt(b.id) ? -1 : BigInt(a.id) < BigInt(b.id) ? 1 : 0);
+            if (search.around)
+                done = true;
+            if (!ordered.length && done)
+                break;
             if (!ordered.length)
                 return notice("History pagination did not advance. Please try again.");
             for (const message of ordered) {
@@ -119,8 +123,15 @@ async function retrieveChannelSummary(invocation, prompt, range, client, canIncl
                     done = true;
                     break;
                 }
-                if (!message.author.bot && canIncludeAuthor(message.author.id))
-                    selected.push(message);
+                if (message.author.bot || !canIncludeAuthor(message.author.id))
+                    continue;
+                if (search.author && message.author.id !== search.author)
+                    continue;
+                if (search.mentions && !message.mentions.some(user => user.id === search.mentions))
+                    continue;
+                if (search.attachmentsOnly && !message.attachments.length)
+                    continue;
+                selected.push(message);
             }
             before = ordered[ordered.length - 1].id;
             if (page.length < limit || (range.kind === "recent" && scanned >= range.count))
@@ -140,6 +151,7 @@ async function retrieveChannelSummary(invocation, prompt, range, client, canIncl
                 url: `https://discord.com/channels/${invocation.guildId}/${channel.id}/${message.id}`,
                 text: message.content,
                 attachments: message.attachments.length,
+                files: message.attachments.length ? message.attachments.map(file => ({ id: file.id, name: file.filename })) : undefined,
             });
             if (size + record.length + 1 > TEXT_LIMIT) {
                 clipped = true;
@@ -150,7 +162,7 @@ async function retrieveChannelSummary(invocation, prompt, range, client, canIncl
         }
         signal?.throwIfAborted();
         const partial = !done || clipped;
-        return `[Channel summary source]\n${CHANNEL_SUMMARY_SOURCE_INSTRUCTIONS}\n${JSON.stringify({ channelId: channel.id, range, anchor, scanned, included: records.length, partial, coverage: partial ? "PARTIAL: retrieval or text limit reached; older messages omitted" : "Requested range retrieved", exclusions: "Bot messages and authors excluded by access policy are omitted. Attachments are counted, not read.", empty: records.length === 0 })}\n${records.reverse().join("\n")}\n[/Channel summary source]\n\n${prompt}`;
+        return `[Channel summary source]\n${CHANNEL_SUMMARY_SOURCE_INSTRUCTIONS}\n${JSON.stringify({ channelId: channel.id, range, anchor, nextBefore: range.kind === "time" && partial && !search.around ? (clipped ? selected[records.length - 1]?.id : before) : undefined, scanned, included: records.length, partial, coverage: partial ? "PARTIAL: retrieval or text limit reached; older messages omitted" : "Requested range retrieved", exclusions: "Bot messages and authors excluded by access policy are omitted. Attachments are counted, not read.", empty: records.length === 0 })}\n${records.reverse().join("\n")}\n[/Channel summary source]\n\n${prompt}`;
     }
     catch {
         return notice("Discord history could not be retrieved. Please try again; no complete summary is available.");
@@ -167,7 +179,7 @@ export function channelHistoryResolver(invocation, client, canIncludeAuthor = ()
     return async (args, signal) => {
         if (!source.guildId)
             throw new Error("Channel history is unavailable in DMs. Use the existing conversation context.");
-        const fields = { previous_message: [], recent: ["count"], after_message: ["message_url"], relative_time: ["amount", "unit"] };
+        const fields = { previous_message: [], recent: ["count"], after_message: ["message_url"], around_message: ["message_id"], relative_time: ["amount", "unit", "before", "author_id", "mentions_id", "attachments_only"] };
         const kind = typeof args.range === "string" ? args.range : "";
         if (!Object.hasOwn(fields, kind) || Object.keys(args).some(key => !["run_id", "range", ...fields[kind]].includes(key)))
             throw new Error("Choose one supported range without additional constraints.");
@@ -176,9 +188,29 @@ export function channelHistoryResolver(invocation, client, canIncludeAuthor = ()
                 throw new Error(`Use an integer between 1 and ${limit}.`);
             return Number(value);
         };
+        const id = (key) => {
+            const value = args[key];
+            if (value === undefined)
+                return undefined;
+            if (typeof value !== "string" || !/^[1-9]\d{0,19}$/.test(value))
+                throw new Error("Invalid Discord ID.");
+            return value;
+        };
+        const search = { before: id("before"), author: id("author_id"), mentions: id("mentions_id"), around: id("message_id") };
+        for (const boundary of [search.before, search.around]) {
+            if (boundary && BigInt(boundary) >= BigInt(source.id))
+                throw new Error("History boundary must precede this request.");
+        }
+        if (kind === "around_message" && !search.around)
+            throw new Error("Provide a message_id.");
+        if (args.attachments_only !== undefined && args.attachments_only !== "true")
+            throw new Error("Use true for attachments_only.");
+        search.attachmentsOnly = args.attachments_only === "true";
         let range;
         if (kind === "previous_message")
             range = { kind: "last" };
+        else if (kind === "around_message")
+            range = { kind: "recent", count: 21 };
         else if (kind === "recent")
             range = { kind: "recent", count: args.count === undefined ? CHANNEL_SUMMARY_CAPABILITIES.limits.defaultMessages : integer(args.count, SCAN_LIMIT) };
         else if (kind === "relative_time") {
@@ -195,6 +227,6 @@ export function channelHistoryResolver(invocation, client, canIncludeAuthor = ()
                 throw new Error("The starting message must be older than this request.");
             range = { kind: "after", id: link[3] };
         }
-        return retrieveChannelSummary(source, "", range, client, canIncludeAuthor, signal);
+        return retrieveChannelSummary(source, "", range, client, canIncludeAuthor, signal, search);
     };
 }

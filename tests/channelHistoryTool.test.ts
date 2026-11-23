@@ -17,9 +17,9 @@ test("history tool dispatch is scoped to the active run and capped", async () =>
   const args = { run_id: tool.id, range: "after_message", message_url: "https://discord.com/channels/1/2/1998" };
   await assert.rejects(tool.call("fetch_channel_history", { ...args, run_id: "old" }), /expired/);
   await assert.rejects(tool.call("fetch_channel_history", { ...args, requester: "other" }), /Invalid/);
-  for (let i = 0; i < 3; i++) assert.match(String(await tool.call("fetch_channel_history", args)), /evidence/);
+  for (let i = 0; i < 32; i++) assert.match(String(await tool.call("fetch_channel_history", args)), /evidence/);
   await assert.rejects(tool.call("fetch_channel_history", args), /history call limit/);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 32);
   await tool.cancel();
   await assert.rejects(tool.call("fetch_channel_history", args));
 });
