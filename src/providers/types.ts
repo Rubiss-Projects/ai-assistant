@@ -118,6 +118,7 @@ export interface SendMessageOptions {
 }
 
 export interface ArtifactCandidate {
+  attachmentId?: string;
   url: string;
   name?: string;
   contentType?: string | null;

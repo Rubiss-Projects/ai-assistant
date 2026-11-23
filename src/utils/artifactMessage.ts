@@ -25,7 +25,7 @@ export function artifactMessageResolver(
     const location = discordMessageLocation(url)!;
     const sourceMessage = `https://discord.com/channels/${location.guild}/${location.channel}/${location.message}`;
     const candidates: ArtifactCandidate[] = [...message.attachments.values()].map((file) => ({
-      url: file.url, name: file.name, contentType: file.contentType, size: file.size, sourceMessage,
+      attachmentId: file.id, url: file.url, name: file.name, contentType: file.contentType, size: file.size, sourceMessage,
     }));
     const links = urlsInText(message.content);
     for (const embed of message.embeds) {
@@ -66,7 +66,7 @@ export async function readArtifactMessage(client: Client, requester: string, url
       }
     }
   }
-  const message = await channel.messages.fetch(location.message);
+  const message = await channel.messages.fetch({ message: location.message, force: true });
   if (!canIncludeAuthor(message.author.id)) throw new Error("This message is excluded by the bot's context policy.");
   return message;
 }
